@@ -5,226 +5,228 @@ import os
 import sys
 import re
 
-# ======================
-# CONFIG
-# ======================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MAPPING_FILE = os.path.join(BASE_DIR, "Common", "Mapping_file.xlsx")
-ENGINE_SCRIPT = os.path.join(BASE_DIR, "engine", "input_file_engine.py")
-OBJECT_COLUMN = "Object Name"
+def render(go):
+   # ======================
+   # CONFIG
+   # ======================
 
-# ======================
-# BASIC VALIDATION
-# ======================
+   BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+   MAPPING_FILE = os.path.join(BASE_DIR, "Common", "Mapping_file.xlsx")
+   ENGINE_SCRIPT = os.path.join(BASE_DIR, "engine", "input_file_engine.py")
+   OBJECT_COLUMN = "Object Name"
 
-if not os.path.exists(ENGINE_SCRIPT):
-    st.error(f"Engine script not found:\n{ENGINE_SCRIPT}")
-    st.stop()
+   # ======================
+   # BASIC VALIDATION
+   # ======================
 
-try:
-    full_mapping_df = pd.read_excel(MAPPING_FILE, dtype=str)
-except Exception as e:
-    st.error(f"Failed to load mapping file: {e}")
-    st.stop()
+   if not os.path.exists(ENGINE_SCRIPT):
+      st.error(f"Engine script not found:\n{ENGINE_SCRIPT}")
+      st.stop()
 
-available_reports = (
-    full_mapping_df["Report Name"]
-    .dropna()
-    .astype(str)
-    .str.strip()
-    .unique()
-    .tolist()
-)
+   try:
+      full_mapping_df = pd.read_excel(MAPPING_FILE, dtype=str)
+   except Exception as e:
+      st.error(f"Failed to load mapping file: {e}")
+      st.stop()
 
-if not available_reports:
-    st.error("No reports found in Mapping_file.xlsx")
-    st.stop()
+   available_reports = (
+      full_mapping_df["Report Name"]
+      .dropna()
+      .astype(str)
+      .str.strip()
+      .unique()
+      .tolist()
+   )
 
-# ======================
-# BUILD REPORT CONFIG
-# ======================
+   if not available_reports:
+      st.error("No reports found in Mapping_file.xlsx")
+      st.stop()
 
-REPORTS = {}
+   # ======================
+   # BUILD REPORT CONFIG
+   # ======================
 
-for report in available_reports:
-    folder_name = report.replace(" ", "_")
-    work_dir = os.path.join(BASE_DIR, folder_name)
+   REPORTS = {}
 
-    if not os.path.isdir(work_dir):
-        st.warning(f"Report folder missing for '{report}': {work_dir}")
-        continue
+   for report in available_reports:
+      folder_name = report.replace(" ", "_")
+      work_dir = os.path.join(BASE_DIR, folder_name)
 
-    REPORTS[report] = {
-        "work_dir": work_dir,
-        "runs_dir": os.path.join(work_dir, "runs")
-    }
+      if not os.path.isdir(work_dir):
+         st.warning(f"Report folder missing for '{report}': {work_dir}")
+         continue
 
-if not REPORTS:
-    st.error("No valid report folders found.")
-    st.stop()
+      REPORTS[report] = {
+         "work_dir": work_dir,
+         "runs_dir": os.path.join(work_dir, "runs")
+      }
 
-# ======================
-# PAGE SETUP
-# ======================
+   if not REPORTS:
+      st.error("No valid report folders found.")
+      st.stop()
 
-st.set_page_config(page_title="Input File Portal", layout="wide")
-st.title("📁 Input File Portal")
-st.caption("UI for Input File Generation")
+   # ======================
+   # PAGE SETUP
+   # ======================
 
-# ======================
-# REPORT SELECTION
-# ======================
+   st.set_page_config(page_title="Input File Portal", layout="wide")
+   st.title("📁 Input File Portal")
+   st.caption("UI for Input File Generation")
 
-st.subheader("1️⃣ Select Report")
+   # ======================
+   # REPORT SELECTION
+   # ======================
 
-selected_report = st.selectbox(
-    "Choose report",
-    ["-- Select Report --"] + sorted(REPORTS.keys()),
-    index=0
-)
+   st.subheader("1️⃣ Select Report")
 
-if selected_report == "-- Select Report --":
-    st.info("Please select a report to continue.")
-    st.stop()
+   selected_report = st.selectbox(
+      "Choose report",
+      ["-- Select Report --"] + sorted(REPORTS.keys()),
+      index=0
+   )
 
-# ======================
-# LOAD MAPPING (REPORT-SPECIFIC)
-# ======================
+   if selected_report == "-- Select Report --":
+      st.info("Please select a report to continue.")
+      st.stop()
 
-mapping_df = full_mapping_df[
-    full_mapping_df["Report Name"] == selected_report
-]
+   # ======================
+   # LOAD MAPPING (REPORT-SPECIFIC)
+   # ======================
 
-if mapping_df.empty:
-    st.warning("No mapping found for this report.")
-    st.stop()
+   mapping_df = full_mapping_df[
+      full_mapping_df["Report Name"] == selected_report
+   ]
 
-# ======================
-# OBJECT SELECTION
-# ======================
+   if mapping_df.empty:
+      st.warning("No mapping found for this report.")
+      st.stop()
 
-st.subheader("2️⃣ Select Object")
+   # ======================
+   # OBJECT SELECTION
+   # ======================
 
-if OBJECT_COLUMN not in mapping_df.columns:
-    st.error(f"'{OBJECT_COLUMN}' column not found in mapping file.")
-    st.stop()
+   st.subheader("2️⃣ Select Object")
 
-object_list = (
-    mapping_df[OBJECT_COLUMN]
-    .dropna()
-    .astype(str)
-    .str.strip()
-    .unique()
-    .tolist()
-)
+   if OBJECT_COLUMN not in mapping_df.columns:
+      st.error(f"'{OBJECT_COLUMN}' column not found in mapping file.")
+      st.stop()
 
-selected_object = st.selectbox(
-    "Choose object to preview mapping",
-    ["-- Select Object --"] + sorted(object_list),
-    index=0
-)
+   object_list = (
+      mapping_df[OBJECT_COLUMN]
+      .dropna()
+      .astype(str)
+      .str.strip()
+      .unique()
+      .tolist()
+   )
 
-# ======================
-# MAPPING PREVIEW
-# ======================
+   selected_object = st.selectbox(
+      "Choose object to preview mapping",
+      ["-- Select Object --"] + sorted(object_list),
+      index=0
+   )
 
-st.subheader("3️⃣ Mapping File Preview")
+   # ======================
+   # MAPPING PREVIEW
+   # ======================
 
-if selected_object == "-- Select Object --":
-    st.warning("Please select an object to preview mapping.")
-    st.stop()
+   st.subheader("3️⃣ Mapping File Preview")
 
-preview_df = mapping_df[mapping_df[OBJECT_COLUMN] == selected_object]
+   if selected_object == "-- Select Object --":
+      st.warning("Please select an object to preview mapping.")
+      st.stop()
 
-if preview_df.empty:
-    st.warning("No mapping rows found for selected object.")
-else:
-    st.dataframe(preview_df, use_container_width=True)
+   preview_df = mapping_df[mapping_df[OBJECT_COLUMN] == selected_object]
 
-# ======================
-# CONFIRMATION
-# ======================
+   if preview_df.empty:
+      st.warning("No mapping rows found for selected object.")
+   else:
+      st.dataframe(preview_df, use_container_width=True)
 
-st.subheader("4️⃣ Confirmation")
+   # ======================
+   # CONFIRMATION
+   # ======================
 
-confirm_mapping = st.checkbox(
-    "I have reviewed the mapping and confirm it is correct"
-)
+   st.subheader("4️⃣ Confirmation")
 
-# ======================
-# EXECUTION
-# ======================
+   confirm_mapping = st.checkbox(
+      "I have reviewed the mapping and confirm it is correct"
+   )
 
-st.subheader("5️⃣ Run")
+   # ======================
+   # EXECUTION
+   # ======================
 
-if st.button("🚀 Generate Input File", type="primary"):
-    if not confirm_mapping:
-        st.error("You must confirm the mapping before running.")
-        st.stop()
+   st.subheader("5️⃣ Run")
 
-    st.info("Running engine… please wait")
+   if st.button("🚀 Generate Input File", type="primary"):
+      if not confirm_mapping:
+         st.error("You must confirm the mapping before running.")
+         st.stop()
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "engine.cli",
-            "--report",
-            selected_report
-        ],
-        cwd=BASE_DIR,
-        capture_output=True,
-        text=True
-    )
+      st.info("Running engine… please wait")
 
-    stdout = result.stdout.strip()
-    stderr = result.stderr.strip()
+      result = subprocess.run(
+         [
+               sys.executable,
+               "-m",
+               "engine.cli",
+               "--report",
+               selected_report
+         ],
+         cwd=BASE_DIR,
+         capture_output=True,
+         text=True
+      )
 
-    st.subheader("🖥 Engine Output")
-    st.code(stdout if stdout else "No output", language="text")
+      stdout = result.stdout.strip()
+      stderr = result.stderr.strip()
 
-    if stderr:
-        st.subheader("⚠️ Engine Errors")
-        st.code(stderr, language="text")
+      st.subheader("🖥 Engine Output")
+      st.code(stdout if stdout else "No output", language="text")
 
-    if result.returncode != 0:
-        st.error("❌ Engine execution failed.")
-        st.stop()
+      if stderr:
+         st.subheader("⚠️ Engine Errors")
+         st.code(stderr, language="text")
 
-    if "skip" in stdout.lower():
-        st.warning("⚠️ Execution skipped (input files missing).")
-        st.stop()
+      if result.returncode != 0:
+         st.error("❌ Engine execution failed.")
+         st.stop()
 
-    st.success("✅ Execution completed successfully")
+      if "skip" in stdout.lower():
+         st.warning("⚠️ Execution skipped (input files missing).")
+         st.stop()
 
-    # ======================
-    # LOAD SUMMARY
-    # ======================
+      st.success("✅ Execution completed successfully")
 
-    match = re.search(r"Output written to (.+)", stdout)
+      # ======================
+      # LOAD SUMMARY
+      # ======================
 
-    if not match:
-        st.warning("Could not determine output location from engine output.")
-        st.stop()
+      match = re.search(r"Output written to (.+)", stdout)
 
-    run_path = match.group(1).strip()
-    summary_path = os.path.join(run_path, "run_summary.txt")
+      if not match:
+         st.warning("Could not determine output location from engine output.")
+         st.stop()
 
-    st.subheader("📊 Run Summary")
+      run_path = match.group(1).strip()
+      summary_path = os.path.join(run_path, "run_summary.txt")
 
-    if os.path.exists(summary_path):
-        with open(summary_path, "r", encoding="utf-8") as f:
-            st.text(f.read())
-    else:
-        st.warning("Run summary file not found.")
+      st.subheader("📊 Run Summary")
 
-    st.subheader("📂 Output Location")
-    st.code(run_path)
+      if os.path.exists(summary_path):
+         with open(summary_path, "r", encoding="utf-8") as f:
+               st.text(f.read())
+      else:
+         st.warning("Run summary file not found.")
 
-# ======================
-# FOOTER
-# ======================
+      st.subheader("📂 Output Location")
+      st.code(run_path)
 
-st.divider()
-st.caption("Internal Tool • Streamlit UI")
+   # ======================
+   # FOOTER
+   # ======================
+
+   st.divider()
+   st.caption("Internal Tool • Streamlit UI")
