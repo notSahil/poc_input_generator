@@ -1,0 +1,19 @@
+report:
+  name: Apollo 10G
+
+folders:
+  work_dir: Apollo_10G
+  source_dir: input/source
+  sitetracker_dir: input/sitetracker
+  runs_dir: runs
+  archive_dir: archive
+
+date:
+  format: UK
+  dayfirst: true
+  allow_empty: true
+
+text_case_columns: []
+
+behavior:
+  archive_after_success: true
