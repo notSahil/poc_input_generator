@@ -168,7 +168,8 @@ if st.button("🚀 Generate Input File", type="primary"):
     result = subprocess.run(
         [
             sys.executable,
-            ENGINE_SCRIPT,
+            "-m",
+            "engine.cli",
             "--report",
             selected_report
         ],

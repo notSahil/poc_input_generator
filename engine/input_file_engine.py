@@ -199,3 +199,16 @@ class InputFileEngine:
             shutil.move(st_file, archive)
 
         print(f"SUCCESS. Output written to {run_dir}")
+    # =====================================================
+# CLI ENTRY POINT
+# =====================================================
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3 or sys.argv[1] != "--report":
+        print("Usage: python -m engine.input_file_engine --report <REPORT_NAME>")
+        sys.exit(1)
+
+    report_name = sys.argv[2]
+
+    engine = InputFileEngine(report_name)
+    engine.run()

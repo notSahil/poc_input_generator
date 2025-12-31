@@ -1,0 +1,396 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Salesforce Data Import and Export Task Handler</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg:#f7f9fc; --card:#fff; --text:#1f2937; --muted:#6b7280;
+      --border:#e5e7eb; --primary:#2563eb; --primary-dark:#1e40af;
+    }
+    *{box-sizing:border-box}
+    body{margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:var(--text); background:var(--bg);}
+    .container{max-width:1000px; margin:32px auto; padding:0 16px;}
+    header{margin-bottom:16px;}
+    h1{margin:0 0 6px; font-size:1.8rem;}
+    h2{margin:0 0 12px; font-size:1.2rem;}
+    .muted{color:var(--muted);}
+    .card{background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; box-shadow:0 1px 2px rgba(0,0,0,0.06);}
+    .grid-2{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+    .field{display:flex; flex-direction:column; gap:8px; margin-bottom:12px;}
+    label{font-weight:600;}
+    select, input[type="text"], input[type="password"], textarea, input[type="time"]{
+      width:100%; padding:10px; border:1px solid var(--border); border-radius:8px; background:#fff; font-size:1rem;
+    }
+    textarea{min-height:140px; resize:vertical;}
+    .row{display:flex; align-items:center; justify-content:space-between; gap:12px;}
+    .checkbox-row{display:flex; align-items:center; gap:10px;}
+    .btn{display:inline-flex; align-items:center; justify-content:center; gap:8px; background:var(--primary); color:#fff; border:none; padding:10px 16px; border-radius:8px; font-weight:600; cursor:pointer;}
+    .btn.secondary{background:#475569;}
+    .btn:disabled{background:#cbd5e1; cursor:not-allowed;}
+    .table-wrap{overflow-x:auto; border:1px solid var(--border); border-radius:8px;}
+    table{width:100%; border-collapse:collapse;}
+    th, td{padding:12px; border-bottom:1px solid var(--border); text-align:left;}
+    th{background:#f3f4f6; font-weight:700;}
+    nav{display:flex; gap:8px; margin-top:16px;}
+    .link-like{background:none; border:none; color:var(--primary); cursor:pointer; padding:0; font-weight:600; text-decoration:underline;}
+    .center{display:flex; align-items:center; justify-content:center;}
+    .logo{
+      width:120px; height:120px; border-radius:60px; background:linear-gradient(135deg, #059669, #2563eb);
+      display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:1.1rem; box-shadow:0 4px 18px rgba(0,0,0,0.12);
+      margin:8px auto 16px;
+    }
+    .hidden{display:none !important;}
+    footer.status{margin-top:12px; color:var(--muted); font-size:0.95rem;}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Global Header -->
+    <header>
+      <h1>Salesforce Data Import and Export Task Handler</h1>
+      <p class="muted">Prototype navigation + pages for Importer and Exporter flows</p>
+    </header>
+
+    <!-- Landing Page -->
+    <section id="page-home" class="card" aria-labelledby="home-title">
+      <h2 id="home-title">Choose Operation</h2>
+      <div class="row">
+        <button id="goto-importer" class="btn" type="button">Data Load Operation</button>
+        <button id="goto-exporter" class="btn secondary" type="button">Data Export Operation</button>
+      </div>
+    </section>
+
+    <!-- Importer Page -->
+    <section id="page-importer" class="card hidden" aria-labelledby="importer-title">
+      <div class="row">
+        <h2 id="importer-title">Salesforce Data importer</h2>
+        <nav>
+          <button class="link-like" data-nav="home">Home</button>
+          <button class="link-like" data-nav="exporter">Go to Exporter</button>
+        </nav>
+      </div>
+
+      <div class="grid-2" role="group" aria-label="Importer selections">
+        <!-- 1) Select Dataload Report Name -->
+        <div class="field">
+          <label for="imp-report">Select Dataload Report Name</label>
+          <select id="imp-report" name="imp-report">
+            <option value="" disabled selected>Select…</option>
+            <option value="Apollo10G">Apollo10G</option>
+            <option value="McCredies">McCredies</option>
+          </select>
+        </div>
+        <!-- 2) Select Object -->
+        <div class="field">
+          <label for="imp-object">Select Object</label>
+          <select id="imp-object" name="imp-object">
+            <option value="" disabled selected>Select…</option>
+            <option value="Site">Site</option>
+            <option value="Project">Project</option>
+            <option value="BT Project">BT Project</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 3) Verify the Field Mapping Details -->
+      <p><strong>Verify the Field Mapping Details</strong></p>
+      <div class="table-wrap" aria-label="Field mapping table">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Source Field (Report)</th>
+              <th>Target Field (SFDC)</th>
+              <th>Data Type</th>
+              <th>Required</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody id="imp-mapping-body">
+            <!-- Example rows — replace with real mappings as needed -->
+            <tr>
+              <td>1</td>
+              <td>Site_Name</td>
+              <td>Account.Name</td>
+              <td>Text</td>
+              <td>Yes</td>
+              <td>Trim whitespace</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Site_Code</td>
+              <td>Account.SiteNumber__c</td>
+              <td>Text</td>
+              <td>No</td>
+              <td>Optional for legacy records</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Start_Date</td>
+              <td>Project__c.StartDate__c</td>
+              <td>Date</td>
+              <td>Yes</td>
+              <td>Format: YYYY-MM-DD</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 4) Checkbox + 5) Generate Button (enabled only if checked) -->
+      <div class="row" style="margin-top:16px;">
+        <label class="checkbox-row">
+          <input type="checkbox" id="imp-mapping-ok" />
+          Tick me if Mapping is as Expected
+        </label>
+
+        <button id="imp-generate" class="btn" type="button" disabled aria-disabled="true" title="Enable by confirming mapping">
+          Generate Input File
+        </button>
+      </div>
+
+      <footer id="imp-status" class="status" role="status" aria-live="polite"></footer>
+    </section>
+
+    <!-- Exporter Page -->
+    <section id="page-exporter" class="card hidden" aria-labelledby="exporter-title">
+      <div class="row">
+        <h2 id="exporter-title">Salesforce Data Exporter</h2>
+        <nav>
+          <button class="link-like" data-nav="home">Home</button>
+          <button class="link-like" data-nav="importer">Go to Importer</button>
+        </nav>
+      </div>
+
+      <!-- 1) Salesforce-THBS Icon centered -->
+      <div class="center">
+        <div class="logo" aria-label="Salesforce-THBS icon">THBS</div>
+      </div>
+
+      <!-- 2) Instance Selection -->
+      <div class="field">
+        <label for="exp-instance">Select Salesforce Instance</label>
+        <select id="exp-instance">
+          <option value="" disabled selected>Select…</option>
+          <option value="Production">Production</option>
+          <option value="Partial Sandbox">Partial Sandbox</option>
+          <option value="Full Copy Sandbox">Full Copy Sandbox</option>
+        </select>
+      </div>
+
+      <!-- 3) Username, 4) Password, 5) Security Token -->
+      <div class="grid-2" role="group" aria-label="Credentials">
+        <div class="field">
+          <label for="exp-username">Username</label>
+          <input id="exp-username" type="text" placeholder="Enter username" />
+        </div>
+        <div class="field">
+          <label for="exp-password">Password</label>
+          <input id="exp-password" type="password" placeholder="Enter password" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="exp-token">Security Token</label>
+        <input id="exp-token" type="password" placeholder="Enter security token" />
+      </div>
+
+      <!-- 6) Login Button -->
+      <div class="row">
+        <button id="exp-login" class="btn" type="button">Login</button>
+      </div>
+
+      <!-- 7) Export configured Query? -->
+      <div class="field" style="margin-top:12px;">
+        <label for="exp-use-config">Export configured Query?</label>
+        <select id="exp-use-config">
+          <option value="" disabled selected>Select…</option>
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+        </select>
+      </div>
+
+      <!-- 8) If Yes -> Select Export Job ELSE Query textarea -->
+      <div id="exp-job-wrap" class="field hidden">
+        <label for="exp-job">Select Export Job</label>
+        <select id="exp-job">
+          <option value="" disabled selected>Select job…</option>
+          <option value="ST_GCP_All_Sites">ST_GCP_All_Sites</option>
+          <option value="ST_GCP_All_Projects">ST_GCP_All_Projects</option>
+          <option value="Dataload_Apollo10G">Dataload_Apollo10G</option>
+        </select>
+      </div>
+
+      <div id="exp-query-wrap" class="field hidden">
+        <label for="exp-query">Query</label>
+        <textarea id="exp-query" placeholder="Enter SOQL/SQL (prototype)"></textarea>
+      </div>
+
+      <!-- 9) Schedule Export? -->
+      <div class="checkbox-row" style="margin:8px 0;">
+        <input type="checkbox" id="exp-schedule" />
+        <label for="exp-schedule">Schedule Export?</label>
+      </div>
+
+      <!-- 10) If schedule = true -> show Day multi-select + Time -->
+      <div id="exp-schedule-fields" class="grid-2 hidden" role="group" aria-label="Schedule options">
+        <div class="field">
+          <label for="exp-days">Schedule Day (multi-select)</label>
+          <select id="exp-days" multiple size="7" aria-describedby="days-help">
+            <option value="Monday">Monday</option>
+            <option value="Tuesday">Tuesday</option>
+            <option value="Wednesday">Wednesday</option>
+            <option value="Thursday">Thursday</option>
+            <option value="Friday">Friday</option>
+            <option value="Saturday">Saturday</option>
+            <option value="Sunday">Sunday</option>
+          </select>
+          <small id="days-help" class="muted">Hold Ctrl/Cmd to select multiple days.</small>
+        </div>
+
+        <div class="field">
+          <label for="exp-time">Schedule Time (24-hour)</label>
+          <!-- step=60 for minute granularity; browsers typically display in 24h per locale -->
+          <input id="exp-time" type="time" step="60" />
+        </div>
+      </div>
+
+      <!-- 11) Run vs Schedule and Run -->
+      <div class="row" style="margin-top:12px;">
+        <button id="exp-run" class="btn" type="button">Run</button>
+      </div>
+
+      <footer id="exp-status" class="status" role="status" aria-live="polite"></footer>
+    </section>
+  </div>
+
+  <script>
+    // ----- Simple client-side "routing" -----
+    const pages = {
+      home: document.getElementById('page-home'),
+      importer: document.getElementById('page-importer'),
+      exporter: document.getElementById('page-exporter'),
+    };
+    function showPage(name){
+      Object.values(pages).forEach(p => p.classList.add('hidden'));
+      pages[name].classList.remove('hidden');
+      const headingId = name === 'home' ? 'home-title' : (name === 'importer' ? 'importer-title' : 'exporter-title');
+      const heading = document.getElementById(headingId);
+      if(heading) heading.focus?.();
+    }
+
+    // Landing page navigation
+    document.getElementById('goto-importer').addEventListener('click', () => showPage('importer'));
+    document.getElementById('goto-exporter').addEventListener('click', () => showPage('exporter'));
+
+    // Inline nav links
+    document.querySelectorAll('button.link-like[data-nav]').forEach(btn => {
+      btn.addEventListener('click', () => showPage(btn.getAttribute('data-nav')));
+    });
+
+    // ----- Importer page logic -----
+    const impMappingOk = document.getElementById('imp-mapping-ok');
+    const impGenerateBtn = document.getElementById('imp-generate');
+    const impStatus = document.getElementById('imp-status');
+    const impReport = document.getElementById('imp-report');
+    const impObject = document.getElementById('imp-object');
+
+    function updateImporterButton(){
+      const enabled = impMappingOk.checked;
+      impGenerateBtn.disabled = !enabled;
+      impGenerateBtn.setAttribute('aria-disabled', String(!enabled));
+    }
+    impMappingOk.addEventListener('change', updateImporterButton);
+    updateImporterButton(); // initial
+
+    impGenerateBtn.addEventListener('click', () => {
+      const rep = impReport.value || '[not selected]';
+      const obj = impObject.value || '[not selected]';
+      impStatus.textContent = `Generate Input File requested for Report: ${rep}, Object: ${obj}. (Prototype action)`;
+    });
+
+    // ----- Exporter page logic -----
+    const expInstance = document.getElementById('exp-instance');
+    const expUsername = document.getElementById('exp-username');
+    const expPassword = document.getElementById('exp-password');
+    const expToken = document.getElementById('exp-token');
+    const expLoginBtn = document.getElementById('exp-login');
+
+    const expUseConfig = document.getElementById('exp-use-config');
+    const expJobWrap = document.getElementById('exp-job-wrap');
+    const expQueryWrap = document.getElementById('exp-query-wrap');
+    const expSchedule = document.getElementById('exp-schedule');
+    const expScheduleFields = document.getElementById('exp-schedule-fields');
+    const expRunBtn = document.getElementById('exp-run');
+    const expStatus = document.getElementById('exp-status');
+
+    expLoginBtn.addEventListener('click', () => {
+      const instance = expInstance.value || '[instance not selected]';
+      const user = expUsername.value || '[username not set]';
+      const pwdSet = expPassword.value ? 'Yes' : 'No';
+      const tokenSet = expToken.value ? 'Yes' : 'No';
+      expStatus.textContent = `Login clicked. Instance: ${instance}. Username: ${user}. Password set: ${pwdSet}. Token set: ${tokenSet}. (Prototype action)`;
+    });
+
+    function updateExportConfigVisibility(){
+      const val = expUseConfig.value;
+      if(val === 'Yes'){
+        expJobWrap.classList.remove('hidden');
+        expQueryWrap.classList.add('hidden');
+      } else if(val === 'No'){
+        expJobWrap.classList.add('hidden');
+        expQueryWrap.classList.remove('hidden');
+      } else {
+        // default / not selected
+        expJobWrap.classList.add('hidden');
+        expQueryWrap.classList.add('hidden');
+      }
+    }
+    expUseConfig.addEventListener('change', updateExportConfigVisibility);
+    updateExportConfigVisibility(); // initial
+
+    function updateScheduleVisibilityAndButton(){
+      const scheduled = expSchedule.checked;
+      if(scheduled){
+        expScheduleFields.classList.remove('hidden');
+        expRunBtn.textContent = 'Schedule and Run';
+      } else {
+        expScheduleFields.classList.add('hidden');
+        expRunBtn.textContent = 'Run';
+      }
+    }
+    expSchedule.addEventListener('change', updateScheduleVisibilityAndButton);
+    updateScheduleVisibilityAndButton(); // initial
+
+    expRunBtn.addEventListener('click', () => {
+      const instance = expInstance.value || '[instance not selected]';
+      const username = expUsername.value || '[username not set]';
+      const useConfig = expUseConfig.value || '[not selected]';
+      let selectionSummary = '';
+      if(useConfig === 'Yes'){
+        const job = document.getElementById('exp-job').value || '[job not selected]';
+        selectionSummary = `Configured Query: Yes, Job: ${job}`;
+      } else if(useConfig === 'No'){
+        const q = (document.getElementById('exp-query').value || '').trim();
+        selectionSummary = `Configured Query: No, Query length: ${q.length} chars`;
+      } else {
+        selectionSummary = `Configured Query: [not selected]`;
+      }
+
+      const scheduled = expSchedule.checked;
+      let scheduleSummary = 'Schedule: No';
+      if(scheduled){
+        const daysSel = Array.from(document.getElementById('exp-days').selectedOptions).map(o => o.value);
+        const timeSel = document.getElementById('exp-time').value || '[time not set]';
+        scheduleSummary = `Schedule: Yes | Days: ${daysSel.join(', ') || '[none]'} | Time: ${timeSel}`;
+      }
+
+      expStatus.textContent = `${expRunBtn.textContent} triggered. Instance: ${instance}. User: ${username}. ${selectionSummary}. ${scheduleSummary}. (Prototype action)`;
+    });
+
+    // Start at home page
+    showPage('home');
+  </script>
+</body>
+</html>
