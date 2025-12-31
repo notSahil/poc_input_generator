@@ -1,143 +1,17 @@
+# engine/input_file_engine.py
+
 import pandas as pd
 import os
-import re
 import shutil
 import sys
 from datetime import datetime
 import warnings
-import yaml
 
+from engine.config_loader import YamlConfigLoader
+from engine.mapping_loader import MappingLoader
+from engine.normalizer import DataNormalizer
 
 warnings.filterwarnings("ignore", message="Parsing dates", category=UserWarning)
-
-# =====================================================
-# CONFIG LOADER
-# =====================================================
-
-class YamlConfigLoader:
-    @staticmethod
-    def load(report_name: str) -> dict:
-        base_dir = os.getcwd()
-        path = os.path.join(
-            base_dir,
-            "configs",
-            report_name.lower().replace(" ", "_") + ".yml"
-        )
-
-        if not os.path.exists(path):
-            raise Exception(f"YAML config not found: {path}")
-
-        with open(path, "r") as f:
-            cfg = yaml.safe_load(f)
-
-        if not isinstance(cfg, dict):
-            raise Exception(f"Invalid YAML config for report: {report_name}")
-
-        return cfg
-
-
-# =====================================================
-# MAPPING LOADER
-# =====================================================
-
-class MappingLoader:
-    def __init__(self, mapping_file: str, report_name: str):
-        self.mapping_file = mapping_file
-        self.report_name = report_name
-        self.mapping_df = None
-
-    def load(self):
-        df = pd.read_excel(self.mapping_file, dtype=str)
-        df.columns = df.columns.astype(str).str.strip()
-        df = df[df["Report Name"] == self.report_name]
-
-        if df.empty:
-            raise Exception(f"No mapping found for report: {self.report_name}")
-
-        self.mapping_df = df
-        return df
-
-    def primary_keys(self):
-        pk_row = self.mapping_df[
-            self.mapping_df["Primary Key?"].str.upper() == "YES"
-        ]
-
-        if pk_row.empty:
-            raise Exception("Primary key not defined in mapping file")
-
-        return (
-            pk_row.iloc[0]["Source File Column Name"],
-            pk_row.iloc[0]["Sitetracker Field Name"]
-        )
-
-    def field_mapping(self):
-        return [
-            (
-                r["Source File Column Name"],
-                r["Sitetracker Field Name"],
-                r["API Name"],
-                str(r["Data Type"]).lower()
-            )
-            for _, r in self.mapping_df.iterrows()
-        ]
-
-
-# =====================================================
-# NORMALIZATION UTILITIES
-# =====================================================
-
-class DataNormalizer:
-    @staticmethod
-    def normalize_columns(df):
-        df.columns = (
-            df.columns.astype(str)
-            .str.replace("\ufeff", "", regex=False)
-            .str.replace("\u00a0", "", regex=False)
-            .str.strip()
-        )
-        return df
-
-    @staticmethod
-    def normalize_value(v):
-        if pd.isna(v):
-            return ""
-        return str(v).strip()
-
-    @staticmethod
-    def comparable_text(v):
-        if pd.isna(v):
-            return ""
-        text = str(v).replace("–", "-").replace("—", "-")
-        return re.sub(r"\s+", " ", text).strip()
-
-    @staticmethod
-    def normalize_date_uk(v):
-        if pd.isna(v) or str(v).strip() == "":
-            return "", True
-
-        if isinstance(v, (pd.Timestamp, datetime)):
-            return v.strftime("%d/%m/%Y"), True
-
-        try:
-            dt = pd.to_datetime(str(v).strip(), errors="raise", dayfirst=True)
-            return dt.strftime("%d/%m/%Y"), True
-        except Exception:
-            return "", False
-
-    @staticmethod
-    def valid_project_ref(v):
-        return bool(re.match(r"^[A-Za-z0-9_-]+$", str(v)))
-
-    @staticmethod
-    def normalize_text_case(v):
-        if pd.isna(v):
-            return ""
-        return str(v).strip().title()
-
-
-# =====================================================
-# ENGINE
-# =====================================================
 
 class InputFileEngine:
     def __init__(self, report_name: str):
@@ -177,6 +51,7 @@ class InputFileEngine:
         return os.path.join(folder, files[0])
 
     def run(self):
+        print("ENGINE STARTED")
         source_file = self._assert_single_file(self.source_dir, "Source")
         st_file = self._assert_single_file(self.sitetracker_dir, "Sitetracker")
 
@@ -185,10 +60,11 @@ class InputFileEngine:
         run_dir = os.path.join(self.runs_dir, run_day, run_time)
         os.makedirs(run_dir, exist_ok=True)
 
-        def out(name): return os.path.join(run_dir, name)
+        def out(name):
+            return os.path.join(run_dir, name)
 
         mapping = MappingLoader(self.mapping_file, self.report_name)
-        mapping_df = mapping.load()
+        mapping.load()
         pk_src, pk_st = mapping.primary_keys()
         field_map = mapping.field_mapping()
 
@@ -201,7 +77,13 @@ class InputFileEngine:
                 src_df[col] = src_df[col].apply(DataNormalizer.normalize_text_case)
 
         st_df = DataNormalizer.normalize_columns(
-            pd.read_csv(st_file, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
+            pd.read_csv(
+                st_file,
+                dtype=str,
+                encoding="latin1",
+                engine="python",
+                on_bad_lines="skip"
+            )
         )
 
         sf_id_col = next(
@@ -217,9 +99,7 @@ class InputFileEngine:
 
         valid_src = src_df[src_df["VALID"]]
         st_index = st_df.set_index(pk_st)
-        duplicate_pk_values = []
-        # -----------------------
-        # DUPLICATE PRIMARY KEYS (SOURCE)
+
         non_empty_pk_df = valid_src[
             valid_src[pk_src].notna() &
             (valid_src[pk_src].str.strip() != "")
@@ -233,14 +113,6 @@ class InputFileEngine:
 
         if duplicate_pk_values:
             duplicate_pk_df.to_csv(out("duplicate_primary_keys.csv"), index=False)
-
-
-
-
-
-
-
-
 
         updates, changes, invalid_dates = [], [], []
 
@@ -327,16 +199,3 @@ class InputFileEngine:
             shutil.move(st_file, archive)
 
         print(f"SUCCESS. Output written to {run_dir}")
-
-
-# =====================================================
-# CLI ENTRY POINT
-# =====================================================
-
-if __name__ == "__main__":
-    if len(sys.argv) < 3 or sys.argv[1] != "--report":
-        print("Usage: python engine/input_file_engine.py --report <REPORT_NAME>")
-        sys.exit(1)
-
-    engine = InputFileEngine(sys.argv[2])
-    engine.run()
