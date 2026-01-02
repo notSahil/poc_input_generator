@@ -13,7 +13,6 @@ if "page" not in st.session_state:
 
 def go(page_name: str):
     st.session_state.page = page_name
-    st.rerun()
 
 # ======================
 # HOME PAGE
@@ -62,7 +61,8 @@ elif page == "data_load":
     render(go)
 
 elif page == "export_login":
-    st.info("🚧 Export login page coming next")
+    from ui.data_export import render
+    render()
     st.button("⬅ Back to Home", on_click=go, args=("home",))
 
 else:
