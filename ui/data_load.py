@@ -15,10 +15,8 @@ def render(go):
     ENGINE_SCRIPT = os.path.join(BASE_DIR, "engine", "input_file_engine.py")
     OBJECT_COLUMN = "Object Name"
 
-    # ======================
     # BASIC VALIDATION
-    # ======================
-
+    
     if not os.path.exists(ENGINE_SCRIPT):
         st.error(f"Engine script not found:\n{ENGINE_SCRIPT}")
         st.stop()

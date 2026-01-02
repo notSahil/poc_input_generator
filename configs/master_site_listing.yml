@@ -17,5 +17,4 @@ text_case_columns:
   - Site on Master Site List
 
 behavior:
-  fail_on_multiple_input_files: true
   archive_after_success: true

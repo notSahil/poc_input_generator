@@ -1,72 +1,114 @@
-import streamlit as st
+# ui/data_export.py
 
-def render():
+import streamlit as st
+import os
+import threading
+import webbrowser
+
+from auth.oauth_server import start_oauth_server
+from auth.token_store import load_token, clear_token
+
+from salesforce.userinfo import get_user_info
+from salesforce.metadata import list_objects
+
+
+def render(go_home):
     st.subheader("📤 Data Export")
 
-    # ---------- SESSION INIT ----------
-    if "export_logged_in" not in st.session_state:
-        st.session_state.export_logged_in = False
+    # ==================================================
+    # AUTH CHECK
+    # ==================================================
+    token = load_token()
 
-    if "sf_instance" not in st.session_state:
-        st.session_state.sf_instance = None
+    if not token:
+        st.info("You must login with Salesforce to continue.")
 
-    # ---------- LOGIN SCREEN ----------
-    if not st.session_state.export_logged_in:
-        st.info("Login to Salesforce to continue")
-
-        with st.form("export_login_form"):
-            instance = st.selectbox(
-                "Select Salesforce Instance",
-                ["Partial", "Full Copy", "Production"]
+        if st.button("🔐 Login with Salesforce", key="sf_login"):
+            login_url = (
+                f"{os.getenv('SF_LOGIN_URL')}/services/oauth2/authorize"
+                f"?response_type=code"
+                f"&client_id={os.getenv('SF_CLIENT_ID')}"
+                f"&redirect_uri={os.getenv('SF_REDIRECT_URI')}"
             )
 
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
+            threading.Thread(
+                target=start_oauth_server,
+                daemon=True
+            ).start()
 
-            submit = st.form_submit_button("Login")
+            webbrowser.open(login_url)
+            st.warning("Complete login in browser, then return here.")
+            st.stop()
 
-        if submit:
-            if not username or not password:
-                st.error("Username and password are required")
-                return
-
-            # ⚠️ PLACEHOLDER: real auth will come later
-            # For now we assume credentials are valid
-            st.session_state.export_logged_in = True
-            st.session_state.sf_instance = instance
-            st.session_state.sf_username = username
-            st.session_state.sf_password = password
-
-            st.success("Login successful")
-            return  # let Streamlit rerun naturally
-
+        st.button("⬅ Back to Home", on_click=go_home, key="export_back_home")
         return
 
-    # ---------- POST-LOGIN DASHBOARD ----------
-    st.success(f"Connected to {st.session_state.sf_instance}")
+    # ==================================================
+    # USER & ORG INFO
+    # ==================================================
+    try:
+        user_info = get_user_info()
+
+        st.subheader("🔐 Connected Salesforce User")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.text(f"Username: {user_info.get('preferred_username')}")
+            st.text(f"User ID: {user_info.get('user_id')}")
+
+        with col2:
+            st.text(f"Org ID: {user_info.get('organization_id')}")
+            st.text(
+                f"Instance URL: {user_info.get('urls', {}).get('custom_domain')}"
+            )
+
+    except Exception as e:
+        st.error(f"Failed to fetch user info: {e}")
+        return
+
+    # ==================================================
+    # SALESFORCE OBJECTS
+    # ==================================================
+    st.subheader("📦 Available Salesforce Objects")
+
+    try:
+        objects = list_objects()
+
+        object_df = [
+            {
+                "API Name": obj["name"],
+                "Label": obj["label"],
+                "Custom": obj["custom"]
+            }
+            for obj in objects
+        ]
+
+        st.dataframe(object_df, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Failed to load objects: {e}")
+        return
+
+    # ==================================================
+    # ACTIONS
+    # ==================================================
+    st.success("✅ Salesforce connected")
+    st.code(f"Instance: {token.get('instance_url')}")
 
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("⬇️ Export Data from Salesforce"):
-            st.info("Export started...")
-            # TODO: call export function here
-            # export_salesforce_data(...)
+        if st.button("⬇️ Export Data", key="export_data"):
+            st.info("Export logic will go here")
 
     with col2:
-        if st.button("⬆️ Run Data Loader Operation"):
-            st.info("Data loader triggered...")
-            # TODO: reuse your existing engine here
+        if st.button("⬆️ Run Data Loader", key="export_loader"):
+            st.info("Reuse existing engine here")
 
     st.divider()
 
-    if st.button("🚪 Logout"):
-        for k in [
-            "export_logged_in",
-            "sf_instance",
-            "sf_username",
-            "sf_password"
-        ]:
-            st.session_state.pop(k, None)
-
+    if st.button("🚪 Logout", key="export_logout"):
+        clear_token()
         st.success("Logged out")
+        st.stop()

@@ -1,3 +1,4 @@
+#pip install fastapi uvicorn requests python-dotenv streamlit
 # poc_input_generator
 
 Internal Salesforce input file generator using:

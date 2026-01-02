@@ -17,3 +17,7 @@ archive/
 # IDE
 .vscode/
 .idea/
+
+# Environment variables
+.env
+.sf_auth.json

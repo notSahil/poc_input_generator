@@ -1,4 +1,9 @@
 import streamlit as st
+from dotenv import load_dotenv
+import os
+
+
+
 
 # ======================
 # SESSION INIT
@@ -62,8 +67,8 @@ elif page == "data_load":
 
 elif page == "export_login":
     from ui.data_export import render
-    render()
-    st.button("⬅ Back to Home", on_click=go, args=("home",))
+    render(go)
+    # st.button("⬅ Back to Home", on_click=go, args=("home",))
 
 else:
     st.error("Unknown page")
