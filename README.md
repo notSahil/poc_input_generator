@@ -8,13 +8,13 @@ Internal Salesforce input file generator using:
 - Excel-driven mapping
 
 ## Structure
-- Input_File_Portal.py – Streamlit UI
-- engine/ – Processing engine
+- app.py – Streamlit UI
+- engine/ – Processing Source and Sitetracker Data
 - configs/ – Per-report YAML configs
 - Common/Mapping_file.xlsx – Mapping source
 
 ## Run UI
-streamlit run Input_File_Portal.py
+streamlit run app.py
 
 ## Run Engine
-python engine/input_file_engine.py --report "Master Site Listing"
+python -m engine.cli --report "Master Site Listing"
