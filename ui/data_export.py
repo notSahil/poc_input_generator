@@ -47,7 +47,15 @@ def render(go_home):
     # USER & ORG INFO
     # ==================================================
     try:
-        user_info = get_user_info()
+        try:
+            user_info = get_user_info()
+        except Exception as e:
+            if "Bad_OAuth_Token" in str(e) or "403" in str(e):
+                clear_token()
+                st.error("Session expired. Please login again.")
+                st.stop()
+        else:
+            raise
 
         st.subheader("🔐 Connected Salesforce User")
 
