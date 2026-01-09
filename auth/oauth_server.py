@@ -50,6 +50,8 @@ class OAuthHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
             self.wfile.write(str(e).encode())
+    def do_GET(self):
+        print("CALLBACK HIT:", self.path)
 
 
 def start_oauth_server():

@@ -25,10 +25,11 @@ def render(go_home):
 
         if st.button("🔐 Login with Salesforce", key="sf_login"):
             login_url = (
-                f"{os.getenv('SF_LOGIN_URL')}/services/oauth2/authorize"
+                 "https://login.salesforce.com/services/oauth2/authorize"
                 f"?response_type=code"
                 f"&client_id={os.getenv('SF_CLIENT_ID')}"
                 f"&redirect_uri={os.getenv('SF_REDIRECT_URI')}"
+                
             )
 
             threading.Thread(
