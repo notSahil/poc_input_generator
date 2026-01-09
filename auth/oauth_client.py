@@ -1,16 +1,16 @@
-# auth/oauth_client.py
-
 import os
 import requests
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path=".env")     
+# Load environment variables from .env file
+load_dotenv(".env")
 
 SF_CLIENT_ID = os.getenv("SF_CLIENT_ID")
 SF_CLIENT_SECRET = os.getenv("SF_CLIENT_SECRET")
 SF_REDIRECT_URI = os.getenv("SF_REDIRECT_URI")
 SF_LOGIN_URL = os.getenv("SF_LOGIN_URL")
 
+# Validate required OAuth configuration
 if not all([SF_CLIENT_ID, SF_CLIENT_SECRET, SF_REDIRECT_URI, SF_LOGIN_URL]):
     raise RuntimeError("Missing Salesforce OAuth environment variables")
 
@@ -18,6 +18,7 @@ if not all([SF_CLIENT_ID, SF_CLIENT_SECRET, SF_REDIRECT_URI, SF_LOGIN_URL]):
 def exchange_code_for_token(auth_code: str) -> dict:
     """
     Exchange OAuth authorization code for access token.
+    This function is called ONLY by oauth_server.py
     """
 
     token_url = f"{SF_LOGIN_URL}/services/oauth2/token"
@@ -33,7 +34,7 @@ def exchange_code_for_token(auth_code: str) -> dict:
     response = requests.post(token_url, data=payload)
 
     if response.status_code != 200:
-        raise Exception(
+        raise RuntimeError(
             f"Failed to get token: {response.status_code} - {response.text}"
         )
 

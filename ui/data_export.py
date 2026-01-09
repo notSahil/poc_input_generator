@@ -1,5 +1,3 @@
-# ui/data_export.py
-
 import streamlit as st
 import os
 import threading
@@ -16,6 +14,12 @@ def render(go_home):
     st.subheader("📤 Data Export")
 
     # ==================================================
+    # SESSION STATE INITIALIZATION
+    # ==================================================
+    if "oauth_server_started" not in st.session_state:
+        st.session_state.oauth_server_started = False
+
+    # ==================================================
     # AUTH CHECK
     # ==================================================
     token = load_token()
@@ -24,18 +28,21 @@ def render(go_home):
         st.info("You must login with Salesforce to continue.")
 
         if st.button("🔐 Login with Salesforce", key="sf_login"):
+
+            # Start OAuth server ONLY ONCE
+            if not st.session_state.oauth_server_started:
+                threading.Thread(
+                    target=start_oauth_server,
+                    daemon=True
+                ).start()
+                st.session_state.oauth_server_started = True
+
             login_url = (
-                 "https://login.salesforce.com/services/oauth2/authorize"
+                "https://login.salesforce.com/services/oauth2/authorize"
                 f"?response_type=code"
                 f"&client_id={os.getenv('SF_CLIENT_ID')}"
                 f"&redirect_uri={os.getenv('SF_REDIRECT_URI')}"
-                
             )
-
-            threading.Thread(
-                target=start_oauth_server,
-                daemon=True
-            ).start()
 
             webbrowser.open(login_url)
             st.warning("Complete login in browser, then return here.")
@@ -119,5 +126,6 @@ def render(go_home):
 
     if st.button("🚪 Logout", key="export_logout"):
         clear_token()
+        st.session_state.oauth_server_started = False
         st.success("Logged out")
         st.stop()
