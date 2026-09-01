@@ -4,6 +4,7 @@ import http.server
 import json
 import logging
 import os
+from pathlib import Path
 import socketserver
 import threading
 import time
@@ -16,21 +17,77 @@ logger = logging.getLogger(__name__)
 
 
 # ==================================================
+# CREDENTIALS CONFIGURATION
+# ==================================================
+
+def is_oauth_configured() -> bool:
+    """Check if Client ID and Secret are configured."""
+    return bool(settings.SF_CLIENT_ID and settings.SF_CLIENT_SECRET)
+
+
+def save_env_credentials(
+    client_id: str,
+    client_secret: str,
+    login_url: str = "https://login.salesforce.com",
+    redirect_uri: str = "http://localhost:1717/oauth/callback"
+) -> None:
+    """Save credentials to .env file and update settings in memory."""
+    env_file = settings.PROJECT_ROOT / ".env"
+
+    env_lines = [
+        f"SF_CLIENT_ID={client_id.strip()}",
+        f"SF_CLIENT_SECRET={client_secret.strip()}",
+        f"SF_LOGIN_URL={login_url.strip()}",
+        f"SF_REDIRECT_URI={redirect_uri.strip()}",
+        f"SF_API_VERSION={settings.SF_API_VERSION}",
+        f"OAUTH_CALLBACK_PORT={settings.OAUTH_CALLBACK_PORT}",
+    ]
+
+    with open(env_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(env_lines) + "\n")
+
+    # Update runtime settings
+    settings.SF_CLIENT_ID = client_id.strip()
+    settings.SF_CLIENT_SECRET = client_secret.strip()
+    settings.SF_LOGIN_URL = login_url.strip()
+    settings.SF_REDIRECT_URI = redirect_uri.strip()
+
+    logger.info("Saved Salesforce credentials to .env")
+
+
+def get_login_url() -> str:
+    """Generate the OAuth 2.0 authorization URL."""
+    return (
+        f"{settings.SF_LOGIN_URL}/services/oauth2/authorize"
+        f"?response_type=code"
+        f"&client_id={settings.SF_CLIENT_ID}"
+        f"&redirect_uri={settings.SF_REDIRECT_URI}"
+    )
+
+
+# ==================================================
 # TOKEN STORE
 # ==================================================
 
 def save_token(token_data: dict) -> None:
-    """
-    Save Salesforce OAuth token locally.
-    This file must NEVER be committed to git.
-    """
-    # Record issued timestamp if not present
+    """Save Salesforce OAuth token locally."""
     if "issued_at" not in token_data:
         token_data["saved_at"] = time.time()
-        
+
     with open(settings.TOKEN_FILE, "w", encoding="utf-8") as f:
         json.dump(token_data, f, indent=2)
     logger.info("Saved Salesforce OAuth token")
+
+
+def save_manual_token(access_token: str, instance_url: str) -> None:
+    """Save manually provided access token and instance URL."""
+    token_data = {
+        "access_token": access_token.strip(),
+        "instance_url": instance_url.strip().rstrip("/"),
+        "token_type": "Bearer",
+        "saved_at": time.time()
+    }
+    save_token(token_data)
 
 
 def load_token() -> dict | None:
@@ -62,14 +119,13 @@ def is_token_valid() -> bool:
     if not token or "access_token" not in token:
         return False
 
-    # Check expiration if timestamp available (Salesforce tokens typically expire in ~2h)
     issued_at = token.get("issued_at")
     saved_at = token.get("saved_at")
-    
+
     if issued_at:
         try:
-            issued_ts = int(issued_at) / 1000  # ms to seconds
-            if time.time() - issued_ts > 7000:  # ~2 hours with buffer
+            issued_ts = int(issued_at) / 1000
+            if time.time() - issued_ts > 7000:
                 return False
         except (ValueError, TypeError):
             pass
@@ -87,7 +143,7 @@ def is_token_valid() -> bool:
 def exchange_code_for_token(auth_code: str) -> dict:
     """Exchange OAuth authorization code for access token."""
     if not all([settings.SF_CLIENT_ID, settings.SF_CLIENT_SECRET, settings.SF_REDIRECT_URI, settings.SF_LOGIN_URL]):
-        raise RuntimeError("Missing Salesforce OAuth environment variables in settings or .env")
+        raise RuntimeError("Missing Salesforce OAuth configuration in settings or .env")
 
     token_url = f"{settings.SF_LOGIN_URL}/services/oauth2/token"
 
@@ -140,7 +196,10 @@ class OAuthHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(
-                b"Salesforce login successful. You may close this window."
+                b"<html><body style='font-family: sans-serif; text-align: center; padding: 50px;'>"
+                b"<h2 style='color: #2e7d32;'>&#10004; Salesforce Login Successful!</h2>"
+                b"<p>You can close this tab and return to the Sitetracker Data Hub.</p>"
+                b"</body></html>"
             )
 
             # Stop server after success in a background thread
@@ -153,17 +212,15 @@ class OAuthHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(str(e).encode())
 
     def log_message(self, format, *args):
-        # Suppress default noisy HTTP request logging
         logger.debug("%s - - [%s] %s" % (self.client_address[0], self.log_date_time_string(), format % args))
 
 
 def start_oauth_server(port: int = settings.OAUTH_CALLBACK_PORT) -> None:
     """Start local OAuth callback server."""
     logger.info("Starting local OAuth callback server on port %s", port)
-    # Allow address reuse to prevent bind error on quick restarts
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.TCPServer(("localhost", port), OAuthHandler) as httpd:
             httpd.serve_forever()
     except Exception as e:
-        logger.error("OAuth server error: %s", e)
+        logger.warning("OAuth server exception (may already be running): %s", e)
