@@ -111,7 +111,11 @@ python cli.py run --report "Apollo 10G"
 python cli.py scaffold "Substation Upgrades"
 ```
 
-### 4. Run Automated Tests
+### 4. Run Verification & Tests
 ```bash
+# 1-Command full system test
+python quick_test.py
+
+# Comprehensive pytest suite with coverage
 pytest tests/ -v --cov=core
 ```
