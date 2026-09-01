@@ -1,9 +1,10 @@
+"""Main Streamlit Application Router."""
+
 import streamlit as st
-from dotenv import load_dotenv
-import os
+from config.logging_config import setup_logging
 
-
-
+# Setup root logging
+setup_logging()
 
 # ======================
 # SESSION INIT
@@ -12,6 +13,7 @@ import os
 if "page" not in st.session_state:
     st.session_state.page = "home"
 
+
 # ======================
 # PAGE ROUTER
 # ======================
@@ -19,38 +21,56 @@ if "page" not in st.session_state:
 def go(page_name: str):
     st.session_state.page = page_name
 
+
 # ======================
 # HOME PAGE
 # ======================
 
 def render_home():
     st.set_page_config(
-        page_title="Salesforce Data Import & Export",
+        page_title="Sitetracker Data Hub",
+        page_icon="⚡",
         layout="wide"
     )
 
-    st.title("Salesforce Data Import and Export Task Handler")
-    st.caption("Prototype navigation + pages for Importer and Exporter flows")
+    st.title("⚡ Sitetracker Data Hub")
+    st.caption("Centralized tool for generating Sitetracker input files, mapping fields, and exporting Salesforce data")
 
-    st.subheader("Choose Operation")
+    st.subheader("Select Operation")
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2, col3 = st.columns(3)
 
     with col1:
+        st.info("### 📥 Data Load Operation\nCompare source spreadsheets with current Sitetracker data, compute deltas, and produce validated upload files.")
         st.button(
-            "📥 Data Load Operation",
+            "Go to Data Load →",
             use_container_width=True,
+            type="primary",
             on_click=go,
             args=("data_load",)
         )
 
     with col2:
+        st.info("### 📝 Mapping Editor\nInteractively edit column mappings, define new data models, and track version history with backups.")
         st.button(
-            "📤 Data Export Operation",
+            "Go to Mapping Editor →",
+            use_container_width=True,
+            on_click=go,
+            args=("mapping_editor",)
+        )
+
+    with col3:
+        st.info("### 📤 Data Export Operation\nAuthenticate with Salesforce OAuth, inspect objects, and extract live Sitetracker records.")
+        st.button(
+            "Go to Data Export →",
             use_container_width=True,
             on_click=go,
             args=("export_login",)
         )
+
+    st.divider()
+    st.caption("Sitetracker Input File Generator • Internal Engineering Tool")
+
 
 # ======================
 # ROUTING
@@ -65,10 +85,14 @@ elif page == "data_load":
     from ui.data_load import render
     render(go)
 
+elif page == "mapping_editor":
+    from ui.mapping_editor import render
+    render(go)
+
 elif page == "export_login":
     from ui.data_export import render
     render(go)
-    # st.button("⬅ Back to Home", on_click=go, args=("home",))
 
 else:
-    st.error("Unknown page")
+    st.error(f"Unknown page: {page}")
+    st.button("⬅ Back to Home", on_click=go, args=("home",))

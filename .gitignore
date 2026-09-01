@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Virtual environment
 venv/
@@ -10,6 +13,13 @@ venv/
 # Runtime output
 runs/
 archive/
+backup/
+*/backup/
+*.numbers
+data/**/runs/
+data/**/archive/
+data/**/backup/
+data/common/mapping_history/
 
 # OS junk
 .DS_Store

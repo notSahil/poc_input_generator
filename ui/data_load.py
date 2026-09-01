@@ -1,229 +1,188 @@
+"""Streamlit UI page for Data Load / Input File Generation."""
+
+import logging
+from pathlib import Path
 import streamlit as st
 import pandas as pd
-import subprocess
-import os
-import sys
-import re
 
-# ======================
-# CONFIG
-# ======================
+from config import settings
+from core.config_loader import YamlConfigLoader
+from core.engine import InputFileEngine
+from core.exceptions import EngineSkipError, InputGeneratorError, MappingError, ValidationError
+from core.mapping_loader import MappingLoader
+from core.validator import InputValidator
+from ui.components import render_back_button, render_footer, render_header
+
+logger = logging.getLogger(__name__)
+
+
 def render(go):
-    #st.title("📁 Data Loader")
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    MAPPING_FILE = os.path.join(BASE_DIR, "Common", "Mapping_file.xlsx")
-    ENGINE_SCRIPT = os.path.join(BASE_DIR, "engine", "input_file_engine.py")
-    OBJECT_COLUMN = "Object Name"
-
-    # BASIC VALIDATION
-    
-    if not os.path.exists(ENGINE_SCRIPT):
-        st.error(f"Engine script not found:\n{ENGINE_SCRIPT}")
-        st.stop()
-
-    try:
-        full_mapping_df = pd.read_excel(MAPPING_FILE, dtype=str)
-    except Exception as e:
-        st.error(f"Failed to load mapping file: {e}")
-        st.stop()
-
-    available_reports = (
-        full_mapping_df["Report Name"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .unique()
-        .tolist()
-    )
-
-    if not available_reports:
-        st.error("No reports found in Mapping_file.xlsx")
-        st.stop()
+    render_header("📥 Data Load & Input File Generator", "Generate Sitetracker-ready update files by comparing source data against current exports")
 
     # ======================
-    # BUILD REPORT CONFIG
+    # 1. REPORT SELECTION
     # ======================
+    reports = YamlConfigLoader.list_reports()
 
-    REPORTS = {}
-
-    for report in available_reports:
-        folder_name = report.replace(" ", "_")
-        work_dir = os.path.join(BASE_DIR, folder_name)
-
-        if not os.path.isdir(work_dir):
-            st.warning(f"Report folder missing for '{report}': {work_dir}")
-            continue
-
-        REPORTS[report] = {
-            "work_dir": work_dir,
-            "runs_dir": os.path.join(work_dir, "runs")
-        }
-
-    if not REPORTS:
-        st.error("No valid report folders found.")
-        st.stop()
-
-    # ======================
-    # PAGE SETUP
-    # ======================
-
-    st.set_page_config(page_title="Input File Portal", layout="wide")
-    st.title("📁 Input File Portal")
-    st.caption("UI for Input File Generation")
-
-    # ======================
-    # REPORT SELECTION
-    # ======================
+    if not reports:
+        st.error(f"No reports configured in `{settings.CONFIG_DIR}`.")
+        st.info("You can scaffold a new report via CLI: `python cli.py scaffold <report_name>`")
+        render_back_button(go)
+        render_footer()
+        return
 
     st.subheader("1️⃣ Select Report")
 
-    selected_report = st.selectbox(
-        "Choose report",
-        ["-- Select Report --"] + sorted(REPORTS.keys()),
+    # Map display name with status indicator
+    report_options = {}
+    for r in reports:
+        badges = []
+        if not r.has_source:
+            badges.append("no source")
+        if not r.has_sitetracker:
+            badges.append("no sitetracker")
+        
+        status_suffix = f" ⚠️ ({', '.join(badges)})" if badges else " ✅ (ready)"
+        report_options[f"{r.name}{status_suffix}"] = r.name
+
+    selected_display = st.selectbox(
+        "Choose configured report",
+        ["-- Select Report --"] + sorted(report_options.keys()),
         index=0
     )
 
-    if selected_report == "-- Select Report --":
+    if selected_display == "-- Select Report --":
         st.info("Please select a report to continue.")
-        st.stop()
+        render_back_button(go)
+        render_footer()
+        return
+
+    selected_report = report_options[selected_display]
 
     # ======================
-    # LOAD MAPPING (REPORT-SPECIFIC)
+    # 2. MAPPING PREVIEW
     # ======================
+    st.subheader("2️⃣ Field Mapping Details")
 
-    mapping_df = full_mapping_df[
-        full_mapping_df["Report Name"] == selected_report
-    ]
+    try:
+        mapping_loader = MappingLoader(settings.MAPPING_FILE, selected_report)
+        mapping_df = mapping_loader.load()
+    except Exception as e:
+        st.warning(f"Could not load mapping for '{selected_report}': {e}")
+        mapping_df = pd.DataFrame()
 
-    if mapping_df.empty:
-        st.warning("No mapping found for this report.")
-        st.stop()
+    if not mapping_df.empty:
+        # Object selection filter
+        if "Object Name" in mapping_df.columns:
+            objects = ["All Objects"] + sorted(mapping_df["Object Name"].dropna().unique().tolist())
+            selected_object = st.selectbox("Filter preview by Object", objects, index=0)
+            if selected_object != "All Objects":
+                preview_df = mapping_df[mapping_df["Object Name"] == selected_object]
+            else:
+                preview_df = mapping_df
+        else:
+            preview_df = mapping_df
 
-    # ======================
-    # OBJECT SELECTION
-    # ======================
-
-    st.subheader("2️⃣ Select Object")
-
-    if OBJECT_COLUMN not in mapping_df.columns:
-        st.error(f"'{OBJECT_COLUMN}' column not found in mapping file.")
-        st.stop()
-
-    object_list = (
-        mapping_df[OBJECT_COLUMN]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .unique()
-        .tolist()
-    )
-
-    selected_object = st.selectbox(
-        "Choose object to preview mapping",
-        ["-- Select Object --"] + sorted(object_list),
-        index=0
-    )
-
-    # ======================
-    # MAPPING PREVIEW
-    # ======================
-
-    st.subheader("3️⃣ Mapping File Preview")
-
-    if selected_object == "-- Select Object --":
-        st.warning("Please select an object to preview mapping.")
-        st.stop()
-
-    preview_df = mapping_df[mapping_df[OBJECT_COLUMN] == selected_object]
-
-    if preview_df.empty:
-        st.warning("No mapping rows found for selected object.")
-    else:
         st.dataframe(preview_df, use_container_width=True)
+    else:
+        st.info("No field mappings defined yet for this report. You can edit them in the Mapping Editor.")
 
     # ======================
-    # CONFIRMATION
+    # 3. VALIDATION
     # ======================
+    st.subheader("3️⃣ Validation & Readiness")
 
-    st.subheader("4️⃣ Confirmation")
+    col_val1, col_val2 = st.columns([1, 3])
+    with col_val1:
+        run_validation = st.button("🔍 Validate Inputs First")
+
+    if run_validation:
+        try:
+            validator = InputValidator(selected_report)
+            val_res = validator.validate_all()
+
+            if val_res.is_valid:
+                st.success("✅ All validation checks passed!")
+            else:
+                st.error("❌ Validation errors found:")
+                for err in val_res.errors:
+                    st.write(f"- {err}")
+
+            if val_res.warnings:
+                st.warning("⚠️ Validation warnings:")
+                for warn in val_res.warnings:
+                    st.write(f"- {warn}")
+        except Exception as e:
+            st.error(f"Validation execution failed: {e}")
+
+    # ======================
+    # 4. CONFIRMATION & EXECUTION
+    # ======================
+    st.subheader("4️⃣ Execution")
 
     confirm_mapping = st.checkbox(
-        "I have reviewed the mapping and confirm it is correct"
+        "I have reviewed the field mappings and input data and confirm they are correct."
     )
-
-    # ======================
-    # EXECUTION
-    # ======================
-
-    st.subheader("5️⃣ Run")
 
     if st.button("🚀 Generate Input File", type="primary"):
         if not confirm_mapping:
-            st.error("You must confirm the mapping before running.")
+            st.error("Please confirm the mapping before running.")
             st.stop()
 
-        st.info("Running engine… please wait")
+        with st.spinner("Running comparison engine…"):
+            try:
+                engine = InputFileEngine(selected_report)
+                result = engine.run()
 
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "engine.cli",
-                "--report",
-                selected_report
-            ],
-            cwd=BASE_DIR,
-            capture_output=True,
-            text=True
-        )
+                st.success("✅ Delta processing completed successfully!")
 
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
+                # Key Metrics
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Total Source Records", result.total_source_records)
+                col2.metric("Valid Source Records", result.valid_source_records)
+                col3.metric("Delta Updates", result.delta_records)
+                col4.metric("Field Changes", result.field_changes_count)
 
-        st.subheader("🖥 Engine Output")
-        st.code(stdout if stdout else "No output", language="text")
+                # Quality warnings
+                if result.has_warnings:
+                    if result.invalid_primary_keys:
+                        st.warning(f"⚠️ {len(result.invalid_primary_keys)} invalid primary keys found.")
+                    if result.duplicate_primary_keys:
+                        st.warning(f"⚠️ {len(result.duplicate_primary_keys)} duplicate primary key values found: {result.duplicate_primary_keys}")
+                    if result.invalid_dates:
+                        st.warning(f"⚠️ {len(result.invalid_dates)} invalid date values encountered.")
 
-        if stderr:
-            st.subheader("⚠️ Engine Errors")
-            st.code(stderr, language="text")
+                # Output Location
+                st.subheader("📂 Output Directory")
+                st.code(str(result.run_dir))
 
-        if result.returncode != 0:
-            st.error("❌ Engine execution failed.")
-            st.stop()
+                # Display summary file if exists
+                summary_file = result.run_dir / "run_summary.txt"
+                if summary_file.exists():
+                    with st.expander("📄 View Run Summary", expanded=True):
+                        with open(summary_file, "r", encoding="utf-8") as f:
+                            st.text(f.read())
 
-        if "skip" in stdout.lower():
-            st.warning("⚠️ Execution skipped (input files missing).")
-            st.stop()
-
-        st.success("✅ Execution completed successfully")
-
-        # ======================
-        # LOAD SUMMARY
-        # ======================
-
-        match = re.search(r"Output written to (.+)", stdout)
-
-        if not match:
-            st.warning("Could not determine output location from engine output.")
-            st.stop()
-
-        run_path = match.group(1).strip()
-        summary_path = os.path.join(run_path, "run_summary.txt")
-
-        st.subheader("📊 Run Summary")
-
-        if os.path.exists(summary_path):
-            with open(summary_path, "r", encoding="utf-8") as f:
-                st.text(f.read())
-        else:
-            st.warning("Run summary file not found.")
-
-        st.subheader("📂 Output Location")
-        st.code(run_path)
+            except EngineSkipError as e:
+                st.warning(f"⏭ Execution skipped: {e}")
+            except ValidationError as e:
+                st.error(f"❌ Input validation failed: {e}")
+                if hasattr(e, "errors"):
+                    for err in e.errors:
+                        st.write(f"- {err}")
+            except MappingError as e:
+                st.error(f"❌ Mapping configuration error: {e}")
+            except InputGeneratorError as e:
+                st.error(f"❌ Error: {e}")
+            except Exception as e:
+                st.error(f"❌ Unexpected engine failure: {e}")
+                logger.exception("Engine failed unexpectedly")
 
     # ======================
-    # FOOTER
+    # NAVIGATION & FOOTER
     # ======================
-
     st.divider()
-    st.caption("Internal Tool • Streamlit UI")
+    col_nav1, _ = st.columns([1, 4])
+    with col_nav1:
+        render_back_button(go)
+    render_footer()

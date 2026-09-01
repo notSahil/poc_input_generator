@@ -1,0 +1,35 @@
+# ================================================
+# Report Configuration Template
+# ================================================
+# Copy this file and rename it to: <report_name_lowercase_underscored>.yml
+# Example: my_new_report.yml
+#
+# Then create the matching data directory:
+#   data/<Report_Name_With_Underscores>/
+#     input/source/       ← place the source Excel file here
+#     input/sitetracker/  ← place the Sitetracker CSV export here
+#     runs/               ← engine writes output here
+#     archive/            ← engine moves processed files here
+
+report:
+  name: "Your Report Name Here"         # Must match the "Report Name" column in Mapping_file.xlsx
+  sf_id_column: "Id"                     # Column name in Sitetracker CSV that holds the Salesforce record ID
+
+folders:
+  work_dir: "Your_Report_Name_Here"      # Directory name under data/ (spaces → underscores)
+  source_dir: "input/source"
+  sitetracker_dir: "input/sitetracker"
+  runs_dir: "runs"
+  archive_dir: "archive"
+
+date:
+  format: UK                             # UK = dd/mm/yyyy
+  dayfirst: true
+  allow_empty: true
+
+text_case_columns: []                    # List column names that should be Title Cased
+#  - "Site Name"
+#  - "Address"
+
+behavior:
+  archive_after_success: true            # Move source+sitetracker files to archive/ after a successful run
