@@ -7,6 +7,7 @@ Usage:
 import os
 import sys
 import shutil
+import subprocess
 from pathlib import Path
 import pandas as pd
 
@@ -31,7 +32,7 @@ def print_header(title: str):
 
 
 def test_normalizer():
-    print_header("TEST 1: Data Normalizer")
+    print_header("TEST 1: Data Normalizer & Validation Rules")
     # Date test
     date_str, ok = DataNormalizer.normalize_date_uk("15/03/2025")
     assert ok and date_str == "15/03/2025", "Date normalization failed"
@@ -48,8 +49,54 @@ def test_normalizer():
     print("  ✅ Primary Key regex check -> PASSED")
 
 
+def test_apollo_10g_run():
+    print_header("TEST 2: Apollo 10G Full Delta Engine Execution (Large Dataset)")
+    report_name = "Apollo 10G"
+    print(f"  Running delta calculation engine for: '{report_name}'...")
+
+    engine = InputFileEngine(report_name)
+    result = engine.run()
+
+    print(f"  ✅ Execution Succeeded:")
+    print(f"     - Total Source Records:  {result.total_source_records}")
+    print(f"     - Valid Source Records:  {result.valid_source_records}")
+    print(f"     - Delta Upload Records:  {result.delta_records}")
+    print(f"     - Field-Level Changes:   {result.field_changes_count}")
+    print(f"     - Output Location:       {result.run_dir}")
+
+    assert result.success is True
+    assert result.total_source_records > 0
+    assert result.delta_records > 0
+    assert (result.run_dir / "final_input_file.csv").exists()
+    assert (result.run_dir / "field_level_changes.csv").exists()
+    assert (result.run_dir / "run_summary.txt").exists()
+    print("  ✅ Verified generated files (final_input_file.csv, field_level_changes.csv, run_summary.txt)")
+
+
+def test_master_site_listing_run():
+    print_header("TEST 3: Master Site Listing Full Delta Engine Execution")
+    report_name = "Master Site Listing"
+    print(f"  Running delta calculation engine for: '{report_name}'...")
+
+    engine = InputFileEngine(report_name)
+    result = engine.run()
+
+    print(f"  ✅ Execution Succeeded:")
+    print(f"     - Total Source Records:  {result.total_source_records}")
+    print(f"     - Valid Source Records:  {result.valid_source_records}")
+    print(f"     - Delta Upload Records:  {result.delta_records}")
+    print(f"     - Field-Level Changes:   {result.field_changes_count}")
+    print(f"     - Output Location:       {result.run_dir}")
+
+    assert result.success is True
+    assert (result.run_dir / "final_input_file.csv").exists()
+    assert (result.run_dir / "field_level_changes.csv").exists()
+    assert (result.run_dir / "run_summary.txt").exists()
+    print("  ✅ Verified generated files (final_input_file.csv, field_level_changes.csv, run_summary.txt)")
+
+
 def test_config_and_mapping():
-    print_header("TEST 2: Config Auto-Discovery & Mapping Loader")
+    print_header("TEST 4: Config Auto-Discovery & Mapping Loader")
     reports = YamlConfigLoader.list_reports()
     print(f"  Found {len(reports)} configured reports:")
     for r in reports:
@@ -67,7 +114,7 @@ def test_config_and_mapping():
 
 
 def test_validator():
-    print_header("TEST 3: Input Validation Pipeline")
+    print_header("TEST 5: Pre-Execution Input Validation Pipeline")
     for r in ["Apollo 10G", "Master Site Listing"]:
         validator = InputValidator(r)
         result = validator.validate_all()
@@ -77,30 +124,8 @@ def test_validator():
     print("  ✅ All configured reports passed input validation -> PASSED")
 
 
-def test_engine_run():
-    print_header("TEST 4: Delta Calculation Engine Execution")
-    report_name = "Master Site Listing"
-    print(f"  Executing engine for: {report_name}...")
-
-    engine = InputFileEngine(report_name)
-    result = engine.run()
-
-    print(f"  ✅ Execution Succeeded:")
-    print(f"     - Total Source Records:  {result.total_source_records}")
-    print(f"     - Valid Source Records:  {result.valid_source_records}")
-    print(f"     - Delta Upload Rows:     {result.delta_records}")
-    print(f"     - Field-Level Changes:   {result.field_changes_count}")
-    print(f"     - Output Location:       {result.run_dir}")
-
-    assert result.success is True
-    assert (result.run_dir / "final_input_file.csv").exists()
-    assert (result.run_dir / "field_level_changes.csv").exists()
-    assert (result.run_dir / "run_summary.txt").exists()
-    print("  ✅ Generated files verified (final_input_file.csv, field_level_changes.csv, run_summary.txt)")
-
-
 def test_mapping_editor():
-    print_header("TEST 5: Interactive Mapping Editor & Version History")
+    print_header("TEST 6: Interactive Mapping Editor (CRUD, Backup, Restore)")
     editor = MappingEditor()
     df = editor.load()
     initial_reports = editor.get_reports()
@@ -144,13 +169,14 @@ def main():
 
     try:
         test_normalizer()
+        test_apollo_10g_run()
+        test_master_site_listing_run()
         test_config_and_mapping()
         test_validator()
-        test_engine_run()
         test_mapping_editor()
 
         print("\n" + "=" * 70)
-        print("  🎉 ALL 5 SYSTEM TESTS PASSED SUCCESSFULLY!")
+        print("  🎉 ALL 6 SYSTEM TESTS PASSED SUCCESSFULLY!")
         print("  The entire codebase is verified and ready for production use.")
         print("=" * 70 + "\n")
         sys.exit(0)
