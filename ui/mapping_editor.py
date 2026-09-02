@@ -142,6 +142,15 @@ def render(go):
                         editor.load()
                         editor.add_row(new_row_data)
                         backup = editor.save(reason=f"add_row_{report_name_val}")
+                        
+                        # Auto-Scaffold backend folders/yaml if this is a brand new report
+                        from scripts.scaffold_report import scaffold
+                        from config import settings as app_settings
+                        slug = report_name_val.lower().replace(" ", "_")
+                        if not (app_settings.CONFIG_DIR / f"{slug}.yml").exists():
+                            scaffold(report_name_val)
+                            st.success(f"🛠️ Backend data folders and YAML config automatically generated for '{report_name_val}'!")
+                            
                         st.success(f"✅ Row added for report '{report_name_val}'! Backup created.")
                         st.rerun()
                     except Exception as e:
