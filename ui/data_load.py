@@ -178,6 +178,7 @@ def render(go):
                 result = engine.run()
 
                 st.success("✅ Delta processing completed successfully!")
+                st.session_state.last_run_result = result
 
                 # Key Metrics
                 col1, col2, col3, col4 = st.columns(4)
@@ -220,6 +221,69 @@ def render(go):
             except Exception as e:
                 st.error(f"❌ Unexpected engine failure: {e}")
                 logger.exception("Engine failed unexpectedly")
+
+    # ======================
+    # 6. PUSH TO SITETRACKER (BULK API 2.0)
+    # ======================
+    if "last_run_result" in st.session_state and st.session_state.last_run_result is not None:
+        last_res = st.session_state.last_run_result
+        if last_res.report_name == selected_report and last_res.delta_records > 0:
+            st.markdown("---")
+            st.subheader("6️⃣ Push to Sitetracker (Bulk API 2.0)")
+            st.caption("Safely upload the generated delta records directly to Sitetracker asynchronously.")
+
+            # Show changes preview
+            changes_file = last_res.run_dir / "field_level_changes.csv"
+            if changes_file.exists():
+                changes_df = pd.read_csv(changes_file, dtype=str)
+                with st.expander(f"👁️ Preview {len(changes_df)} Field-Level Changes to be Pushed", expanded=False):
+                    st.dataframe(changes_df, use_container_width=True)
+
+            from salesforce.auth import is_token_valid
+            if not is_token_valid():
+                st.warning("🔒 You must log in via the **Data Export** page before pushing records to Salesforce.")
+            else:
+                col_c1, col_c2 = st.columns([2, 1])
+                with col_c1:
+                    confirm_phrase = st.text_input(
+                        "Type CONFIRM to enable upload",
+                        placeholder="CONFIRM",
+                        key="input_confirm_bulk_push"
+                    )
+
+                with col_c2:
+                    st.write("")
+                    st.write("")
+                    push_enabled = (confirm_phrase.strip() == "CONFIRM")
+                    if st.button("🚀 Push Deltas to Sitetracker", type="primary", disabled=not push_enabled, key="btn_execute_bulk_push"):
+                        with st.spinner("Submitting Bulk API 2.0 ingest job to Salesforce..."):
+                            try:
+                                from salesforce.bulk_uploader import push_delta_to_sitetracker
+                                final_csv = last_res.run_dir / "final_input_file.csv"
+
+                                # Determine target object
+                                yaml_cfg = YamlConfigLoader.load(selected_report)
+                                obj_name = yaml_cfg.get("report", {}).get("salesforce_object") or "Site__c"
+                                if not obj_name and not mapping_df.empty and "Object Name" in mapping_df.columns:
+                                    obj_name = mapping_df["Object Name"].dropna().iloc[0]
+
+                                bulk_res = push_delta_to_sitetracker(
+                                    csv_path=final_csv,
+                                    object_name=obj_name,
+                                    report_name=selected_report,
+                                    operation="update"
+                                )
+
+                                if bulk_res.all_succeeded:
+                                    st.success(f"🎉 Successfully updated all {bulk_res.successful_records} records in Sitetracker! (Job ID: `{bulk_res.job_id}`)")
+                                else:
+                                    st.warning(f"⚠️ Processed {bulk_res.total_records} records: {bulk_res.successful_records} succeeded, {bulk_res.failed_records} failed. (Job ID: `{bulk_res.job_id}`)")
+                                    if bulk_res.failures_csv_path and bulk_res.failures_csv_path.exists():
+                                        st.error(f"Failure details saved to: `{bulk_res.failures_csv_path.name}`")
+                                        fail_df = pd.DataFrame(bulk_res.failures)
+                                        st.dataframe(fail_df, use_container_width=True)
+                            except Exception as e:
+                                st.error(f"Bulk API upload failed: {e}")
 
     # ======================
     # NAVIGATION & FOOTER

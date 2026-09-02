@@ -24,12 +24,16 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `client.py`: API wrapper for making legacy REST requests to SFDC.
 - `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by existing `.sf_auth.json` OAuth tokens.
 - `data_fetcher.py`: Builds dynamic SOQL queries from `Mapping_file.xlsx` and fetches live Sitetracker records via `simple-salesforce`.
+- `bulk_uploader.py`: Uploads `final_input_file.csv` to Salesforce via Bulk API 2.0 with payload column sanitization and record-level error logging.
 - `metadata.py` & `userinfo.py`: Utilities for fetching SFDC objects.
 
 ### `/config` (Settings)
 - `settings.py`: Global environment variables and paths.
 - `logging_config.py`: Standardized logging setup.
 - `/reports`: Contains YAML files (`apollo_10g.yml`, `master_site_listing.yml`) defining the specific Primary Keys and settings for different report types.
+
+### `/scripts` (Utilities)
+- `auto_deploy.sh`: Bash script run via cron on the Oracle server to automatically pull git updates.
 
 ### Root Files
 - `cli.py`: Command-line interface for scaffolding or running reports without the UI.
@@ -56,3 +60,6 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 5. **SOQL Auto-Fetch Header Normalization (`salesforce/data_fetcher.py`)**:
    - *Decision:* When fetching live records via SOQL, auto-rename Salesforce API fields to the human-readable `Sitetracker Field Name` headers defined in `Mapping_file.xlsx` while keeping `Id`.
    - *Reason:* Preserves strict contract and zero-modification guarantee for `core/engine.py`, which expects human-readable headers from original Sitetracker CSV exports.
+6. **Bulk API 2.0 Payload Sanitization & Safety Gate (`salesforce/bulk_uploader.py`)**:
+   - *Decision:* Clean the delta CSV payload before sending to Bulk API 2.0 by dropping human-readable source column headers (e.g. 'Project Ref') and keeping only valid Salesforce API names + 'Id'. Require explicit 'CONFIRM' input from user in UI.
+   - *Reason:* Prevents Salesforce Bulk API 2.0 schema rejection errors and protects client data from accidental writes.
