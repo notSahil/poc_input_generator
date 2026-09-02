@@ -60,6 +60,25 @@ class MappingEditor:
         new_row_df = pd.DataFrame([clean_row])
         self._df = pd.concat([df, new_row_df], ignore_index=True)
 
+    def add_rows(self, rows: list[dict]) -> None:
+        """Add multiple mapping rows at once."""
+        df = self.load()
+        clean_rows = [{col: str(row.get(col, "")).strip() for col in EXPECTED_COLUMNS} for row in rows]
+        new_rows_df = pd.DataFrame(clean_rows)
+        self._df = pd.concat([df, new_rows_df], ignore_index=True)
+
+    def replace_from_upload(self, uploaded_file) -> Path:
+        """Replace the active mapping file with an uploaded Excel file, creating a backup first."""
+        new_df = pd.read_excel(uploaded_file, dtype=str)
+        new_df.columns = new_df.columns.astype(str).str.strip()
+        for col in EXPECTED_COLUMNS:
+            if col not in new_df.columns:
+                raise ValueError(f"Uploaded file is missing required column: '{col}'")
+        backup = self._create_backup(reason="before_upload_replace")
+        self._df = new_df
+        self.save(reason="user_upload")
+        return backup
+
     def update_row(self, index: int, updates: dict) -> None:
         """Update a specific row by its DataFrame index."""
         if self._df is None:
