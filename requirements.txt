@@ -40,3 +40,4 @@ urllib3==2.6.2
 python-dotenv==1.0.1
 pytest>=7.0.0
 pytest-cov>=4.0.0
+simple-salesforce>=1.12.0

@@ -56,11 +56,10 @@ class DataNormalizer:
 
     @staticmethod
     def valid_project_ref(v) -> bool:
-        """Check if project reference / primary key is not blank and doesn't contain weird hidden characters."""
+        """Check if project reference / primary key contains valid alphanumeric/dash/underscore characters."""
         if pd.isna(v) or v is None or str(v).strip() == "":
             return False
-        # Allow letters, numbers, spaces, dashes, underscores, slashes, and periods
-        return bool(re.match(r"^[A-Za-z0-9_\-\s/\.]+$", str(v).strip()))
+        return bool(re.match(r"^[A-Za-z0-9_-]+$", str(v).strip()))
 
     @staticmethod
     def normalize_text_case(v) -> str:

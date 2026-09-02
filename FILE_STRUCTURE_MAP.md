@@ -20,7 +20,8 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 
 ### `/salesforce` (Integrations)
 - `auth.py`: Handles OAuth and manual token authentication with Salesforce.
-- `client.py`: API wrapper for making requests to SFDC.
+- `client.py`: API wrapper for making legacy REST requests to SFDC.
+- `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by existing `.sf_auth.json` OAuth tokens.
 - `metadata.py` & `userinfo.py`: Utilities for fetching SFDC objects.
 
 ### `/config` (Settings)
@@ -47,3 +48,6 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 3. **Environment Setup**:
    - *Decision:* No local installations on the company laptop. Everything runs remotely via `code-server` in the browser.
    - *Reason:* Bypasses company laptop restrictions. Streamlit hot-reloading is used to instantly preview code saved in the browser IDE.
+4. **Salesforce Integration Bridge (`salesforce/sf_client.py`)**:
+   - *Decision:* Bridge `simple-salesforce` to use our custom `.sf_auth.json` OAuth tokens rather than its built-in login prompt.
+   - *Reason:* Preserves existing multi-tab OAuth & manual token auth workflows while unlocking Bulk API 2.0 and robust SOQL querying without rewriting the auth layer.
