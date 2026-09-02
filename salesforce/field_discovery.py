@@ -2,6 +2,7 @@
 
 import logging
 from salesforce.sf_client import get_sf_connection
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ def map_sf_type(sf_type: str) -> str:
     return mapping.get(type_str, "text")
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
 def discover_object_fields(object_name: str) -> list[dict]:
     """
     Query Salesforce object describe metadata and return clean list of field mappings.

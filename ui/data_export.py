@@ -190,6 +190,35 @@ def render(go):
         st.text(f"Instance: {token.get('instance_url', 'N/A')}")
 
     # ==================================================
+    # API LIMITS & QUOTAS
+    # ==================================================
+    st.subheader("📊 Salesforce API Usage & Quotas")
+    try:
+        from salesforce.sf_client import get_sf_connection
+        sf = get_sf_connection()
+        limits_data = sf.limits()
+
+        col_l1, col_l2, col_l3 = st.columns(3)
+
+        daily_api = limits_data.get("DailyApiRequests", {})
+        bulk_query = limits_data.get("DailyBulkV2QueryJobs", {})
+
+        with col_l1:
+            rem = daily_api.get("Remaining", "N/A")
+            max_v = daily_api.get("Max", "N/A")
+            st.metric("REST API Requests Left", f"{rem} / {max_v}")
+
+        with col_l2:
+            rem_b = bulk_query.get("Remaining", "N/A")
+            max_b = bulk_query.get("Max", "N/A")
+            st.metric("Bulk 2.0 Query Jobs Left", f"{rem_b} / {max_b}")
+
+        with col_l3:
+            st.metric("Session Status", "🟢 Active & Ready")
+    except Exception as e:
+        st.caption(f"Could not load API limits: {e}")
+
+    # ==================================================
     # SALESFORCE OBJECTS
     # ==================================================
     st.subheader("📦 Available Salesforce Objects")

@@ -1,10 +1,13 @@
 """Salesforce Bulk API 2.0 uploader for pushing delta input files directly to Sitetracker."""
 
 from dataclasses import dataclass, field
+from datetime import datetime
 import io
+import json
 import logging
 from pathlib import Path
 import pandas as pd
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import settings
 from core.mapping_loader import MappingLoader
@@ -58,6 +61,7 @@ def clean_payload_for_salesforce(df: pd.DataFrame, report_name: str | None = Non
     return clean_df.to_dict("records")
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
 def push_delta_to_sitetracker(
     csv_path: Path,
     object_name: str,
@@ -156,6 +160,26 @@ def push_delta_to_sitetracker(
                 failures_list = fail_df.to_dict("records")
         except Exception as e:
             logger.error("Failed to retrieve Bulk API 2.0 failure details: %s", e)
+
+    # 5. Write execution audit log (bulk_upload_audit.json)
+    audit_data = {
+        "timestamp": datetime.now().isoformat(),
+        "report_name": report_name,
+        "object_name": clean_obj,
+        "operation": operation,
+        "job_id": primary_job_id,
+        "total_records": total_recs if total_recs > 0 else len(records),
+        "successful_records": success_recs,
+        "failed_records": failed_recs,
+        "all_succeeded": (failed_recs == 0),
+        "failures_file": str(failures_csv_path.name) if failures_csv_path else None
+    }
+    audit_path = csv_file.parent / "bulk_upload_audit.json"
+    try:
+        audit_path.write_text(json.dumps(audit_data, indent=2), encoding="utf-8")
+        logger.info("Saved bulk upload audit log to %s", audit_path)
+    except Exception as e:
+        logger.warning("Could not write bulk upload audit log: %s", e)
 
     return BulkUploadResult(
         total_records=total_recs if total_recs > 0 else len(records),

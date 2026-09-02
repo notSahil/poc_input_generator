@@ -17,12 +17,12 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `app.py`: The main Streamlit entry point. Renders the dashboard and triggers the core engine.
 - `data_load.py`: UI page for selecting reports, previewing mappings, 1-click live SOQL fetching from Sitetracker, validating inputs, and running delta generation.
 - `mapping_editor.py`: Interactive UI allowing the user to view and edit mapping rules directly in the browser with history/rollback capabilities.
-- `data_export.py`: Handles downloading the output files and interfacing with Salesforce.
+- `data_export.py`: Handles downloading the output files, authenticating via OAuth/manual tokens, inspecting SObjects, and monitoring live Salesforce API quotas and limits.
 
 ### `/salesforce` (Integrations)
-- `auth.py`: Handles OAuth and manual token authentication with Salesforce.
+- `auth.py`: Handles OAuth, manual token authentication, and automatic token refreshing with Salesforce.
 - `client.py`: API wrapper for making legacy REST requests to SFDC.
-- `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by existing `.sf_auth.json` OAuth tokens.
+- `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by existing `.sf_auth.json` OAuth tokens with automatic expiration refresh.
 - `data_fetcher.py`: Builds dynamic SOQL queries from `Mapping_file.xlsx` and fetches live Sitetracker records via `simple-salesforce`.
 - `bulk_uploader.py`: Uploads `final_input_file.csv` to Salesforce via Bulk API 2.0 with payload column sanitization and record-level error logging.
 - `field_discovery.py`: Discovers Salesforce object metadata via `describe()`, filters updateable fields, and maps types to text/date/number/boolean.
@@ -67,3 +67,6 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 7. **Metadata Field Discovery & Auto-Type Normalization (`salesforce/field_discovery.py`)**:
    - *Decision:* Query object metadata via `describe()` and map rich Salesforce types (`currency`, `double`, `percent`, `datetime`, `textarea`, etc.) into 4 standardized internal types (`text`, `number`, `date`, `boolean`). Filter for updateable and identifier fields only.
    - *Reason:* Eliminates manual typos when configuring new dataloaders and guarantees schema compatibility with normalization rules.
+8. **Automated Session Maintenance & Network Resilience (`salesforce/sf_client.py` & `tenacity`)**:
+   - *Decision:* Automatically refresh expired access tokens using the refresh token flow before initializing client connections. Wrap critical network queries and Bulk uploads with tenacity exponential backoff retries.
+   - *Reason:* Guarantees production reliability for scheduled or long-running operations without requiring frequent manual re-authentications.

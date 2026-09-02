@@ -30,7 +30,9 @@ def test_get_sf_connection_success():
 
 
 def test_get_sf_connection_expired_or_invalid():
-    with patch("salesforce.sf_client.is_token_valid", return_value=False):
+    mock_token = {"access_token": "expired_tok", "instance_url": "https://test.com"}
+    with patch("salesforce.sf_client.load_token", return_value=mock_token), \
+         patch("salesforce.sf_client.is_token_valid", return_value=False):
         with pytest.raises(SalesforceAuthError, match="Salesforce session expired or not authenticated"):
             get_sf_connection()
 

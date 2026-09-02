@@ -8,6 +8,7 @@ from config import settings
 from core.config_loader import YamlConfigLoader
 from core.mapping_loader import MappingLoader
 from salesforce.sf_client import get_sf_connection
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ def build_soql_for_report(report_name: str) -> tuple[str, str, dict[str, str]]:
     return soql_query, object_name, api_to_st_map
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
 def fetch_sitetracker_data(report_name: str, output_dir: Path | None = None) -> Path:
     """
     Fetch current live Sitetracker records for a report and write to CSV.

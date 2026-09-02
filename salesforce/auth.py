@@ -165,6 +165,37 @@ def exchange_code_for_token(auth_code: str) -> dict:
     return response.json()
 
 
+def refresh_access_token(refresh_token_str: str) -> dict:
+    """Exchange a stored refresh token for a fresh access token."""
+    if not settings.SF_CLIENT_ID or not settings.SF_CLIENT_SECRET:
+        raise RuntimeError("Missing Salesforce Client ID or Secret in settings or .env")
+
+    token_url = f"{settings.SF_LOGIN_URL}/services/oauth2/token"
+    payload = {
+        "grant_type": "refresh_token",
+        "client_id": settings.SF_CLIENT_ID,
+        "client_secret": settings.SF_CLIENT_SECRET,
+        "refresh_token": refresh_token_str.strip(),
+    }
+
+    response = requests.post(token_url, data=payload)
+    if response.status_code != 200:
+        raise RuntimeError(f"Token refresh failed ({response.status_code}): {response.text}")
+
+    new_data = response.json()
+    # If rotation not enabled, preserve original refresh token
+    if "refresh_token" not in new_data:
+        new_data["refresh_token"] = refresh_token_str.strip()
+
+    existing = load_token()
+    if existing and "instance_url" in existing and "instance_url" not in new_data:
+        new_data["instance_url"] = existing["instance_url"]
+
+    save_token(new_data)
+    logger.info("Successfully refreshed Salesforce access token")
+    return new_data
+
+
 # ==================================================
 # OAUTH CALLBACK SERVER
 # ==================================================
