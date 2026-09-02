@@ -44,8 +44,34 @@ def render(go):
             pk_api = st.text_input("Primary Key Salesforce API Name *", placeholder="e.g. SiteNumber__c", key="new_pipe_pk_api")
 
         st.markdown("---")
-        st.markdown("#### Define Additional Field Mappings")
-        st.caption("Enter the fields you want to map from your Source Excel to Sitetracker CSV and Salesforce API. (You can add or remove rows below).")
+        col_hdr, col_disc = st.columns([3, 2])
+        with col_hdr:
+            st.markdown("#### Define Additional Field Mappings")
+            st.caption("Enter the fields you want to map from your Source Excel to Sitetracker CSV and Salesforce API.")
+
+        with col_disc:
+            from salesforce.auth import is_token_valid
+            if is_token_valid():
+                if st.button("🔍 Auto-Discover Fields from Sitetracker", key="btn_discover_fields"):
+                    if not object_name.strip():
+                        st.warning("Please enter a Salesforce Object Name first.")
+                    else:
+                        with st.spinner(f"Fetching fields for {object_name}..."):
+                            try:
+                                from salesforce.field_discovery import discover_object_fields
+                                disc_fields = discover_object_fields(object_name.strip())
+                                if disc_fields:
+                                    st.session_state.new_pipe_fields = pd.DataFrame(disc_fields)[
+                                        ["Source File Column Name", "Sitetracker Field Name", "API Name", "Data Type"]
+                                    ]
+                                    st.success(f"Discovered {len(disc_fields)} fields from Sitetracker!")
+                                    st.rerun()
+                                else:
+                                    st.warning("No updateable fields found for this object.")
+                            except Exception as e:
+                                st.error(f"Field discovery failed: {e}")
+            else:
+                st.caption("🔒 *Log in via 'Data Export' to auto-discover fields from live Sitetracker.*")
 
         if "new_pipe_fields" not in st.session_state:
             st.session_state.new_pipe_fields = pd.DataFrame([

@@ -25,6 +25,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by existing `.sf_auth.json` OAuth tokens.
 - `data_fetcher.py`: Builds dynamic SOQL queries from `Mapping_file.xlsx` and fetches live Sitetracker records via `simple-salesforce`.
 - `bulk_uploader.py`: Uploads `final_input_file.csv` to Salesforce via Bulk API 2.0 with payload column sanitization and record-level error logging.
+- `field_discovery.py`: Discovers Salesforce object metadata via `describe()`, filters updateable fields, and maps types to text/date/number/boolean.
 - `metadata.py` & `userinfo.py`: Utilities for fetching SFDC objects.
 
 ### `/config` (Settings)
@@ -63,3 +64,6 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 6. **Bulk API 2.0 Payload Sanitization & Safety Gate (`salesforce/bulk_uploader.py`)**:
    - *Decision:* Clean the delta CSV payload before sending to Bulk API 2.0 by dropping human-readable source column headers (e.g. 'Project Ref') and keeping only valid Salesforce API names + 'Id'. Require explicit 'CONFIRM' input from user in UI.
    - *Reason:* Prevents Salesforce Bulk API 2.0 schema rejection errors and protects client data from accidental writes.
+7. **Metadata Field Discovery & Auto-Type Normalization (`salesforce/field_discovery.py`)**:
+   - *Decision:* Query object metadata via `describe()` and map rich Salesforce types (`currency`, `double`, `percent`, `datetime`, `textarea`, etc.) into 4 standardized internal types (`text`, `number`, `date`, `boolean`). Filter for updateable and identifier fields only.
+   - *Reason:* Eliminates manual typos when configuring new dataloaders and guarantees schema compatibility with normalization rules.

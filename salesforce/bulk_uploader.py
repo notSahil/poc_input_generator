@@ -111,7 +111,7 @@ def push_delta_to_sitetracker(
 
     # Ensure object name formatting
     clean_obj = object_name.strip().replace(" ", "_")
-    if not clean_obj.endswith("__c") and clean_obj not in ("Site", "Project", "Account", "Contact", "Job"):
+    if not clean_obj.endswith("__c") and clean_obj not in ("Account", "Contact", "Opportunity", "Lead", "Case"):
         clean_obj = f"{clean_obj}__c"
 
     bulk_type = getattr(sf.bulk2, clean_obj)
