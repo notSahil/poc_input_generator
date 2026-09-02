@@ -60,9 +60,52 @@ def render(go):
     selected_report = report_options[selected_display]
 
     # ======================
-    # 2. MAPPING PREVIEW
+    # 2. DATA SOURCE STATUS & LIVE FETCH
     # ======================
-    st.subheader("2️⃣ Field Mapping Details")
+    st.subheader("2️⃣ Input Data Files & Live Fetch")
+
+    yaml_cfg = YamlConfigLoader.load(selected_report)
+    work_dir = settings.DATA_DIR / yaml_cfg["folders"]["work_dir"]
+    src_dir = work_dir / yaml_cfg["folders"]["source_dir"]
+    st_dir = work_dir / yaml_cfg["folders"]["sitetracker_dir"]
+
+    src_files = [f.name for f in src_dir.iterdir() if f.is_file() and not f.name.startswith(".")] if src_dir.exists() else []
+    st_files = [f.name for f in st_dir.iterdir() if f.is_file() and not f.name.startswith(".")] if st_dir.exists() else []
+
+    col_src_card, col_st_card = st.columns(2)
+
+    with col_src_card:
+        st.markdown("#### 📄 Source Excel File")
+        if src_files:
+            st.success(f"✅ Found: **`{src_files[0]}`**")
+        else:
+            st.warning(f"⚠️ Missing source file. Place Excel in: `{src_dir.relative_to(settings.PROJECT_ROOT)}`")
+
+    with col_st_card:
+        st.markdown("#### 🔄 Sitetracker Data")
+        if st_files:
+            st.success(f"✅ Found: **`{st_files[0]}`**")
+        else:
+            st.warning(f"⚠️ Missing file in `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
+
+        from salesforce.auth import is_token_valid
+        if is_token_valid():
+            if st.button("🔄 Fetch Live Data from Sitetracker", key="btn_fetch_live_st", type="primary"):
+                with st.spinner("Executing SOQL query against Sitetracker..."):
+                    try:
+                        from salesforce.data_fetcher import fetch_sitetracker_data
+                        saved_csv = fetch_sitetracker_data(selected_report, st_dir)
+                        st.success(f"✅ Fetched live records to `{saved_csv.name}`!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to fetch live data: {e}")
+        else:
+            st.caption("🔒 *Log in via 'Data Export' to enable 1-click live SOQL fetching directly from Sitetracker.*")
+
+    # ======================
+    # 3. MAPPING PREVIEW
+    # ======================
+    st.subheader("3️⃣ Field Mapping Details")
 
     try:
         mapping_loader = MappingLoader(settings.MAPPING_FILE, selected_report)
@@ -88,9 +131,9 @@ def render(go):
         st.info("No field mappings defined yet for this report. You can edit them in the Mapping Editor.")
 
     # ======================
-    # 3. VALIDATION
+    # 4. VALIDATION
     # ======================
-    st.subheader("3️⃣ Validation & Readiness")
+    st.subheader("4️⃣ Validation & Readiness")
 
     col_val1, col_val2 = st.columns([1, 3])
     with col_val1:
@@ -116,9 +159,9 @@ def render(go):
             st.error(f"Validation execution failed: {e}")
 
     # ======================
-    # 4. CONFIRMATION & EXECUTION
+    # 5. CONFIRMATION & EXECUTION
     # ======================
-    st.subheader("4️⃣ Execution")
+    st.subheader("5️⃣ Execution")
 
     confirm_mapping = st.checkbox(
         "I have reviewed the field mappings and input data and confirm they are correct."

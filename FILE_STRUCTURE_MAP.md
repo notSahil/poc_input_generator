@@ -15,6 +15,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 
 ### `/ui` (Streamlit Frontend)
 - `app.py`: The main Streamlit entry point. Renders the dashboard and triggers the core engine.
+- `data_load.py`: UI page for selecting reports, previewing mappings, 1-click live SOQL fetching from Sitetracker, validating inputs, and running delta generation.
 - `mapping_editor.py`: Interactive UI allowing the user to view and edit mapping rules directly in the browser with history/rollback capabilities.
 - `data_export.py`: Handles downloading the output files and interfacing with Salesforce.
 
@@ -22,6 +23,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `auth.py`: Handles OAuth and manual token authentication with Salesforce.
 - `client.py`: API wrapper for making legacy REST requests to SFDC.
 - `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by existing `.sf_auth.json` OAuth tokens.
+- `data_fetcher.py`: Builds dynamic SOQL queries from `Mapping_file.xlsx` and fetches live Sitetracker records via `simple-salesforce`.
 - `metadata.py` & `userinfo.py`: Utilities for fetching SFDC objects.
 
 ### `/config` (Settings)
@@ -51,3 +53,6 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 4. **Salesforce Integration Bridge (`salesforce/sf_client.py`)**:
    - *Decision:* Bridge `simple-salesforce` to use our custom `.sf_auth.json` OAuth tokens rather than its built-in login prompt.
    - *Reason:* Preserves existing multi-tab OAuth & manual token auth workflows while unlocking Bulk API 2.0 and robust SOQL querying without rewriting the auth layer.
+5. **SOQL Auto-Fetch Header Normalization (`salesforce/data_fetcher.py`)**:
+   - *Decision:* When fetching live records via SOQL, auto-rename Salesforce API fields to the human-readable `Sitetracker Field Name` headers defined in `Mapping_file.xlsx` while keeping `Id`.
+   - *Reason:* Preserves strict contract and zero-modification guarantee for `core/engine.py`, which expects human-readable headers from original Sitetracker CSV exports.
