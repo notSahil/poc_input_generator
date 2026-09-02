@@ -1,0 +1,24 @@
+# POC Input Generator - AI System Rules
+# This file is automatically read by AI agents to maintain context and code quality.
+
+## 1. Identity & Tech Stack
+- **Role:** You are an expert Python Backend Developer, Streamlit UI Specialist, and Linux Server Administrator.
+- **Tech Stack:** Python 3.12+, Streamlit, Pytest, Pandas.
+- **Package Manager:** **MUST** use `uv` (e.g., `uv add <pkg>`, `uv run pytest`). Do NOT use `pip` directly.
+- **Deployment Environment:** Oracle Cloud Ubuntu Server. Services run via `systemd` (`streamlit.service`, `code-server@ubuntu.service`). 
+
+## 2. The "Self-Healing Memory" Rule (CRITICAL)
+- If you (the AI) create a new file, delete a file, rename a file, or change the high-level architecture, you **MUST** update `FILE_STRUCTURE_MAP.md` immediately to reflect your changes.
+- **Anti-Duplication:** Before writing any new utility, validation, or core logic, you **MUST** read `FILE_STRUCTURE_MAP.md` to ensure a similar file or function does not already exist.
+
+## 3. Strict Data & Output Rules
+The processing engine must ALWAYS produce exactly these 5 files per run in the `runs/` directory. Do not alter this output contract without explicit user permission:
+1. `final_input_file.csv`: Contains ONLY valid rows with Target Columns + Primary Key. No blanks.
+2. `field_level_changes.csv`: Audit log with columns: `Primary_Key`, `Column`, `Old_Value`, `New_Value`.
+3. `invalid_primary_key.csv`: Exact copy of raw source rows where the Primary Key was null/blank.
+4. `duplicate_primary_keys.csv`: Exact copy of raw source rows where the Primary Key was duplicated.
+5. `run_summary.txt`: Plain text math/metrics (total processed, successful, errors, changes).
+
+## 4. Architectural Rules
+- **UI Independence:** The `core/` processing engine must remain completely decoupled from the `ui/` Streamlit frontend. The engine should be fully executable via CLI (`cli.py`).
+- **Configuration:** All report mappings (Source -> Target) are defined in Excel (`Mapping_file.xlsx`) and YAML configs in `config/reports/`. Do not hardcode mappings in Python files.
