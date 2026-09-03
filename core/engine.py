@@ -129,19 +129,10 @@ class InputFileEngine:
         valid_src = src_df[src_df["VALID"]]
         st_index = st_df.set_index(pk_st)
 
-        # Check Duplicates
-        non_empty_pk_df = valid_src[
-            valid_src[pk_src].notna() &
-            (valid_src[pk_src].str.strip() != "")
-        ]
-        duplicate_pk_df = non_empty_pk_df[
-            non_empty_pk_df.duplicated(subset=[pk_src], keep=False)
-        ]
-        duplicate_pk_values = sorted(duplicate_pk_df[pk_src].unique().tolist()) if not duplicate_pk_df.empty else []
-        duplicate_pks_set = set(duplicate_pk_values)
-
-        if duplicate_pk_values:
-            duplicate_pk_df.to_csv(out("duplicate_primary_keys.csv"), index=False)
+        # Track duplicate occurrences (First Occurrence Wins)
+        seen_pks: dict[str, int] = {}  # pk -> first_row_number
+        duplicate_rows: list[dict] = []
+        duplicate_pk_values: list[str] = []
 
         # ================================================================
         # 8. Compute Deltas — Enterprise Row-Level Validation
@@ -159,9 +150,36 @@ class InputFileEngine:
         for row_num, (_, src) in enumerate(valid_src.iterrows(), start=1):
             pr = src[pk_src]
 
-            # ── Skip duplicates ──────────────────────────────────────────
-            if pr in duplicate_pks_set:
-                continue  # handled separately in duplicate_primary_keys.csv
+            # ── Smart Deduplication (First Occurrence Wins) ──────────────
+            if pr in seen_pks:
+                first_row = seen_pks[pr]
+                dup_entry = {
+                    "Row_Number": row_num,
+                    "Primary_Key": pr,
+                    "First_Occurrence_Row": first_row,
+                    "Status": "DUPLICATE_SKIPPED",
+                    "Reason": f"Duplicate of Primary Key '{pr}' (First occurrence at Row {first_row} was processed)",
+                }
+                for c in valid_src.columns:
+                    dup_entry[c] = src.get(c)
+                duplicate_rows.append(dup_entry)
+                if pr not in duplicate_pk_values:
+                    duplicate_pk_values.append(pr)
+
+                validation_rows.append({
+                    "Row_Number": row_num,
+                    "Primary_Key": pr,
+                    "PK_Valid": True,
+                    "Date_Fields_Valid": "N/A",
+                    "Data_Types_OK": "N/A",
+                    "Has_Changes": False,
+                    "Final_Status": "DUPLICATE_SKIPPED",
+                    "Error_Details": f"Duplicate Primary Key (first occurrence at Row {first_row} was processed)",
+                })
+                continue
+            else:
+                seen_pks[pr] = row_num
+
 
             # ── Primary key not found in Sitetracker ─────────────────────
             if pr not in st_index.index:
@@ -412,7 +430,14 @@ class InputFileEngine:
         )
         val_df.to_csv(out("validation_report.csv"), index=False)
 
-        # 8 & 9. Existing: invalid_primary_key.csv + duplicate_primary_keys.csv (already written above)
+        # 8. duplicate_primary_keys.csv — quarantined duplicate occurrences
+        if duplicate_rows:
+            pd.DataFrame(duplicate_rows).to_csv(out("duplicate_primary_keys.csv"), index=False)
+        else:
+            pd.DataFrame(
+                columns=["Row_Number", "Primary_Key", "First_Occurrence_Row", "Status", "Reason"]
+            ).to_csv(out("duplicate_primary_keys.csv"), index=False)
+
 
         # ================================================================
         # 10. Write enhanced run_summary.txt

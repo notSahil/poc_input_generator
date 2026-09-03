@@ -257,12 +257,13 @@ def render(go):
             )
 
             # Detailed Inspection Tabs
-            tab_grid, tab_final, tab_err, tab_chg, tab_skip, tab_src, tab_st, tab_sum = st.tabs([
+            tab_grid, tab_final, tab_err, tab_chg, tab_skip, tab_dup, tab_src, tab_st, tab_sum = st.tabs([
                 "🎨 Visual Source Grid",
                 f"📥 Final Input File ({result.delta_records})",
                 f"🚫 Errors ({result.error_records})",
                 f"👁️ Changes ({result.field_changes_count})",
                 f"⏭️ Skipped ({result.skipped_records})",
+                f"⚠️ Duplicates ({len(result.duplicate_primary_keys)})",
                 "📄 Source Data",
                 "📊 Sitetracker Data",
                 "📄 Run Summary"
@@ -278,16 +279,12 @@ def render(go):
                         "SUCCESS": "🟢 UPDATED",
                         "ERROR": "🔴 ERROR (REJECTED)",
                         "SKIPPED": "⚪ UNCHANGED",
+                        "DUPLICATE_SKIPPED": "⚠️ DUPLICATE (SKIPPED)",
                     }
                     status_list = []
-                    dup_set = set(str(x) for x in result.duplicate_primary_keys)
                     for _, r in val_df.iterrows():
-                        pk = str(r.get("Primary_Key", ""))
                         raw_st = str(r.get("Final_Status", ""))
-                        if pk in dup_set:
-                            status_list.append("⚠️ DUPLICATE PK")
-                        else:
-                            status_list.append(badge_map.get(raw_st, f"⚪ {raw_st}"))
+                        status_list.append(badge_map.get(raw_st, f"⚪ {raw_st}"))
                     
                     val_df.insert(0, "Execution Status", status_list)
                     st.dataframe(val_df, use_container_width=True)
@@ -326,6 +323,23 @@ def render(go):
                         st.dataframe(skip_df, use_container_width=True)
                     else:
                         st.info("No records were skipped in this run.")
+
+            with tab_dup:
+                st.caption("Quarantined subsequent duplicate rows (first occurrence was processed into final file).")
+                dup_file = result.run_dir / "duplicate_primary_keys.csv"
+                if dup_file.exists():
+                    dup_df = pd.read_csv(dup_file, dtype=str)
+                    if not dup_df.empty:
+                        render_download_with_confirmation(
+                            st, "📥 Download Quarantined Duplicates CSV", dup_file,
+                            download_filename="duplicate_primary_keys.csv", key="tab_dup_dl"
+                        )
+                        st.dataframe(dup_df, use_container_width=True)
+                    else:
+                        st.info("No duplicate primary keys found in this run! 🎉")
+                else:
+                    st.info("No duplicate primary keys file found.")
+
 
             with tab_src:
                 st.caption("Raw source spreadsheet data loaded for this run.")

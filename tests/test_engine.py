@@ -55,4 +55,21 @@ class TestInputFileEngine:
         assert len(val_df) == 3  # 3 total source rows evaluated
         assert set(val_df["Final_Status"]) == {"SUCCESS", "SKIPPED"}
 
+    def test_first_occurrence_wins_deduplication(self):
+        engine = InputFileEngine("Master Site Listing")
+        result = engine.run(skip_validation=True)
+
+        assert result.success is True
+        final_df = pd.read_csv(result.run_dir / "final_input_file.csv", dtype=str)
+        dup_df = pd.read_csv(result.run_dir / "duplicate_primary_keys.csv", dtype=str)
+
+        # First occurrence of 10006 was processed and included
+        assert "10006" in final_df["TM Cell ID"].values
+
+        # Second occurrence of 10006 was quarantined
+        assert len(dup_df) == 1
+        assert dup_df.iloc[0]["Primary_Key"] == "10006"
+        assert dup_df.iloc[0]["Status"] == "DUPLICATE_SKIPPED"
+
+
 
