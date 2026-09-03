@@ -180,32 +180,105 @@ def render(go):
                 st.success("✅ Delta processing completed successfully!")
                 st.session_state.last_run_result = result
 
-                # Key Metrics
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Total Source Records", result.total_source_records)
-                col2.metric("Valid Source Records", result.valid_source_records)
-                col3.metric("Delta Updates", result.delta_records)
-                col4.metric("Field Changes", result.field_changes_count)
+                # ==================================================
+                # DATALOADER.IO STYLE DASHBOARD
+                # ==================================================
+                st.markdown("### 📊 Run Results Dashboard")
+                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                m_col1.metric("✅ Success (Updates)", result.delta_records)
+                m_col2.metric("🚫 Errors (Rejected)", result.error_records)
+                m_col3.metric("⏭️ Skipped Records", result.skipped_records)
+                m_col4.metric("📋 Total Processed", result.total_source_records)
 
-                # Quality warnings
-                if result.has_warnings:
-                    if result.invalid_primary_keys:
-                        st.warning(f"⚠️ {len(result.invalid_primary_keys)} invalid primary keys found.")
-                    if result.duplicate_primary_keys:
-                        st.warning(f"⚠️ {len(result.duplicate_primary_keys)} duplicate primary key values found: {result.duplicate_primary_keys}")
-                    if result.invalid_dates:
-                        st.warning(f"⚠️ {len(result.invalid_dates)} invalid date values encountered.")
+                # Direct Download Buttons Row
+                st.markdown("##### 📥 Download Output Files")
+                d_col1, d_col2, d_col3, d_col4 = st.columns(4)
 
-                # Output Location
-                st.subheader("📂 Output Directory")
-                st.code(str(result.run_dir))
+                final_file = result.run_dir / "final_input_file.csv"
+                if final_file.exists():
+                    with open(final_file, "rb") as f:
+                        d_col1.download_button(
+                            "📥 Final Input File",
+                            f,
+                            file_name="final_input_file.csv",
+                            mime="text/csv",
+                            help="Ready for upload into Sitetracker"
+                        )
 
-                # Display summary file if exists
-                summary_file = result.run_dir / "run_summary.txt"
-                if summary_file.exists():
-                    with st.expander("📄 View Run Summary", expanded=True):
+                err_file = result.run_dir / "error_records.csv"
+                if err_file.exists():
+                    with open(err_file, "rb") as f:
+                        d_col2.download_button(
+                            "🚫 Error Records",
+                            f,
+                            file_name="error_records.csv",
+                            mime="text/csv",
+                            help="Rejected rows with Salesforce-style error codes"
+                        )
+
+                succ_file = result.run_dir / "success_records.csv"
+                if succ_file.exists():
+                    with open(succ_file, "rb") as f:
+                        d_col3.download_button(
+                            "✅ Success Records",
+                            f,
+                            file_name="success_records.csv",
+                            mime="text/csv",
+                            help="Rows that passed validation with change summary"
+                        )
+
+                val_file = result.run_dir / "validation_report.csv"
+                if val_file.exists():
+                    with open(val_file, "rb") as f:
+                        d_col4.download_button(
+                            "📋 Validation Report",
+                            f,
+                            file_name="validation_report.csv",
+                            mime="text/csv",
+                            help="Full audit trail per row and check"
+                        )
+
+                # Detailed Inspection Tabs
+                tab_err, tab_chg, tab_skip, tab_sum = st.tabs([
+                    f"🚫 Errors ({result.error_records})",
+                    f"👁️ Changes ({result.field_changes_count})",
+                    f"⏭️ Skipped ({result.skipped_records})",
+                    "📄 Run Summary"
+                ])
+
+                with tab_err:
+                    if err_file.exists():
+                        err_df = pd.read_csv(err_file, dtype=str)
+                        if not err_df.empty:
+                            st.dataframe(err_df, use_container_width=True)
+                        else:
+                            st.info("No validation errors found in this run! 🎉")
+
+                with tab_chg:
+                    chg_file = result.run_dir / "field_level_changes.csv"
+                    if chg_file.exists():
+                        chg_df = pd.read_csv(chg_file, dtype=str)
+                        if not chg_df.empty:
+                            st.dataframe(chg_df, use_container_width=True)
+                        else:
+                            st.info("No field-level changes detected.")
+
+                with tab_skip:
+                    skip_file = result.run_dir / "skipped_records.csv"
+                    if skip_file.exists():
+                        skip_df = pd.read_csv(skip_file, dtype=str)
+                        if not skip_df.empty:
+                            st.dataframe(skip_df, use_container_width=True)
+                        else:
+                            st.info("No records were skipped in this run.")
+
+                with tab_sum:
+                    summary_file = result.run_dir / "run_summary.txt"
+                    if summary_file.exists():
                         with open(summary_file, "r", encoding="utf-8") as f:
                             st.text(f.read())
+
+                st.caption(f"📂 Run Output Directory: `{result.run_dir}`")
 
             except EngineSkipError as e:
                 st.warning(f"⏭ Execution skipped: {e}")

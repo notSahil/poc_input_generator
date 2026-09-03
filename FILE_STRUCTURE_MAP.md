@@ -70,3 +70,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 8. **Automated Session Maintenance & Network Resilience (`salesforce/sf_client.py` & `tenacity`)**:
    - *Decision:* Automatically refresh expired access tokens using the refresh token flow before initializing client connections. Wrap critical network queries and Bulk uploads with tenacity exponential backoff retries.
    - *Reason:* Guarantees production reliability for scheduled or long-running operations without requiring frequent manual re-authentications.
+9. **Enterprise Dataloader.io Validation & Reporting (`core/engine.py` & `core/normalizer.py`)**:
+   - *Decision:* Enforce row-level atomicity matching Salesforce Data Loader — any invalid date or data type mismatch rejects the entire row rather than partially pushing other fields. Generate 8 structured output files (`final_input_file.csv`, `success_records.csv`, `error_records.csv`, `skipped_records.csv`, `validation_report.csv`, `field_level_changes.csv`, `invalid_primary_key.csv`, `duplicate_primary_keys.csv`) with strict UK `DD/MM/YYYY` date formatting.
+   - *Reason:* Prevents data corruption and partial record updates in Sitetracker while giving users granular error diagnostics identical to Dataloader.io.
+

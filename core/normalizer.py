@@ -67,3 +67,55 @@ class DataNormalizer:
         if pd.isna(v) or v is None:
             return ""
         return str(v).strip().title()
+
+    @staticmethod
+    def validate_number(v) -> tuple[str, bool]:
+        """
+        Validate and normalize a number value (int or float).
+        Empty/blank is allowed (returns '', True).
+        Returns (normalized_string, is_valid).
+        """
+        if pd.isna(v) or v is None or str(v).strip() == "":
+            return "", True
+        v_str = str(v).strip().replace(",", "")  # allow comma-formatted numbers
+        try:
+            parsed = float(v_str)
+            # Return as int string if whole number, else float string
+            if parsed == int(parsed):
+                return str(int(parsed)), True
+            return str(parsed), True
+        except (ValueError, OverflowError):
+            return "", False
+
+    @staticmethod
+    def validate_boolean(v) -> tuple[str, bool]:
+        """
+        Validate and normalize a boolean value.
+        Accepts: True/False/Yes/No/1/0 (case-insensitive).
+        Empty/blank is allowed (returns '', True).
+        Returns (normalized_string, is_valid).
+        """
+        if pd.isna(v) or v is None or str(v).strip() == "":
+            return "", True
+        v_str = str(v).strip().lower()
+        true_vals = {"true", "yes", "1", "y"}
+        false_vals = {"false", "no", "0", "n"}
+        if v_str in true_vals:
+            return "true", True
+        if v_str in false_vals:
+            return "false", True
+        return "", False
+
+    @staticmethod
+    def validate_text_length(v, max_len: int = 255) -> tuple[str, bool]:
+        """
+        Validate that a text value does not exceed Salesforce's default field length.
+        Empty/blank is allowed.
+        Returns (value, is_valid).
+        """
+        if pd.isna(v) or v is None or str(v).strip() == "":
+            return "", True
+        v_str = str(v).strip()
+        if len(v_str) > max_len:
+            return v_str, False
+        return v_str, True

@@ -100,3 +100,78 @@ class TestNormalizeColumns:
         df = pd.DataFrame(columns=["\ufeffSite Ref", "Name\u00a0", "  Date  "])
         clean_df = DataNormalizer.normalize_columns(df)
         assert list(clean_df.columns) == ["Site Ref", "Name", "Date"]
+
+
+class TestValidateNumber:
+    def test_integer(self):
+        val, ok = DataNormalizer.validate_number("123")
+        assert ok is True
+        assert val == "123"
+
+    def test_float(self):
+        val, ok = DataNormalizer.validate_number("123.45")
+        assert ok is True
+        assert val == "123.45"
+
+    def test_with_commas(self):
+        val, ok = DataNormalizer.validate_number("1,234.50")
+        assert ok is True
+        assert val == "1234.5"
+
+    def test_empty_is_valid(self):
+        val, ok = DataNormalizer.validate_number("")
+        assert ok is True
+        assert val == ""
+
+    def test_invalid_text_is_rejected(self):
+        _, ok = DataNormalizer.validate_number("one hundred")
+        assert ok is False
+
+
+class TestValidateBoolean:
+    def test_true_values(self):
+        for v in ["true", "True", "YES", "Yes", "1", "y"]:
+            val, ok = DataNormalizer.validate_boolean(v)
+            assert ok is True
+            assert val == "true"
+
+    def test_false_values(self):
+        for v in ["false", "False", "NO", "No", "0", "n"]:
+            val, ok = DataNormalizer.validate_boolean(v)
+            assert ok is True
+            assert val == "false"
+
+    def test_empty_is_valid(self):
+        val, ok = DataNormalizer.validate_boolean("")
+        assert ok is True
+        assert val == ""
+
+    def test_invalid_boolean_is_rejected(self):
+        _, ok = DataNormalizer.validate_boolean("maybe")
+        assert ok is False
+
+
+class TestValidateTextLength:
+    def test_within_limit(self):
+        val, ok = DataNormalizer.validate_text_length("hello", max_len=10)
+        assert ok is True
+        assert val == "hello"
+
+    def test_exceeding_limit(self):
+        _, ok = DataNormalizer.validate_text_length("hello world", max_len=5)
+        assert ok is False
+
+
+class TestImpossibleCalendarDates:
+    def test_november_31st_is_invalid(self):
+        _, ok = DataNormalizer.normalize_date_uk("31/11/2025")
+        assert ok is False
+
+    def test_february_29_non_leap_year_is_invalid(self):
+        _, ok = DataNormalizer.normalize_date_uk("29/02/2025")
+        assert ok is False
+
+    def test_month_13_is_invalid(self):
+        _, ok = DataNormalizer.normalize_date_uk("15/13/2025")
+        assert ok is False
+

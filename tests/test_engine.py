@@ -19,9 +19,13 @@ class TestInputFileEngine:
         assert result.delta_records == 2  # SITE-001 and SITE-002 changed
         assert result.field_changes_count == 2
 
-        # Verify output files exist
+        # Verify output files exist (all 8 enterprise output files)
         assert (result.run_dir / "final_input_file.csv").exists()
         assert (result.run_dir / "field_level_changes.csv").exists()
+        assert (result.run_dir / "success_records.csv").exists()
+        assert (result.run_dir / "error_records.csv").exists()
+        assert (result.run_dir / "skipped_records.csv").exists()
+        assert (result.run_dir / "validation_report.csv").exists()
         assert (result.run_dir / "run_summary.txt").exists()
 
         # Check final_input_file.csv content
@@ -37,3 +41,9 @@ class TestInputFileEngine:
         changed_fields = set(changes_df["API Field"])
         assert "Target_Date__c" in changed_fields
         assert "Name" in changed_fields
+
+        # Check validation_report.csv
+        val_df = pd.read_csv(result.run_dir / "validation_report.csv", dtype=str)
+        assert len(val_df) == 3  # 3 total source rows evaluated
+        assert set(val_df["Final_Status"]) == {"SUCCESS", "SKIPPED"}
+
