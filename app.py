@@ -38,10 +38,10 @@ def render_home():
 
     st.subheader("Select Operation")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.info("### 📥 Data Load Operation\nCompare source spreadsheets with current Sitetracker data, compute deltas, and produce validated upload files.")
+        st.info("### 📥 Data Load Operation\nCompare source spreadsheets with Sitetracker data, compute deltas, and produce validated upload files.")
         st.button(
             "Go to Data Load →",
             use_container_width=True,
@@ -51,6 +51,15 @@ def render_home():
         )
 
     with col2:
+        st.info("### 📜 Run History & Audit\nBrowse past engine executions, re-download historical files, and inspect archived inputs.")
+        st.button(
+            "Go to Run History →",
+            use_container_width=True,
+            on_click=go,
+            args=("run_history",)
+        )
+
+    with col3:
         st.info("### 📝 Mapping Editor\nInteractively edit column mappings, define new data models, and track version history with backups.")
         st.button(
             "Go to Mapping Editor →",
@@ -59,7 +68,7 @@ def render_home():
             args=("mapping_editor",)
         )
 
-    with col3:
+    with col4:
         st.info("### 📤 Data Export Operation\nAuthenticate with Salesforce OAuth, inspect objects, and extract live Sitetracker records.")
         st.button(
             "Go to Data Export →",
@@ -83,6 +92,10 @@ if page == "home":
 
 elif page == "data_load":
     from ui.data_load import render
+    render(go)
+
+elif page == "run_history":
+    from ui.run_history import render
     render(go)
 
 elif page == "mapping_editor":

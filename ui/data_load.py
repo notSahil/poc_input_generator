@@ -192,7 +192,7 @@ def render(go):
 
                 # Direct Download Buttons Row
                 st.markdown("##### 📥 Download Output Files")
-                d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+                d_col1, d_col2, d_col3, d_col4, d_col5 = st.columns(5)
 
                 final_file = result.run_dir / "final_input_file.csv"
                 if final_file.exists():
@@ -205,10 +205,21 @@ def render(go):
                             help="Ready for upload into Sitetracker"
                         )
 
+                rb_file = result.run_dir / "rollback_file.csv"
+                if rb_file.exists():
+                    with open(rb_file, "rb") as f:
+                        d_col2.download_button(
+                            "🔙 Rollback File",
+                            f,
+                            file_name="rollback_file.csv",
+                            mime="text/csv",
+                            help="Pre-change Sitetracker values to undo this run"
+                        )
+
                 err_file = result.run_dir / "error_records.csv"
                 if err_file.exists():
                     with open(err_file, "rb") as f:
-                        d_col2.download_button(
+                        d_col3.download_button(
                             "🚫 Error Records",
                             f,
                             file_name="error_records.csv",
@@ -219,7 +230,7 @@ def render(go):
                 succ_file = result.run_dir / "success_records.csv"
                 if succ_file.exists():
                     with open(succ_file, "rb") as f:
-                        d_col3.download_button(
+                        d_col4.download_button(
                             "✅ Success Records",
                             f,
                             file_name="success_records.csv",
@@ -230,7 +241,7 @@ def render(go):
                 val_file = result.run_dir / "validation_report.csv"
                 if val_file.exists():
                     with open(val_file, "rb") as f:
-                        d_col4.download_button(
+                        d_col5.download_button(
                             "📋 Validation Report",
                             f,
                             file_name="validation_report.csv",
@@ -239,12 +250,52 @@ def render(go):
                         )
 
                 # Detailed Inspection Tabs
-                tab_err, tab_chg, tab_skip, tab_sum = st.tabs([
+                tab_grid, tab_err, tab_chg, tab_skip, tab_sum = st.tabs([
+                    "🎨 Visual Source Grid",
                     f"🚫 Errors ({result.error_records})",
                     f"👁️ Changes ({result.field_changes_count})",
                     f"⏭️ Skipped ({result.skipped_records})",
                     "📄 Run Summary"
                 ])
+
+                with tab_grid:
+                    st.caption("Visual breakdown of source data with execution status badges.")
+                    if val_file.exists():
+                        val_df = pd.read_csv(val_file, dtype=str)
+                        
+                        # Add Status Badge column
+                        badge_map = {
+                            "SUCCESS": "🟢 UPDATED",
+                            "ERROR": "🔴 ERROR (REJECTED)",
+                            "SKIPPED": "⚪ UNCHANGED",
+                        }
+                        status_list = []
+                        dup_set = set(str(x) for x in result.duplicate_primary_keys)
+                        for _, r in val_df.iterrows():
+                            pk = str(r.get("Primary_Key", ""))
+                            raw_st = str(r.get("Final_Status", ""))
+                            if pk in dup_set:
+                                status_list.append("⚠️ DUPLICATE PK")
+                            else:
+                                status_list.append(badge_map.get(raw_st, f"⚪ {raw_st}"))
+                        
+                        val_df.insert(0, "Execution Status", status_list)
+                        
+                        # Filter selector
+                        filter_options = ["All Rows", "🟢 Updates Only", "🔴 Errors Only", "⚪ Unchanged Only", "⚠️ Duplicates Only"]
+                        chosen_filter = st.radio("Filter Grid by Status", filter_options, horizontal=True, label_visibility="collapsed")
+                        
+                        filtered_df = val_df
+                        if chosen_filter == "🟢 Updates Only":
+                            filtered_df = val_df[val_df["Execution Status"] == "🟢 UPDATED"]
+                        elif chosen_filter == "🔴 Errors Only":
+                            filtered_df = val_df[val_df["Execution Status"] == "🔴 ERROR (REJECTED)"]
+                        elif chosen_filter == "⚪ Unchanged Only":
+                            filtered_df = val_df[val_df["Execution Status"] == "⚪ UNCHANGED"]
+                        elif chosen_filter == "⚠️ Duplicates Only":
+                            filtered_df = val_df[val_df["Execution Status"] == "⚠️ DUPLICATE PK"]
+
+                        st.dataframe(filtered_df, use_container_width=True)
 
                 with tab_err:
                     if err_file.exists():
@@ -357,6 +408,48 @@ def render(go):
                                         st.dataframe(fail_df, use_container_width=True)
                             except Exception as e:
                                 st.error(f"Bulk API upload failed: {e}")
+
+                # Emergency Rollback / Revert Safety Net
+                rb_csv = last_res.run_dir / "rollback_file.csv"
+                if rb_csv.exists():
+                    st.write("")
+                    with st.expander("⏪ Emergency Rollback / Revert to Previous Sitetracker State", expanded=False):
+                        st.warning("⚠️ **Safety Net**: This will push the pre-change values back into Sitetracker to restore records to how they were before this run.")
+                        rb_df = pd.read_csv(rb_csv, dtype=str)
+                        st.dataframe(rb_df, use_container_width=True)
+
+                        col_rb1, col_rb2 = st.columns([2, 1])
+                        with col_rb1:
+                            confirm_revert = st.text_input(
+                                "Type REVERT to enable rollback",
+                                placeholder="REVERT",
+                                key="input_confirm_bulk_revert"
+                            )
+                        with col_rb2:
+                            st.write("")
+                            st.write("")
+                            revert_enabled = (confirm_revert.strip() == "REVERT")
+                            if st.button("⏪ Execute Rollback in Sitetracker", type="secondary", disabled=not revert_enabled, key="btn_execute_bulk_revert"):
+                                with st.spinner("Submitting Rollback job to Salesforce Bulk API 2.0..."):
+                                    try:
+                                        from salesforce.bulk_uploader import push_delta_to_sitetracker
+                                        yaml_cfg = YamlConfigLoader.load(selected_report)
+                                        obj_name = yaml_cfg.get("report", {}).get("salesforce_object") or "Site__c"
+                                        if not obj_name and not mapping_df.empty and "Object Name" in mapping_df.columns:
+                                            obj_name = mapping_df["Object Name"].dropna().iloc[0]
+
+                                        rb_res = push_delta_to_sitetracker(
+                                            csv_path=rb_csv,
+                                            object_name=obj_name,
+                                            report_name=selected_report,
+                                            operation="update"
+                                        )
+                                        if rb_res.all_succeeded:
+                                            st.success(f"⏪ Rollback successful! All {rb_res.successful_records} records reverted to their previous state in Sitetracker. (Job ID: `{rb_res.job_id}`)")
+                                        else:
+                                            st.warning(f"⚠️ Revert processed with {rb_res.failed_records} errors.")
+                                    except Exception as e:
+                                        st.error(f"Rollback failed: {e}")
 
     # ======================
     # NAVIGATION & FOOTER

@@ -147,6 +147,7 @@ class InputFileEngine:
         # 8. Compute Deltas — Enterprise Row-Level Validation
         # ================================================================
         updates: list[dict] = []          # → final_input_file.csv + success_records.csv
+        rollback_updates: list[dict] = [] # → rollback_file.csv (pre-change Sitetracker values)
         changes: list[dict] = []          # → field_level_changes.csv
         error_rows: list[dict] = []       # → error_records.csv
         skipped_rows: list[dict] = []     # → skipped_records.csv
@@ -188,6 +189,7 @@ class InputFileEngine:
 
             sf_id = str(st[sf_id_col])
             update = {"Id": sf_id, pk_src: pr}
+            row_rollback = {"Id": sf_id, pk_src: pr}
             row_errors: list[str] = []
             row_rejected = False
             changed = False
@@ -258,6 +260,7 @@ class InputFileEngine:
                 # ── If source is blank but sitetracker has value → clear ──
                 # (src_fmt is "" here, st_fmt has a value — intentional wipe)
                 update[api_col] = src_fmt
+                row_rollback[api_col] = st_fmt
 
                 if DataNormalizer.comparable_text(src_fmt) != DataNormalizer.comparable_text(st_fmt):
                     changed = True
@@ -319,6 +322,7 @@ class InputFileEngine:
             else:
                 # SUCCESS — has changes and all validations passed
                 updates.append(update)
+                rollback_updates.append(row_rollback)
                 validation_rows.append({
                     "Row_Number": row_num,
                     "Primary_Key": pr,
@@ -353,19 +357,25 @@ class InputFileEngine:
             })
 
         # ================================================================
-        # 9. Write all 8 output files (guarantee column headers even if empty)
+        # 9. Write all output files (guarantee column headers even if empty)
         # ================================================================
 
         # 1. final_input_file.csv — records ready for Sitetracker upload
         pd.DataFrame(updates).to_csv(out("final_input_file.csv"), index=False)
 
-        # 2. field_level_changes.csv — per-field old vs new
+        # 2. rollback_file.csv — pre-change values for 1-click rollback
+        rollback_df = pd.DataFrame(rollback_updates) if rollback_updates else pd.DataFrame(
+            columns=["Id", pk_src]
+        )
+        rollback_df.to_csv(out("rollback_file.csv"), index=False)
+
+        # 3. field_level_changes.csv — per-field old vs new
         changes_df = pd.DataFrame(changes) if changes else pd.DataFrame(
             columns=["Project Reference", "Id", "Source Column", "Sitetracker Column", "API Field", "Old Value", "New Value"]
         )
         changes_df.to_csv(out("field_level_changes.csv"), index=False)
 
-        # 3. success_records.csv — all successful rows with change summary
+        # 4. success_records.csv — all successful rows with change summary
         success_summary = []
         for u in updates:
             pr_val = u.get(pk_src, "")
@@ -384,25 +394,25 @@ class InputFileEngine:
         )
         success_df.to_csv(out("success_records.csv"), index=False)
 
-        # 4. error_records.csv — all failed rows with exact error code (Dataloader.io style)
+        # 5. error_records.csv — all failed rows with exact error code (Dataloader.io style)
         error_df = pd.DataFrame(error_rows) if error_rows else pd.DataFrame(
             columns=["Row_Number", "Primary_Key", "Id", "Error_Code", "Error_Message", "Error_Field", "sf__Error"]
         )
         error_df.to_csv(out("error_records.csv"), index=False)
 
-        # 5. skipped_records.csv — valid rows with no changes or PK not found
+        # 6. skipped_records.csv — valid rows with no changes or PK not found
         skipped_df = pd.DataFrame(skipped_rows) if skipped_rows else pd.DataFrame(
             columns=["Row_Number", "Primary_Key", "Id", "Reason"]
         )
         skipped_df.to_csv(out("skipped_records.csv"), index=False)
 
-        # 6. validation_report.csv — every row with per-check pass/fail
+        # 7. validation_report.csv — every row with per-check pass/fail
         val_df = pd.DataFrame(validation_rows) if validation_rows else pd.DataFrame(
             columns=["Row_Number", "Primary_Key", "PK_Valid", "Date_Fields_Valid", "Data_Types_OK", "Has_Changes", "Final_Status", "Error_Details"]
         )
         val_df.to_csv(out("validation_report.csv"), index=False)
 
-        # 7 & 8. Existing: invalid_primary_key.csv + duplicate_primary_keys.csv (already written above)
+        # 8 & 9. Existing: invalid_primary_key.csv + duplicate_primary_keys.csv (already written above)
 
         # ================================================================
         # 10. Write enhanced run_summary.txt
@@ -441,6 +451,7 @@ class InputFileEngine:
 
             f.write("\n==== OUTPUT FILES ====\n")
             f.write("final_input_file.csv    → Records ready for Sitetracker upload\n")
+            f.write("rollback_file.csv       → Pre-change Sitetracker values for 1-click rollback\n")
             f.write("success_records.csv     → All successful rows with change summary\n")
             f.write("error_records.csv       → All rejected rows with Salesforce-style error codes\n")
             f.write("skipped_records.csv     → Valid rows with no changes or PK not found\n")

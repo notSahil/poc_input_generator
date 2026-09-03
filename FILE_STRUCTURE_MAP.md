@@ -15,7 +15,8 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 
 ### `/ui` (Streamlit Frontend)
 - `app.py`: The main Streamlit entry point. Renders the dashboard and triggers the core engine.
-- `data_load.py`: UI page for selecting reports, previewing mappings, 1-click live SOQL fetching from Sitetracker, validating inputs, and running delta generation.
+- `data_load.py`: UI page for selecting reports, previewing mappings, 1-click live SOQL fetching from Sitetracker, validating inputs, visual source grid with status badges, and running delta generation.
+- `run_history.py`: UI page for browsing past engine runs, viewing execution metrics, re-downloading output files, and inspecting archived source inputs.
 - `mapping_editor.py`: Interactive UI allowing the user to view and edit mapping rules directly in the browser with history/rollback capabilities.
 - `data_export.py`: Handles downloading the output files, authenticating via OAuth/manual tokens, inspecting SObjects, and monitoring live Salesforce API quotas and limits.
 
@@ -73,4 +74,8 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 9. **Enterprise Dataloader.io Validation & Reporting (`core/engine.py` & `core/normalizer.py`)**:
    - *Decision:* Enforce row-level atomicity matching Salesforce Data Loader — any invalid date or data type mismatch rejects the entire row rather than partially pushing other fields. Generate 8 structured output files (`final_input_file.csv`, `success_records.csv`, `error_records.csv`, `skipped_records.csv`, `validation_report.csv`, `field_level_changes.csv`, `invalid_primary_key.csv`, `duplicate_primary_keys.csv`) with strict UK `DD/MM/YYYY` date formatting.
    - *Reason:* Prevents data corruption and partial record updates in Sitetracker while giving users granular error diagnostics identical to Dataloader.io.
+10. **1-Click Rollback Payload & Run History Browser (`core/engine.py`, `ui/run_history.py`, `ui/data_load.py`)**:
+   - *Decision:* Generate a mirror `rollback_file.csv` containing pre-change Sitetracker values whenever deltas are computed, with an emergency revert gate in Section 6. Provide a dedicated Run History & Audit browser scanning existing `runs/` and `archive/` folders with 1-click downloads.
+   - *Reason:* Gives the team an absolute safety net to undo accidental data writes and provides self-service auditability without needing command-line or IDE access.
+
 
