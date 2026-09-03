@@ -32,3 +32,13 @@ def test_scan_all_runs():
         assert "date" in r
         assert "run_dir" in r
         assert "metrics" in r
+
+
+def test_render_download_with_confirmation_missing_file(tmp_path):
+    from ui.components import render_download_with_confirmation
+    class MockContainer:
+        pass
+    # Should safely return without error when file does not exist
+    missing = tmp_path / "nonexistent.csv"
+    render_download_with_confirmation(MockContainer(), "Test", missing)
+

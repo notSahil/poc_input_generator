@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 
 from core.mapping_editor import MappingEditor, EXPECTED_COLUMNS
-from ui.components import render_back_button, render_footer, render_header
+from ui.components import render_back_button, render_download_with_confirmation, render_footer, render_header
 
 logger = logging.getLogger(__name__)
 
@@ -302,19 +302,15 @@ def render(go):
         with col_io1:
             st.markdown("#### 📥 Download Current Mapping File")
             st.write("Download the live `Mapping_file.xlsx` directly to your laptop so you can view or edit it in Microsoft Excel.")
-            try:
-                with open(editor.file_path, "rb") as f:
-                    excel_bytes = f.read()
-                st.download_button(
-                    label="📥 Download Mapping_file.xlsx",
-                    data=excel_bytes,
-                    file_name="Mapping_file.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_mapping_file_btn",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.error(f"Error reading mapping file: {e}")
+            render_download_with_confirmation(
+                st,
+                "📥 Download Mapping_file.xlsx",
+                editor.file_path,
+                download_filename="Mapping_file.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_mapping_file_popover"
+            )
+
 
         with col_io2:
             st.markdown("#### 📤 Upload Updated Mapping File")

@@ -7,7 +7,7 @@ import pandas as pd
 
 from config import settings
 from core.config_loader import YamlConfigLoader
-from ui.components import confirm_download_dialog, render_back_button, render_footer, render_header
+from ui.components import render_back_button, render_download_with_confirmation, render_footer, render_header
 
 logger = logging.getLogger(__name__)
 
@@ -145,29 +145,39 @@ def render(go):
     r_dir = chosen_run["run_dir"]
 
     final_f = r_dir / "final_input_file.csv"
-    if final_f.exists():
-        if btn_c1.button("📥 Final Input File", use_container_width=True, key=f"hist_final_{selected_run_id}"):
-            confirm_download_dialog(final_f, f"{chosen_run['report']} - Final Input File")
+    render_download_with_confirmation(
+        btn_c1, "📥 Final Input File", final_f,
+        download_filename=f"{chosen_run['report']}_final.csv",
+        key=f"hist_final_{selected_run_id}"
+    )
 
     rb_f = r_dir / "rollback_file.csv"
-    if rb_f.exists():
-        if btn_c2.button("🔙 Rollback File", use_container_width=True, key=f"hist_rb_{selected_run_id}"):
-            confirm_download_dialog(rb_f, f"{chosen_run['report']} - Rollback File")
+    render_download_with_confirmation(
+        btn_c2, "🔙 Rollback File", rb_f,
+        download_filename=f"{chosen_run['report']}_rollback.csv",
+        key=f"hist_rb_{selected_run_id}"
+    )
 
     err_f = r_dir / "error_records.csv"
-    if err_f.exists():
-        if btn_c3.button("🚫 Error Records", use_container_width=True, key=f"hist_err_{selected_run_id}"):
-            confirm_download_dialog(err_f, f"{chosen_run['report']} - Error Records")
+    render_download_with_confirmation(
+        btn_c3, "🚫 Error Records", err_f,
+        download_filename=f"{chosen_run['report']}_errors.csv",
+        key=f"hist_err_{selected_run_id}"
+    )
 
     succ_f = r_dir / "success_records.csv"
-    if succ_f.exists():
-        if btn_c4.button("✅ Success Records", use_container_width=True, key=f"hist_succ_{selected_run_id}"):
-            confirm_download_dialog(succ_f, f"{chosen_run['report']} - Success Records")
+    render_download_with_confirmation(
+        btn_c4, "✅ Success Records", succ_f,
+        download_filename=f"{chosen_run['report']}_success.csv",
+        key=f"hist_succ_{selected_run_id}"
+    )
 
     val_f = r_dir / "validation_report.csv"
-    if val_f.exists():
-        if btn_c5.button("📋 Validation Audit", use_container_width=True, key=f"hist_val_{selected_run_id}"):
-            confirm_download_dialog(val_f, f"{chosen_run['report']} - Validation Audit")
+    render_download_with_confirmation(
+        btn_c5, "📋 Validation Audit", val_f,
+        download_filename=f"{chosen_run['report']}_validation.csv",
+        key=f"hist_val_{selected_run_id}"
+    )
 
     # Archived Inputs
     a_dir = chosen_run["archive_dir"]
@@ -178,8 +188,12 @@ def render(go):
             arch_cols = st.columns(len(arch_files))
             for i, af in enumerate(arch_files):
                 mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if af.suffix == ".xlsx" else "text/csv"
-                if arch_cols[i].button(f"📄 {af.name}", use_container_width=True, key=f"arch_{af.name}_{selected_run_id}"):
-                    confirm_download_dialog(af, f"Archived Input: {af.name}", mime=mime_type)
+                render_download_with_confirmation(
+                    arch_cols[i], f"📄 {af.name}", af,
+                    mime=mime_type,
+                    key=f"arch_{af.name}_{selected_run_id}"
+                )
+
 
 
     # Full Run Summary Text
