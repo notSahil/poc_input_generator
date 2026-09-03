@@ -78,6 +78,14 @@ def render(go):
         st.markdown("#### 📄 Source Excel File")
         if src_files:
             st.success(f"✅ Found: **`{src_files[0]}`**")
+            with st.expander(f"👁️ View Source Data ({src_files[0]})", expanded=False):
+                try:
+                    sf_path = src_dir / src_files[0]
+                    src_view_df = pd.read_excel(sf_path) if sf_path.suffix.lower() == ".xlsx" else pd.read_csv(sf_path, dtype=str)
+                    st.caption(f"📁 {len(src_view_df):,} rows • {len(src_view_df.columns)} columns")
+                    st.dataframe(src_view_df, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Could not load source file: {e}")
         else:
             st.warning(f"⚠️ Missing source file. Place Excel in: `{src_dir.relative_to(settings.PROJECT_ROOT)}`")
 
@@ -85,6 +93,13 @@ def render(go):
         st.markdown("#### 🔄 Sitetracker Data")
         if st_files:
             st.success(f"✅ Found: **`{st_files[0]}`**")
+            with st.expander(f"👁️ View Sitetracker Data ({st_files[0]})", expanded=False):
+                try:
+                    st_view_df = pd.read_csv(st_dir / st_files[0], dtype=str)
+                    st.caption(f"📁 {len(st_view_df):,} rows • {len(st_view_df.columns)} columns")
+                    st.dataframe(st_view_df, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Could not load Sitetracker data: {e}")
         else:
             st.warning(f"⚠️ Missing file in `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
 
@@ -101,6 +116,7 @@ def render(go):
                         st.error(f"Failed to fetch live data: {e}")
         else:
             st.caption("🔒 *Log in via 'Data Export' to enable 1-click live SOQL fetching directly from Sitetracker.*")
+
 
     # ======================
     # 3. MAPPING PREVIEW
@@ -241,12 +257,14 @@ def render(go):
             )
 
             # Detailed Inspection Tabs
-            tab_grid, tab_final, tab_err, tab_chg, tab_skip, tab_sum = st.tabs([
+            tab_grid, tab_final, tab_err, tab_chg, tab_skip, tab_src, tab_st, tab_sum = st.tabs([
                 "🎨 Visual Source Grid",
                 f"📥 Final Input File ({result.delta_records})",
                 f"🚫 Errors ({result.error_records})",
                 f"👁️ Changes ({result.field_changes_count})",
                 f"⏭️ Skipped ({result.skipped_records})",
+                "📄 Source Data",
+                "📊 Sitetracker Data",
                 "📄 Run Summary"
             ])
 
@@ -309,6 +327,31 @@ def render(go):
                     else:
                         st.info("No records were skipped in this run.")
 
+            with tab_src:
+                st.caption("Raw source spreadsheet data loaded for this run.")
+                if src_files:
+                    try:
+                        sf_path = src_dir / src_files[0]
+                        src_view_df = pd.read_excel(sf_path) if sf_path.suffix.lower() == ".xlsx" else pd.read_csv(sf_path, dtype=str)
+                        st.caption(f"📁 {len(src_view_df):,} rows • {len(src_view_df.columns)} columns")
+                        st.dataframe(src_view_df, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Could not load source file: {e}")
+                else:
+                    st.info("No source file found.")
+
+            with tab_st:
+                st.caption("Current Sitetracker export data compared against.")
+                if st_files:
+                    try:
+                        st_view_df = pd.read_csv(st_dir / st_files[0], dtype=str)
+                        st.caption(f"📁 {len(st_view_df):,} rows • {len(st_view_df.columns)} columns")
+                        st.dataframe(st_view_df, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Could not load Sitetracker data: {e}")
+                else:
+                    st.info("No Sitetracker data file found.")
+
             with tab_sum:
                 summary_file = result.run_dir / "run_summary.txt"
                 if summary_file.exists():
@@ -328,21 +371,19 @@ def render(go):
             st.subheader("6️⃣ Push to Sitetracker (Bulk API 2.0)")
             st.caption("Safely upload the generated delta records directly to Sitetracker asynchronously.")
 
-            # Show data and changes preview
-            col_prev1, col_prev2 = st.columns(2)
-            with col_prev1:
-                final_file_push = last_res.run_dir / "final_input_file.csv"
-                if final_file_push.exists():
-                    final_push_df = pd.read_csv(final_file_push, dtype=str)
-                    with st.expander(f"📥 Preview Final Input File ({len(final_push_df)} Records)", expanded=False):
-                        st.dataframe(final_push_df, use_container_width=True)
+            # Show data and changes preview (Vertical: Top & Bottom)
+            final_file_push = last_res.run_dir / "final_input_file.csv"
+            if final_file_push.exists():
+                final_push_df = pd.read_csv(final_file_push, dtype=str)
+                with st.expander(f"📥 Preview Final Input File ({len(final_push_df)} Records to be Uploaded)", expanded=False):
+                    st.dataframe(final_push_df, use_container_width=True)
 
-            with col_prev2:
-                changes_file = last_res.run_dir / "field_level_changes.csv"
-                if changes_file.exists():
-                    changes_df = pd.read_csv(changes_file, dtype=str)
-                    with st.expander(f"👁️ Preview Field-Level Changes ({len(changes_df)} Fields)", expanded=False):
-                        st.dataframe(changes_df, use_container_width=True)
+            changes_file = last_res.run_dir / "field_level_changes.csv"
+            if changes_file.exists():
+                changes_df = pd.read_csv(changes_file, dtype=str)
+                with st.expander(f"👁️ Preview Field-Level Changes ({len(changes_df)} Fields Changed)", expanded=False):
+                    st.dataframe(changes_df, use_container_width=True)
+
 
 
             from salesforce.auth import is_token_valid
