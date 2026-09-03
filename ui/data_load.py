@@ -241,8 +241,9 @@ def render(go):
             )
 
             # Detailed Inspection Tabs
-            tab_grid, tab_err, tab_chg, tab_skip, tab_sum = st.tabs([
+            tab_grid, tab_final, tab_err, tab_chg, tab_skip, tab_sum = st.tabs([
                 "🎨 Visual Source Grid",
+                f"📥 Final Input File ({result.delta_records})",
                 f"🚫 Errors ({result.error_records})",
                 f"👁️ Changes ({result.field_changes_count})",
                 f"⏭️ Skipped ({result.skipped_records})",
@@ -272,6 +273,15 @@ def render(go):
                     
                     val_df.insert(0, "Execution Status", status_list)
                     st.dataframe(val_df, use_container_width=True)
+
+            with tab_final:
+                st.caption("Final Sitetracker input payload: records and fields prepared for upload.")
+                if final_file.exists():
+                    final_df = pd.read_csv(final_file, dtype=str)
+                    if not final_df.empty:
+                        st.dataframe(final_df, use_container_width=True)
+                    else:
+                        st.info("No records in final input file.")
 
             with tab_err:
                 if err_file.exists():
@@ -318,12 +328,22 @@ def render(go):
             st.subheader("6️⃣ Push to Sitetracker (Bulk API 2.0)")
             st.caption("Safely upload the generated delta records directly to Sitetracker asynchronously.")
 
-            # Show changes preview
-            changes_file = last_res.run_dir / "field_level_changes.csv"
-            if changes_file.exists():
-                changes_df = pd.read_csv(changes_file, dtype=str)
-                with st.expander(f"👁️ Preview {len(changes_df)} Field-Level Changes to be Pushed", expanded=False):
-                    st.dataframe(changes_df, use_container_width=True)
+            # Show data and changes preview
+            col_prev1, col_prev2 = st.columns(2)
+            with col_prev1:
+                final_file_push = last_res.run_dir / "final_input_file.csv"
+                if final_file_push.exists():
+                    final_push_df = pd.read_csv(final_file_push, dtype=str)
+                    with st.expander(f"📥 Preview Final Input File ({len(final_push_df)} Records)", expanded=False):
+                        st.dataframe(final_push_df, use_container_width=True)
+
+            with col_prev2:
+                changes_file = last_res.run_dir / "field_level_changes.csv"
+                if changes_file.exists():
+                    changes_df = pd.read_csv(changes_file, dtype=str)
+                    with st.expander(f"👁️ Preview Field-Level Changes ({len(changes_df)} Fields)", expanded=False):
+                        st.dataframe(changes_df, use_container_width=True)
+
 
             from salesforce.auth import is_token_valid
             if not is_token_valid():
