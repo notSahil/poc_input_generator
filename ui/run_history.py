@@ -7,7 +7,7 @@ import pandas as pd
 
 from config import settings
 from core.config_loader import YamlConfigLoader
-from ui.components import render_back_button, render_footer, render_header
+from ui.components import confirm_download_dialog, render_back_button, render_footer, render_header
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ def render(go):
     c4.metric("⏭️ Skipped", met["skipped"])
     c5.metric("🔀 Duplicates", met["duplicates"])
 
-    # File Download Center for this Run
+    # File Download Center for this Run (with Confirmation Popup)
     st.markdown("##### 📥 Generated Output Files")
     btn_c1, btn_c2, btn_c3, btn_c4, btn_c5 = st.columns(5)
 
@@ -146,28 +146,28 @@ def render(go):
 
     final_f = r_dir / "final_input_file.csv"
     if final_f.exists():
-        with open(final_f, "rb") as f:
-            btn_c1.download_button("📥 Final Input File", f, file_name=f"{chosen_run['report']}_final.csv", mime="text/csv", key=f"hist_final_{selected_run_id}")
+        if btn_c1.button("📥 Final Input File", use_container_width=True, key=f"hist_final_{selected_run_id}"):
+            confirm_download_dialog(final_f, f"{chosen_run['report']} - Final Input File")
 
     rb_f = r_dir / "rollback_file.csv"
     if rb_f.exists():
-        with open(rb_f, "rb") as f:
-            btn_c2.download_button("🔙 Rollback File", f, file_name=f"{chosen_run['report']}_rollback.csv", mime="text/csv", key=f"hist_rb_{selected_run_id}")
+        if btn_c2.button("🔙 Rollback File", use_container_width=True, key=f"hist_rb_{selected_run_id}"):
+            confirm_download_dialog(rb_f, f"{chosen_run['report']} - Rollback File")
 
     err_f = r_dir / "error_records.csv"
     if err_f.exists():
-        with open(err_f, "rb") as f:
-            btn_c3.download_button("🚫 Error Records", f, file_name=f"{chosen_run['report']}_errors.csv", mime="text/csv", key=f"hist_err_{selected_run_id}")
+        if btn_c3.button("🚫 Error Records", use_container_width=True, key=f"hist_err_{selected_run_id}"):
+            confirm_download_dialog(err_f, f"{chosen_run['report']} - Error Records")
 
     succ_f = r_dir / "success_records.csv"
     if succ_f.exists():
-        with open(succ_f, "rb") as f:
-            btn_c4.download_button("✅ Success Records", f, file_name=f"{chosen_run['report']}_success.csv", mime="text/csv", key=f"hist_succ_{selected_run_id}")
+        if btn_c4.button("✅ Success Records", use_container_width=True, key=f"hist_succ_{selected_run_id}"):
+            confirm_download_dialog(succ_f, f"{chosen_run['report']} - Success Records")
 
     val_f = r_dir / "validation_report.csv"
     if val_f.exists():
-        with open(val_f, "rb") as f:
-            btn_c5.download_button("📋 Validation Audit", f, file_name=f"{chosen_run['report']}_validation.csv", mime="text/csv", key=f"hist_val_{selected_run_id}")
+        if btn_c5.button("📋 Validation Audit", use_container_width=True, key=f"hist_val_{selected_run_id}"):
+            confirm_download_dialog(val_f, f"{chosen_run['report']} - Validation Audit")
 
     # Archived Inputs
     a_dir = chosen_run["archive_dir"]
@@ -177,15 +177,10 @@ def render(go):
         if arch_files:
             arch_cols = st.columns(len(arch_files))
             for i, af in enumerate(arch_files):
-                with open(af, "rb") as f:
-                    mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if af.suffix == ".xlsx" else "text/csv"
-                    arch_cols[i].download_button(
-                        f"📄 {af.name}",
-                        f,
-                        file_name=af.name,
-                        mime=mime_type,
-                        key=f"arch_{af.name}_{selected_run_id}"
-                    )
+                mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if af.suffix == ".xlsx" else "text/csv"
+                if arch_cols[i].button(f"📄 {af.name}", use_container_width=True, key=f"arch_{af.name}_{selected_run_id}"):
+                    confirm_download_dialog(af, f"Archived Input: {af.name}", mime=mime_type)
+
 
     # Full Run Summary Text
     sum_f = chosen_run["summary_file"]

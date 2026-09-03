@@ -11,7 +11,7 @@ from core.engine import InputFileEngine
 from core.exceptions import EngineSkipError, InputGeneratorError, MappingError, ValidationError
 from core.mapping_loader import MappingLoader
 from core.validator import InputValidator
-from ui.components import render_back_button, render_footer, render_header
+from ui.components import confirm_download_dialog, render_back_button, render_footer, render_header
 
 logger = logging.getLogger(__name__)
 
@@ -190,64 +190,34 @@ def render(go):
                 m_col3.metric("⏭️ Skipped Records", result.skipped_records)
                 m_col4.metric("📋 Total Processed", result.total_source_records)
 
-                # Direct Download Buttons Row
+                # Direct Download Buttons Row (with Confirmation Popup)
                 st.markdown("##### 📥 Download Output Files")
                 d_col1, d_col2, d_col3, d_col4, d_col5 = st.columns(5)
 
                 final_file = result.run_dir / "final_input_file.csv"
                 if final_file.exists():
-                    with open(final_file, "rb") as f:
-                        d_col1.download_button(
-                            "📥 Final Input File",
-                            f,
-                            file_name="final_input_file.csv",
-                            mime="text/csv",
-                            help="Ready for upload into Sitetracker"
-                        )
+                    if d_col1.button("📥 Final Input File", use_container_width=True, help="Ready for upload into Sitetracker"):
+                        confirm_download_dialog(final_file, "Final Input File")
 
                 rb_file = result.run_dir / "rollback_file.csv"
                 if rb_file.exists():
-                    with open(rb_file, "rb") as f:
-                        d_col2.download_button(
-                            "🔙 Rollback File",
-                            f,
-                            file_name="rollback_file.csv",
-                            mime="text/csv",
-                            help="Pre-change Sitetracker values to undo this run"
-                        )
+                    if d_col2.button("🔙 Rollback File", use_container_width=True, help="Pre-change Sitetracker values to undo this run"):
+                        confirm_download_dialog(rb_file, "Rollback File")
 
                 err_file = result.run_dir / "error_records.csv"
                 if err_file.exists():
-                    with open(err_file, "rb") as f:
-                        d_col3.download_button(
-                            "🚫 Error Records",
-                            f,
-                            file_name="error_records.csv",
-                            mime="text/csv",
-                            help="Rejected rows with Salesforce-style error codes"
-                        )
+                    if d_col3.button("🚫 Error Records", use_container_width=True, help="Rejected rows with Salesforce-style error codes"):
+                        confirm_download_dialog(err_file, "Error Records")
 
                 succ_file = result.run_dir / "success_records.csv"
                 if succ_file.exists():
-                    with open(succ_file, "rb") as f:
-                        d_col4.download_button(
-                            "✅ Success Records",
-                            f,
-                            file_name="success_records.csv",
-                            mime="text/csv",
-                            help="Rows that passed validation with change summary"
-                        )
+                    if d_col4.button("✅ Success Records", use_container_width=True, help="Rows that passed validation with change summary"):
+                        confirm_download_dialog(succ_file, "Success Records")
 
                 val_file = result.run_dir / "validation_report.csv"
                 if val_file.exists():
-                    with open(val_file, "rb") as f:
-                        d_col5.download_button(
-                            "📋 Validation Report",
-                            f,
-                            file_name="validation_report.csv",
-                            mime="text/csv",
-                            help="Full audit trail per row and check"
-                        )
+                    if d_col5.button("📋 Validation Report", use_container_width=True, help="Full audit trail per row and check"):
+                        confirm_download_dialog(val_file, "Validation Report")
 
                 # Detailed Inspection Tabs
                 tab_grid, tab_err, tab_chg, tab_skip, tab_sum = st.tabs([
@@ -280,22 +250,8 @@ def render(go):
                                 status_list.append(badge_map.get(raw_st, f"⚪ {raw_st}"))
                         
                         val_df.insert(0, "Execution Status", status_list)
-                        
-                        # Filter selector
-                        filter_options = ["All Rows", "🟢 Updates Only", "🔴 Errors Only", "⚪ Unchanged Only", "⚠️ Duplicates Only"]
-                        chosen_filter = st.radio("Filter Grid by Status", filter_options, horizontal=True, label_visibility="collapsed")
-                        
-                        filtered_df = val_df
-                        if chosen_filter == "🟢 Updates Only":
-                            filtered_df = val_df[val_df["Execution Status"] == "🟢 UPDATED"]
-                        elif chosen_filter == "🔴 Errors Only":
-                            filtered_df = val_df[val_df["Execution Status"] == "🔴 ERROR (REJECTED)"]
-                        elif chosen_filter == "⚪ Unchanged Only":
-                            filtered_df = val_df[val_df["Execution Status"] == "⚪ UNCHANGED"]
-                        elif chosen_filter == "⚠️ Duplicates Only":
-                            filtered_df = val_df[val_df["Execution Status"] == "⚠️ DUPLICATE PK"]
+                        st.dataframe(val_df, use_container_width=True)
 
-                        st.dataframe(filtered_df, use_container_width=True)
 
                 with tab_err:
                     if err_file.exists():
