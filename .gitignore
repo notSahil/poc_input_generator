@@ -33,3 +33,4 @@ data/common/mapping_history/
 .sf_auth.json
 .sf_auth*.json
 .sf_profile*.json
+*.zip

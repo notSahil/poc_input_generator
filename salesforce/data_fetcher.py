@@ -38,7 +38,7 @@ def build_soql_for_report(report_name: str) -> tuple[str, str, dict[str, str]]:
         object_name = str(raw_obj).strip()
 
     # If object name is Site, map to the real Sitetracker managed package object
-    if object_name.lower() == "site":
+    if object_name.lower() in ("site", "site__c"):
         object_name = "sitetracker__Site__c"
     elif " " in object_name and not object_name.endswith("__c"):
         # e.g. "BT Project" -> "BT_Project__c" or fallback

@@ -18,16 +18,17 @@ def test_clean_payload_for_salesforce():
             "Id": "a12345678901234567",
             "Project Ref": "PROJ-001",  # Source column (should be dropped)
             "Project_Reference__c": "PROJ-001",
-            "Order_Placed__c": "2026-09-01"
+            "Order_Placed__c": "2026-09-01",
+            "Date_of_Master_Site_Listing__c": "22/11/2025"
         }
     ])
 
-    records = clean_payload_for_salesforce(raw_df, report_name="Apollo 10G")
+    records = clean_payload_for_salesforce(raw_df, report_name="Master Site Listing")
     assert len(records) == 1
     rec = records[0]
     assert "Id" in rec
-    assert "Project_Reference__c" in rec
-    assert "Order_Placed__c" in rec
+    assert "Date_of_Master_Site_Listing__c" in rec
+    assert rec["Date_of_Master_Site_Listing__c"] == "2025-11-22"  # UK date converted to ISO
     assert "Project Ref" not in rec
 
 

@@ -33,17 +33,22 @@ def clean_payload_for_salesforce(df: pd.DataFrame, report_name: str | None = Non
     """
     Ensure only valid Salesforce API field names and 'Id' are sent to Bulk API.
     Removes human-readable source column headers (e.g. 'Project Ref').
+    Converts date fields to ISO 'YYYY-MM-DD' as required by Salesforce xsd:date.
     """
     valid_api_fields: set[str] = {"Id"}
+    date_api_fields: set[str] = set()
 
     if report_name:
         try:
             mapping = MappingLoader(settings.MAPPING_FILE, report_name)
             m_df = mapping.load()
-            for api_name in m_df["API Name"].dropna():
-                clean_api = str(api_name).strip()
-                if clean_api and clean_api.lower() != "nan":
-                    valid_api_fields.add(clean_api)
+            for _, row in m_df.iterrows():
+                api_name = str(row.get("API Name", "")).strip()
+                dtype = str(row.get("Data Type", "")).strip()
+                if api_name and api_name.lower() != "nan":
+                    valid_api_fields.add(api_name)
+                    if dtype.lower() == "date":
+                        date_api_fields.add(api_name)
         except Exception as e:
             logger.warning("Could not load mapping for API filtering: %s", e)
 
@@ -57,8 +62,27 @@ def clean_payload_for_salesforce(df: pd.DataFrame, report_name: str | None = Non
     if not cols_to_keep or "Id" not in cols_to_keep:
         cols_to_keep = list(df.columns)
 
-    clean_df = df[cols_to_keep].dropna(how="all")
-    return clean_df.to_dict("records")
+    clean_df = df[cols_to_keep].dropna(how="all").copy()
+
+    # Convert date values to ISO format (YYYY-MM-DD) for Salesforce xsd:date
+    for col in clean_df.columns:
+        c_strip = str(col).strip()
+        if c_strip in date_api_fields or "date" in c_strip.lower():
+            def _format_date(val):
+                if pd.isna(val) or not str(val).strip() or str(val).lower() == "nan":
+                    return None
+                val_str = str(val).strip()
+                try:
+                    dt = pd.to_datetime(val_str, dayfirst=True)
+                    return dt.strftime("%Y-%m-%d")
+                except Exception:
+                    return val_str
+
+            clean_df[col] = clean_df[col].apply(_format_date)
+
+    # Replace NaN with None for valid JSON serialization
+    records = clean_df.where(pd.notnull(clean_df), None).to_dict("records")
+    return records
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
@@ -115,7 +139,9 @@ def push_delta_to_sitetracker(
 
     # Ensure object name formatting
     clean_obj = object_name.strip().replace(" ", "_")
-    if not clean_obj.endswith("__c") and clean_obj not in ("Account", "Contact", "Opportunity", "Lead", "Case"):
+    if clean_obj.lower() == "site":
+        clean_obj = "sitetracker__Site__c"
+    elif not clean_obj.endswith("__c") and clean_obj not in ("Account", "Contact", "Opportunity", "Lead", "Case"):
         clean_obj = f"{clean_obj}__c"
 
     bulk_type = getattr(sf.bulk2, clean_obj)
