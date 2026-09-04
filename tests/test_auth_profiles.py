@@ -119,3 +119,19 @@ def test_exchange_code_for_token(tmp_path, monkeypatch):
         assert saved["access_token"] == "mock_access_token_123"
         assert saved["refresh_token"] == "mock_refresh_token_456"
 
+
+def test_pkce_generation_and_challenge(monkeypatch, tmp_path):
+    from salesforce.auth import get_login_url, generate_pkce_pair
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "SF_CLIENT_ID", "pkce_test_client")
+    monkeypatch.setattr(settings, "SF_REDIRECT_URI", "http://localhost:1717/oauth/callback")
+
+    verifier, challenge = generate_pkce_pair()
+    assert len(verifier) >= 43
+    assert len(challenge) >= 43
+
+    login_url = get_login_url(profile="sandbox")
+    assert "code_challenge=" in login_url
+    assert "code_challenge_method=S256" in login_url
+
+

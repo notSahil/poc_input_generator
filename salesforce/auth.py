@@ -1,5 +1,7 @@
 """Salesforce OAuth: token exchange, local callback server, token persistence."""
 
+import base64
+import hashlib
 import http.server
 import json
 import logging
@@ -109,8 +111,54 @@ def save_env_credentials(
     logger.info("Saved Salesforce credentials to .env")
 
 
+PKCE_FILE = settings.PROJECT_ROOT / ".sf_pkce.json"
+
+
+def generate_pkce_pair() -> tuple[str, str]:
+    """Generate PKCE code_verifier and code_challenge (RFC 7636)."""
+    verifier = base64.urlsafe_b64encode(os.urandom(32)).decode("utf-8").rstrip("=")
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+    return verifier, challenge
+
+
+def save_code_verifier(verifier: str, profile: str | None = None) -> None:
+    """Save code verifier to match callback code exchange."""
+    prof = profile or get_active_profile()
+    try:
+        data = {}
+        if PKCE_FILE.exists():
+            try:
+                with open(PKCE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+        data[prof] = verifier
+        with open(PKCE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.warning("Could not persist PKCE verifier: %s", e)
+
+
+def pop_code_verifier(profile: str | None = None) -> str | None:
+    """Retrieve and remove stored PKCE code verifier."""
+    prof = profile or get_active_profile()
+    if not PKCE_FILE.exists():
+        return None
+    try:
+        with open(PKCE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        verifier = data.pop(prof, None)
+        with open(PKCE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return verifier
+    except Exception as e:
+        logger.warning("Could not pop PKCE verifier: %s", e)
+        return None
+
+
 def get_login_url(profile: str | None = None) -> str:
-    """Generate the OAuth 2.0 authorization URL."""
+    """Generate the OAuth 2.0 authorization URL with PKCE (RFC 7636)."""
     prof = profile or get_active_profile()
     base_url = settings.SF_LOGIN_URL
     if prof == "sandbox" and "login.salesforce.com" in base_url:
@@ -118,11 +166,16 @@ def get_login_url(profile: str | None = None) -> str:
     elif prof == "prod" and "test.salesforce.com" in base_url:
         base_url = "https://login.salesforce.com"
 
+    verifier, challenge = generate_pkce_pair()
+    save_code_verifier(verifier, prof)
+
     return (
         f"{base_url}/services/oauth2/authorize"
         f"?response_type=code"
         f"&client_id={settings.SF_CLIENT_ID}"
         f"&redirect_uri={settings.SF_REDIRECT_URI}"
+        f"&code_challenge={challenge}"
+        f"&code_challenge_method=S256"
     )
 
 
@@ -246,6 +299,10 @@ def exchange_code_for_token(auth_code: str, profile: str | None = None) -> dict:
         "client_secret": settings.SF_CLIENT_SECRET,
         "redirect_uri": settings.SF_REDIRECT_URI,
     }
+
+    verifier = pop_code_verifier(prof)
+    if verifier:
+        payload["code_verifier"] = verifier
 
     response = requests.post(token_url, data=payload)
 

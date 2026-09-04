@@ -4,7 +4,19 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+def reload_settings():
+    """Reload settings from .env file, updating all module globals."""
+    load_dotenv(override=True)
+    global SF_CLIENT_ID, SF_CLIENT_SECRET, SF_REDIRECT_URI, SF_LOGIN_URL, SF_API_VERSION, OAUTH_CALLBACK_PORT
+    SF_CLIENT_ID = os.getenv("SF_CLIENT_ID", "")
+    SF_CLIENT_SECRET = os.getenv("SF_CLIENT_SECRET", "")
+    SF_REDIRECT_URI = os.getenv("SF_REDIRECT_URI", "http://localhost:1717/oauth/callback")
+    SF_LOGIN_URL = os.getenv("SF_LOGIN_URL", "https://test.salesforce.com")
+    SF_API_VERSION = os.getenv("SF_API_VERSION", "v59.0")
+    OAUTH_CALLBACK_PORT = int(os.getenv("OAUTH_CALLBACK_PORT", "1717"))
+
+
+load_dotenv(override=True)
 
 # === Paths ===
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
