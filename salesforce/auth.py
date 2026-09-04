@@ -82,7 +82,7 @@ def is_oauth_configured() -> bool:
 def save_env_credentials(
     client_id: str,
     client_secret: str,
-    login_url: str = "https://login.salesforce.com",
+    login_url: str = "https://test.salesforce.com",
     redirect_uri: str = "http://localhost:1717/oauth/callback"
 ) -> None:
     """Save credentials to .env file and update settings in memory."""
@@ -109,10 +109,17 @@ def save_env_credentials(
     logger.info("Saved Salesforce credentials to .env")
 
 
-def get_login_url() -> str:
+def get_login_url(profile: str | None = None) -> str:
     """Generate the OAuth 2.0 authorization URL."""
+    prof = profile or get_active_profile()
+    base_url = settings.SF_LOGIN_URL
+    if prof == "sandbox" and "login.salesforce.com" in base_url:
+        base_url = "https://test.salesforce.com"
+    elif prof == "prod" and "test.salesforce.com" in base_url:
+        base_url = "https://login.salesforce.com"
+
     return (
-        f"{settings.SF_LOGIN_URL}/services/oauth2/authorize"
+        f"{base_url}/services/oauth2/authorize"
         f"?response_type=code"
         f"&client_id={settings.SF_CLIENT_ID}"
         f"&redirect_uri={settings.SF_REDIRECT_URI}"
@@ -218,16 +225,23 @@ def is_token_valid(profile: str | None = None) -> bool:
 # OAUTH CLIENT
 # ==================================================
 
-def exchange_code_for_token(auth_code: str) -> dict:
+def exchange_code_for_token(auth_code: str, profile: str | None = None) -> dict:
     """Exchange OAuth authorization code for access token."""
-    if not all([settings.SF_CLIENT_ID, settings.SF_CLIENT_SECRET, settings.SF_REDIRECT_URI, settings.SF_LOGIN_URL]):
+    if not all([settings.SF_CLIENT_ID, settings.SF_CLIENT_SECRET, settings.SF_REDIRECT_URI]):
         raise RuntimeError("Missing Salesforce OAuth configuration in settings or .env")
 
-    token_url = f"{settings.SF_LOGIN_URL}/services/oauth2/token"
+    prof = profile or get_active_profile()
+    base_url = settings.SF_LOGIN_URL
+    if prof == "sandbox" and "login.salesforce.com" in base_url:
+        base_url = "https://test.salesforce.com"
+    elif prof == "prod" and "test.salesforce.com" in base_url:
+        base_url = "https://login.salesforce.com"
+
+    token_url = f"{base_url}/services/oauth2/token"
 
     payload = {
         "grant_type": "authorization_code",
-        "code": auth_code,
+        "code": auth_code.strip(),
         "client_id": settings.SF_CLIENT_ID,
         "client_secret": settings.SF_CLIENT_SECRET,
         "redirect_uri": settings.SF_REDIRECT_URI,
@@ -237,18 +251,28 @@ def exchange_code_for_token(auth_code: str) -> dict:
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"Failed to get token: {response.status_code} - {response.text}"
+            f"Failed to get token ({response.status_code}): {response.text}"
         )
 
-    return response.json()
+    token_data = response.json()
+    token_data["profile"] = prof
+    save_token(token_data, profile=prof)
+    return token_data
 
 
-def refresh_access_token(refresh_token_str: str) -> dict:
+def refresh_access_token(refresh_token_str: str, profile: str | None = None) -> dict:
     """Exchange a stored refresh token for a fresh access token."""
     if not settings.SF_CLIENT_ID or not settings.SF_CLIENT_SECRET:
         raise RuntimeError("Missing Salesforce Client ID or Secret in settings or .env")
 
-    token_url = f"{settings.SF_LOGIN_URL}/services/oauth2/token"
+    prof = profile or get_active_profile()
+    base_url = settings.SF_LOGIN_URL
+    if prof == "sandbox" and "login.salesforce.com" in base_url:
+        base_url = "https://test.salesforce.com"
+    elif prof == "prod" and "test.salesforce.com" in base_url:
+        base_url = "https://login.salesforce.com"
+
+    token_url = f"{base_url}/services/oauth2/token"
     payload = {
         "grant_type": "refresh_token",
         "client_id": settings.SF_CLIENT_ID,
@@ -265,12 +289,13 @@ def refresh_access_token(refresh_token_str: str) -> dict:
     if "refresh_token" not in new_data:
         new_data["refresh_token"] = refresh_token_str.strip()
 
-    existing = load_token()
+    existing = load_token(profile=prof)
     if existing and "instance_url" in existing and "instance_url" not in new_data:
         new_data["instance_url"] = existing["instance_url"]
 
-    save_token(new_data)
-    logger.info("Successfully refreshed Salesforce access token")
+    new_data["profile"] = prof
+    save_token(new_data, profile=prof)
+    logger.info("Successfully refreshed Salesforce access token for profile '%s'", prof)
     return new_data
 
 
@@ -299,8 +324,9 @@ class OAuthHandler(http.server.SimpleHTTPRequestHandler):
         auth_code = auth_code[0]
 
         try:
-            token_data = exchange_code_for_token(auth_code)
-            save_token(token_data)
+            prof = get_active_profile()
+            token_data = exchange_code_for_token(auth_code, profile=prof)
+            save_token(token_data, profile=prof)
 
             self.send_response(200)
             self.end_headers()

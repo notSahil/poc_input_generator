@@ -62,34 +62,107 @@ def render(go):
 
     if not logged_in:
         st.info("🔐 Please connect your **Sitetracker Developer Sandbox** to continue.")
-        st.subheader("⚡ Connect via Session Token")
 
-        with st.form("sandbox_token_form"):
-            default_url = "https://sitetracker-bt--developer.sandbox.my.salesforce.com"
-            inp_instance = st.text_input(
-                "Salesforce Instance URL",
-                value=token.get("instance_url", default_url) if token else default_url,
-                placeholder="https://sitetracker-bt--developer.sandbox.my.salesforce.com"
-            )
-            inp_token = st.text_input(
-                "Session Token",
-                type="password",
-                placeholder="Paste Session ID here"
-            )
-            sub = st.form_submit_button("🔌 Connect to Sandbox", type="primary")
+        tab_oauth, tab_token = st.tabs(["🔑 1-Click OAuth (Connected App)", "⚡ Session Token (Workbench)"])
 
-            if sub:
-                if not inp_instance or not inp_token:
-                    st.error("Please enter both the Instance URL and Session Token.")
-                else:
-                    try:
-                        save_manual_token(inp_token, inp_instance, profile=active_profile)
-                        user_info = get_user_info(profile=active_profile)
-                        st.success(f"✅ Successfully connected as **{user_info.get('preferred_username', 'User')}**!")
+        # --------------------------------------------------
+        # TAB 1: CONNECTED APP OAUTH 2.0
+        # --------------------------------------------------
+        with tab_oauth:
+            st.markdown("Authenticate directly with your Salesforce Developer Sandbox via your Connected App. Supports **auto-refresh** so you never get logged out.")
+
+            if not is_oauth_configured():
+                st.warning("⚠️ Connected App credentials not yet configured.")
+            else:
+                st.success("✅ Connected App configured with Consumer Key & Secret")
+
+            # 1-Click Login Button
+            oauth_url = get_login_url(profile=active_profile)
+
+            col_btn, col_check = st.columns([2, 1])
+            with col_btn:
+                st.link_button(
+                    "🚀 Login with Salesforce (OAuth 2.0)",
+                    oauth_url,
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not is_oauth_configured()
+                )
+            with col_check:
+                if st.button("🔄 Check Connection", key="btn_check_oauth", use_container_width=True):
+                    tok = load_token(profile=active_profile)
+                    if tok and is_token_valid(profile=active_profile):
+                        st.success("Connected!")
                         st.rerun()
-                    except Exception as err:
-                        clear_token(profile=active_profile)
-                        st.error(f"❌ Connection failed: {err}. Please check your token.")
+                    else:
+                        st.info("Waiting for login to complete in your browser...")
+
+            # Start local callback server in background thread if not already running
+            if is_oauth_configured() and not st.session_state.oauth_server_started:
+                t = threading.Thread(target=start_oauth_server, args=(settings.OAUTH_CALLBACK_PORT,), daemon=True)
+                t.start()
+                st.session_state.oauth_server_started = True
+
+            # Manual Code Fallback (for corporate proxy / firewall environments)
+            with st.expander("📋 Manual Authorization Code (If browser didn't redirect automatically)", expanded=False):
+                st.caption("If your browser redirected to a URL starting with `http://localhost:1717/oauth/callback?code=...`, paste the `code` value here:")
+                manual_code = st.text_input("Authorization Code", placeholder="Paste code parameter from URL", key="inp_manual_auth_code")
+                if st.button("🔌 Exchange Code & Connect", key="btn_exchange_auth_code"):
+                    if not manual_code.strip():
+                        st.error("Please enter the authorization code.")
+                    else:
+                        try:
+                            token_data = exchange_code_for_token(manual_code.strip(), profile=active_profile)
+                            user_info = get_user_info(profile=active_profile)
+                            st.success(f"✅ Successfully connected via OAuth 2.0 as **{user_info.get('preferred_username', 'User')}**!")
+                            st.rerun()
+                        except Exception as e:
+                            clear_token(profile=active_profile)
+                            st.error(f"❌ OAuth exchange failed: {e}")
+
+            # Settings Expander: View / Update Consumer Key & Secret
+            with st.expander("⚙️ View / Update Connected App Credentials", expanded=False):
+                with st.form("oauth_keys_form"):
+                    new_client_id = st.text_input("Consumer Key (Client ID)", value=settings.SF_CLIENT_ID)
+                    new_client_secret = st.text_input("Consumer Secret", value=settings.SF_CLIENT_SECRET, type="password")
+                    new_login_url = st.text_input("Login URL", value=settings.SF_LOGIN_URL)
+                    sub_keys = st.form_submit_button("Save Credentials")
+                    if sub_keys:
+                        save_env_credentials(new_client_id, new_client_secret, login_url=new_login_url)
+                        st.success("Credentials saved to .env!")
+                        st.rerun()
+
+        # --------------------------------------------------
+        # TAB 2: WORKBENCH SESSION TOKEN
+        # --------------------------------------------------
+        with tab_token:
+            st.markdown("Connect using a temporary session token generated from Salesforce Workbench.")
+            with st.form("sandbox_token_form"):
+                default_url = "https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+                inp_instance = st.text_input(
+                    "Salesforce Instance URL",
+                    value=token.get("instance_url", default_url) if token else default_url,
+                    placeholder="https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+                )
+                inp_token = st.text_input(
+                    "Session Token",
+                    type="password",
+                    placeholder="Paste Session ID here"
+                )
+                sub = st.form_submit_button("🔌 Connect to Sandbox", type="primary")
+
+                if sub:
+                    if not inp_instance or not inp_token:
+                        st.error("Please enter both the Instance URL and Session Token.")
+                    else:
+                        try:
+                            save_manual_token(inp_token, inp_instance, profile=active_profile)
+                            user_info = get_user_info(profile=active_profile)
+                            st.success(f"✅ Successfully connected as **{user_info.get('preferred_username', 'User')}**!")
+                            st.rerun()
+                        except Exception as err:
+                            clear_token(profile=active_profile)
+                            st.error(f"❌ Connection failed: {err}. Please check your token.")
 
         render_back_button(go, key="export_back_home")
         render_footer()
@@ -157,6 +230,8 @@ def render(go):
         st.markdown(f"**Salesforce Pod / Instance:** `{org_data.get('InstanceName', 'SWE128S')}`")
         st.markdown(f"**Organization ID:** `{user_info.get('organization_id', 'N/A')}`")
         st.markdown(f"**Instance URL:** `{token.get('instance_url', 'N/A')}`")
+        auth_type = "OAuth 2.0 (Auto-Refresh Active 🔄)" if token.get("refresh_token") else "Session Token (Workbench)"
+        st.markdown(f"**Auth Method:** `{auth_type}`")
         st.markdown(f"**Live Sitetracker Sites in Org:** `{site_cnt}` record(s)")
         st.markdown(f"**Live BT Projects in Org:** `{proj_cnt}` record(s)")
 

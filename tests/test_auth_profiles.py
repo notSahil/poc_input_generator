@@ -76,3 +76,46 @@ def test_profile_token_isolation(tmp_path, monkeypatch):
     clear_token(profile="sandbox")
     assert load_token(profile="sandbox") is None
     assert load_token(profile="prod") is not None
+
+
+def test_oauth_login_url(monkeypatch):
+    from salesforce.auth import get_login_url
+    monkeypatch.setattr(settings, "SF_CLIENT_ID", "test_client_id")
+    monkeypatch.setattr(settings, "SF_REDIRECT_URI", "http://localhost:1717/oauth/callback")
+
+    sb_url = get_login_url(profile="sandbox")
+    assert "test.salesforce.com" in sb_url
+    assert "client_id=test_client_id" in sb_url
+
+    prod_url = get_login_url(profile="prod")
+    assert "login.salesforce.com" in prod_url
+
+
+def test_exchange_code_for_token(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock, patch
+    from salesforce.auth import exchange_code_for_token
+
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "SF_CLIENT_ID", "mock_id")
+    monkeypatch.setattr(settings, "SF_CLIENT_SECRET", "mock_secret")
+    monkeypatch.setattr(settings, "SF_REDIRECT_URI", "http://localhost:1717/oauth/callback")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "access_token": "mock_access_token_123",
+        "refresh_token": "mock_refresh_token_456",
+        "instance_url": "https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+    }
+
+    with patch("requests.post", return_value=mock_resp):
+        res = exchange_code_for_token("auth_code_xyz", profile="sandbox")
+        assert res["access_token"] == "mock_access_token_123"
+        assert res["refresh_token"] == "mock_refresh_token_456"
+        assert res["profile"] == "sandbox"
+
+        # Verify saved to sandbox token file
+        saved = load_token(profile="sandbox")
+        assert saved["access_token"] == "mock_access_token_123"
+        assert saved["refresh_token"] == "mock_refresh_token_456"
+

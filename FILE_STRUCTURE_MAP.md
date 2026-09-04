@@ -89,6 +89,6 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 13. **Bulk API 2.0 Date ISO Serialization (`salesforce/bulk_uploader.py`)**:
    - *Decision:* Automatically convert UK date formatted values (`DD/MM/YYYY`) into standard ISO format (`YYYY-MM-DD`) during payload cleaning before submitting Bulk API 2.0 ingest jobs.
    - *Reason:* Salesforce Bulk API 2.0 uses `xsd:date` schema deserialization, which strictly rejects `DD/MM/YYYY` formats with `INVALID_FIELD: Failed to deserialize field`. Automatic ISO formatting maintains human UK format in CSVs/UI while ensuring 100% Salesforce API compliance.
-
-
-
+14. **Salesforce Connected App OAuth 2.0 Integration with Auto-Refresh (`salesforce/auth.py`, `ui/data_export.py`, `config/settings.py`)**:
+   - *Decision:* Implement full OAuth 2.0 Web Server Flow via Connected App (Consumer Key & Secret) supporting 1-click browser authorization, background local callback interception on port 1717, manual authorization-code fallback for corporate proxy environments, and automatic token refresh (`refresh_token`) to prevent session timeouts.
+   - *Reason:* Eliminates manual 1-hour session token expiration and Workbench copy-pasting, providing an enterprise-standard, permanent SSO login experience.

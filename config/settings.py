@@ -18,7 +18,7 @@ CONFIG_DIR = PROJECT_ROOT / "config" / "reports"
 SF_CLIENT_ID = os.getenv("SF_CLIENT_ID", "")
 SF_CLIENT_SECRET = os.getenv("SF_CLIENT_SECRET", "")
 SF_REDIRECT_URI = os.getenv("SF_REDIRECT_URI", "http://localhost:1717/oauth/callback")
-SF_LOGIN_URL = os.getenv("SF_LOGIN_URL", "https://login.salesforce.com")
+SF_LOGIN_URL = os.getenv("SF_LOGIN_URL", "https://test.salesforce.com")
 SF_API_VERSION = os.getenv("SF_API_VERSION", "v59.0")
 
 # === Server ===
