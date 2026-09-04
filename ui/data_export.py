@@ -17,6 +17,7 @@ from salesforce.auth import (
     is_oauth_configured,
     is_token_valid,
     load_token,
+    login_with_password,
     pop_pkce_session,
     sanitize_consumer_key,
     save_env_credentials,
@@ -68,10 +69,85 @@ def render(go):
     if not logged_in:
         st.info("🔐 Please connect your **Sitetracker Developer Sandbox** to continue.")
 
-        tab_oauth, tab_token = st.tabs(["🔑 1-Click OAuth (Connected App)", "⚡ Session Token (Workbench)"])
+        tab_direct, tab_oauth, tab_token = st.tabs([
+            "📱 Direct Login (Mobile & Laptop)",
+            "🌐 Browser OAuth (Localhost Redirect)",
+            "⚡ Session Token (Workbench)"
+        ])
 
         # --------------------------------------------------
-        # TAB 1: EXTERNAL CLIENT APP OAUTH 2.0
+        # TAB 1: DIRECT CREDENTIALS LOGIN (NO REDIRECTS NEEDED)
+        # --------------------------------------------------
+        with tab_direct:
+            st.markdown("Authenticate directly with your Salesforce credentials. **Ideal for mobile phones, laptops, and remote servers (zero browser redirects required).**")
+            with st.form("direct_login_form"):
+                d_user = st.text_input(
+                    "Salesforce Username",
+                    placeholder="e.g. your_email@company.com.sandbox",
+                    help="Your Salesforce login username"
+                )
+                d_pass = st.text_input(
+                    "Salesforce Password",
+                    type="password",
+                    placeholder="Your Salesforce password",
+                    help="Your Salesforce login password"
+                )
+                d_token = st.text_input(
+                    "Security Token (Optional)",
+                    type="password",
+                    placeholder="Security token (if required by your org)",
+                    help="Leave blank if logging in from a trusted network or sandbox that does not require a security token"
+                )
+                d_cid = st.text_input(
+                    "Consumer Key (Client ID)",
+                    value="3MVG93BtyJZJrcZ6qrxUJ0_y2UH85laQHifPV81Bp1pOs3ItYbyoy_X5nItYbtuM.o9.nDdY2HC6Hry0mqzla",
+                    help="Your External Client App / Connected App Consumer Key"
+                )
+                d_csec = st.text_input(
+                    "Consumer Secret",
+                    value="468F6C55528EAC4C2C06F752536FD6CDF77CF471741D5DCF30B5325402BC8A61",
+                    type="password",
+                    help="Your Consumer Secret"
+                )
+                d_url = st.text_input(
+                    "Salesforce Login URL",
+                    value="https://test.salesforce.com" if active_profile == "sandbox" else "https://login.salesforce.com",
+                    help="https://test.salesforce.com for Developer Sandbox"
+                )
+                d_remember = st.checkbox("💾 Remember credentials on this machine", value=False, key="direct_remember")
+                d_submit = st.form_submit_button("🔌 Connect Directly to Sitetracker", type="primary", use_container_width=True)
+
+                if d_submit:
+                    if not d_user.strip() or not d_pass.strip():
+                        st.error("Please provide both Username and Password.")
+                    elif not d_cid.strip() or not d_csec.strip():
+                        st.error("Please provide Consumer Key and Consumer Secret.")
+                    else:
+                        with st.spinner("Authenticating with Salesforce..."):
+                            try:
+                                clean_cid = sanitize_consumer_key(d_cid)
+                                clean_csec = d_csec.strip().strip("'\"")
+                                token_data = login_with_password(
+                                    username=d_user.strip(),
+                                    password=d_pass.strip(),
+                                    client_id=clean_cid,
+                                    client_secret=clean_csec,
+                                    login_url=d_url.strip(),
+                                    security_token=d_token.strip(),
+                                    profile=active_profile
+                                )
+                                if d_remember:
+                                    save_env_credentials(clean_cid, clean_csec, login_url=d_url.strip())
+                                user_info = get_user_info(profile=active_profile)
+                                st.success(f"✅ Successfully connected to Sitetracker as **{user_info.get('preferred_username', d_user)}**!")
+                                st.rerun()
+                            except Exception as e:
+                                logger.error("Direct login failed: %s", e, exc_info=True)
+                                clear_token(profile=active_profile)
+                                st.error(f"❌ Direct login failed: {e}")
+
+        # --------------------------------------------------
+        # TAB 2: EXTERNAL CLIENT APP OAUTH 2.0
         # --------------------------------------------------
         with tab_oauth:
             st.markdown("Enter your **External Client App** credentials to authenticate with your Sitetracker Sandbox.")

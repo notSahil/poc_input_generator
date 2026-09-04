@@ -460,6 +460,60 @@ def exchange_code_for_token(
     return token_data
 
 
+def login_with_password(
+    username: str,
+    password: str,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    login_url: str | None = None,
+    security_token: str = "",
+    profile: str | None = None
+) -> dict:
+    """Direct OAuth 2.0 Username-Password flow (ideal for mobile and remote headless environments without redirects)."""
+    cid = sanitize_consumer_key(client_id or settings.SF_CLIENT_ID)
+    csec = (client_secret or settings.SF_CLIENT_SECRET).strip().strip("'\"")
+
+    if not cid or not csec:
+        raise RuntimeError("Missing Consumer Key or Consumer Secret")
+
+    if not username or not password:
+        raise RuntimeError("Missing Username or Password")
+
+    prof = profile or get_active_profile()
+    base_url = (login_url or settings.SF_LOGIN_URL).strip().rstrip("/")
+    if prof == "sandbox" and "login.salesforce.com" in base_url:
+        base_url = "https://test.salesforce.com"
+    elif prof == "prod" and "test.salesforce.com" in base_url:
+        base_url = "https://login.salesforce.com"
+
+    token_url = f"{base_url}/services/oauth2/token"
+
+    clean_pw = password.strip()
+    clean_sec = security_token.strip()
+    full_pw = f"{clean_pw}{clean_sec}"
+
+    payload = {
+        "grant_type": "password",
+        "client_id": cid,
+        "client_secret": csec,
+        "username": username.strip(),
+        "password": full_pw,
+    }
+
+    response = requests.post(token_url, data=payload)
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Salesforce login failed ({response.status_code}): {response.text}"
+        )
+
+    token_data = response.json()
+    token_data["profile"] = prof
+    save_token(token_data, profile=prof)
+    logger.info("Successfully authenticated via direct OAuth password flow as '%s' (%s)", username, prof)
+    return token_data
+
+
 def refresh_access_token(refresh_token_str: str, profile: str | None = None) -> dict:
     """Exchange a stored refresh token for a fresh access token."""
     if not settings.SF_CLIENT_ID or not settings.SF_CLIENT_SECRET:

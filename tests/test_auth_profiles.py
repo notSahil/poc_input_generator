@@ -158,4 +158,36 @@ def test_get_pkce_session_non_destructive(monkeypatch, tmp_path):
     assert empty_sess == {}
 
 
+def test_login_with_password(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock, patch
+    from salesforce.auth import login_with_password
+
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "SF_CLIENT_ID", "mock_id")
+    monkeypatch.setattr(settings, "SF_CLIENT_SECRET", "mock_secret")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "access_token": "pw_flow_access_tok",
+        "instance_url": "https://sitetracker-bt--developer.sandbox.my.salesforce.com",
+        "token_type": "Bearer"
+    }
+
+    with patch("requests.post", return_value=mock_resp):
+        res = login_with_password(
+            username="test_user@developer.com",
+            password="test_password",
+            security_token="sec_tok",
+            profile="sandbox"
+        )
+        assert res["access_token"] == "pw_flow_access_tok"
+        assert res["instance_url"] == "https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+        assert res["profile"] == "sandbox"
+
+        saved = load_token(profile="sandbox")
+        assert saved["access_token"] == "pw_flow_access_tok"
+
+
+
 
