@@ -62,85 +62,34 @@ def render(go):
 
     if not logged_in:
         st.info("🔐 Please connect your **Sitetracker Developer Sandbox** to continue.")
+        st.subheader("⚡ Connect via Session Token")
 
-        tab_token, tab_oauth, tab_config = st.tabs([
-            "⚡ Connect via Session Token", "🔑 Connect via OAuth", "⚙️ OAuth Setup"
-        ])
+        with st.form("sandbox_token_form"):
+            default_url = "https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+            inp_instance = st.text_input(
+                "Salesforce Instance URL",
+                value=token.get("instance_url", default_url) if token else default_url,
+                placeholder="https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+            )
+            inp_token = st.text_input(
+                "Session Token",
+                type="password",
+                placeholder="Paste Session ID here"
+            )
+            sub = st.form_submit_button("🔌 Connect to Sandbox", type="primary")
 
-        # --- TAB 1: DIRECT SESSION TOKEN ---
-        with tab_token:
-            st.subheader("⚡ Connect to Sandbox")
-            with st.form("sandbox_token_form"):
-                default_url = "https://sitetracker-bt--developer.sandbox.my.salesforce.com"
-                inp_instance = st.text_input(
-                    "Salesforce Instance URL",
-                    value=token.get("instance_url", default_url) if token else default_url,
-                    placeholder="https://sitetracker-bt--developer.sandbox.my.salesforce.com"
-                )
-                inp_token = st.text_input(
-                    "Session Token",
-                    type="password",
-                    placeholder="Paste Session ID here"
-                )
-                sub = st.form_submit_button("🔌 Connect to Sandbox", type="primary")
-
-                if sub:
-                    if not inp_instance or not inp_token:
-                        st.error("Please enter both the Instance URL and Session Token.")
-                    else:
-                        try:
-                            save_manual_token(inp_token, inp_instance, profile=active_profile)
-                            user_info = get_user_info(profile=active_profile)
-                            st.success(f"✅ Successfully connected as **{user_info.get('preferred_username', 'User')}**!")
-                            st.rerun()
-                        except Exception as err:
-                            clear_token(profile=active_profile)
-                            st.error(f"❌ Connection failed: {err}. Please check your token.")
-
-        # --- TAB 2: CONNECT VIA OAUTH ---
-        with tab_oauth:
-            if not is_oauth_configured():
-                st.warning("⚠️ OAuth credentials not configured. Please use the **⚡ Connect via Session Token** tab.")
-            else:
-                st.write("Click below to log in via Salesforce OAuth:")
-                if not st.session_state.oauth_server_started:
+            if sub:
+                if not inp_instance or not inp_token:
+                    st.error("Please enter both the Instance URL and Session Token.")
+                else:
                     try:
-                        threading.Thread(target=start_oauth_server, daemon=True).start()
-                        st.session_state.oauth_server_started = True
-                    except Exception as e:
-                        logger.warning("Could not start background server: %s", e)
-
-                col_btn, col_refresh = st.columns([1, 1])
-                with col_btn:
-                    if st.button("🌐 Open Salesforce Login", type="primary", key="btn_open_sf"):
-                        webbrowser.open(get_login_url())
-                        st.info("Browser window opened. After approving, click 'Check Login Status'.")
-                with col_refresh:
-                    if st.button("🔄 Check Login Status", key="btn_check_login"):
+                        save_manual_token(inp_token, inp_instance, profile=active_profile)
+                        user_info = get_user_info(profile=active_profile)
+                        st.success(f"✅ Successfully connected as **{user_info.get('preferred_username', 'User')}**!")
                         st.rerun()
-
-        # --- TAB 3: OAUTH CREDENTIALS SETUP ---
-        with tab_config:
-            st.subheader("Salesforce Connected App Credentials")
-            with st.form("sf_credentials_form"):
-                new_client_id = st.text_input("Client ID", value=settings.SF_CLIENT_ID)
-                new_client_secret = st.text_input("Client Secret", value=settings.SF_CLIENT_SECRET, type="password")
-                new_login_url = st.text_input("Login URL", value="https://test.salesforce.com")
-                new_redirect_uri = st.text_input("Redirect URI", value=settings.SF_REDIRECT_URI)
-
-                submitted = st.form_submit_button("💾 Save Credentials")
-                if submitted:
-                    if not new_client_id or not new_client_secret:
-                        st.error("Please provide both Client ID and Client Secret.")
-                    else:
-                        save_env_credentials(
-                            client_id=new_client_id,
-                            client_secret=new_client_secret,
-                            login_url=new_login_url,
-                            redirect_uri=new_redirect_uri
-                        )
-                        st.success("✅ Saved to `.env`!")
-                        st.rerun()
+                    except Exception as err:
+                        clear_token(profile=active_profile)
+                        st.error(f"❌ Connection failed: {err}. Please check your token.")
 
         render_back_button(go, key="export_back_home")
         render_footer()
