@@ -3,7 +3,7 @@
 import logging
 import threading
 import webbrowser
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 import streamlit as st
 
 from config import settings
@@ -13,6 +13,7 @@ from salesforce.auth import (
     exchange_code_for_token,
     get_active_profile,
     get_login_url,
+    get_pkce_session,
     is_oauth_configured,
     is_token_valid,
     load_token,
@@ -164,9 +165,9 @@ def render(go):
                 # Mobile & Remote Browser Authorization Box
                 st.info(
                     "📱 **Logging in from your phone or remote browser? Follow these 3 steps:**\n\n"
-                    "1. Tap **🚀 Login with Salesforce** above. Log in and tap **Allow**.\n"
-                    "2. Your browser will redirect to `http://localhost:1717/...` and show *'Cannot connect to server'* (or *'This site can't be reached'*). **This is completely normal on mobile or remote servers!**\n"
-                    "3. **Tap your phone's address bar, copy that full URL**, switch back here, paste it below, and tap **Complete Login**:"
+                    "1. Click **🚀 Login with Salesforce** above, sign in, and tap **Allow**.\n"
+                    "2. Your browser will redirect to `http://localhost:1717/...` and show *'This site can't be reached'* (or *'Cannot connect'*). **This is completely normal on remote servers!**\n"
+                    "3. **Copy that full URL from your browser address bar**, paste it below, and click **Complete Login**:"
                 )
 
                 manual_code = st.text_input("Paste Redirected URL or Code here", placeholder="http://localhost:1717/oauth/callback?code=...", key="inp_manual_auth_code")
@@ -177,17 +178,30 @@ def render(go):
                         raw_input = manual_code.strip().strip("'\"")
                         code_val = raw_input
                         state_val = st.session_state.get("active_oauth_state")
+
+                        # Robust query string extraction
+                        query_str = ""
                         if "?" in raw_input:
-                            parsed = urlparse(raw_input)
-                            qp = parse_qs(parsed.query)
-                            code_val = qp.get("code", [raw_input])[0]
-                            extracted_state = qp.get("state", [None])[0]
-                            if extracted_state:
-                                state_val = extracted_state
+                            query_str = raw_input.split("?", 1)[1]
+                        elif "code=" in raw_input:
+                            query_str = raw_input
+
+                        if query_str:
+                            qp = parse_qs(query_str)
+                            if "code" in qp:
+                                code_val = qp["code"][0]
+                            if "state" in qp:
+                                state_val = qp["state"][0]
+
+                        code_val = unquote(code_val).strip()
 
                         try:
-                            sess = pop_pkce_session(state=state_val, profile=active_profile)
+                            sess = get_pkce_session(state=state_val, profile=active_profile)
                             ver = sess.get("verifier")
+                            if not ver:
+                                st.warning("⚠️ Active PKCE security session was not found. If this was from a previous attempt, please click **🚀 Login with Salesforce** above to start fresh.")
+                                st.stop()
+
                             cid_val = clean_cid or sess.get("client_id", "")
                             csec_val = clean_csec or sess.get("client_secret", "")
                             url_val = clean_url or sess.get("login_url", "") or "https://test.salesforce.com"
@@ -199,6 +213,9 @@ def render(go):
                                 code_verifier=ver,
                                 profile=active_profile
                             )
+                            # Remove PKCE session only on success
+                            pop_pkce_session(state=state_val, profile=active_profile)
+
                             user_info = get_user_info(profile=active_profile)
                             st.success(f"✅ Successfully connected via OAuth 2.0 as **{user_info.get('preferred_username', 'User')}**!")
                             st.session_state.pop("oauth_url", None)

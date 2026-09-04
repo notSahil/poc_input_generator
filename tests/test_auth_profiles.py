@@ -135,3 +135,27 @@ def test_pkce_generation_and_challenge(monkeypatch, tmp_path):
     assert "code_challenge_method=S256" in login_url
 
 
+def test_get_pkce_session_non_destructive(monkeypatch, tmp_path):
+    from salesforce.auth import save_pkce_session, get_pkce_session, pop_pkce_session
+    pkce_file = tmp_path / ".sf_pkce.json"
+    import salesforce.auth
+    monkeypatch.setattr(salesforce.auth, "PKCE_FILE", pkce_file)
+
+    state = save_pkce_session("test_ver_123", client_id="cid", client_secret="csec", profile="sandbox")
+
+    # get_pkce_session retrieves without deleting
+    sess1 = get_pkce_session(state=state, profile="sandbox")
+    assert sess1["verifier"] == "test_ver_123"
+
+    sess2 = get_pkce_session(state=state, profile="sandbox")
+    assert sess2["verifier"] == "test_ver_123"
+
+    # pop_pkce_session retrieves and deletes
+    popped = pop_pkce_session(state=state, profile="sandbox")
+    assert popped["verifier"] == "test_ver_123"
+
+    empty_sess = get_pkce_session(state=state, profile="sandbox")
+    assert empty_sess == {}
+
+
+

@@ -171,6 +171,37 @@ def sanitize_consumer_key(key: str) -> str:
     return clean
 
 
+def get_pkce_session(state: str | None = None, profile: str | None = None) -> dict:
+    """Retrieve stored PKCE session by state (with robust fallback to profile or newest) WITHOUT deleting it."""
+    prof = profile or get_active_profile()
+    if not PKCE_FILE.exists():
+        return {}
+    try:
+        with open(PKCE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if state and state in data and isinstance(data[state], dict):
+            return data[state]
+        if prof in data:
+            val = data[prof]
+            return val if isinstance(val, dict) else {"verifier": val}
+        if data:
+            # Fallback: find the newest valid session
+            newest_val = None
+            newest_time = 0
+            for k, v in data.items():
+                if isinstance(v, dict) and "verifier" in v:
+                    t = v.get("created_at", 0)
+                    if t >= newest_time:
+                        newest_time = t
+                        newest_val = v
+            if newest_val:
+                return newest_val
+        return {}
+    except Exception as e:
+        logger.warning("Could not retrieve PKCE session: %s", e)
+        return {}
+
+
 def pop_pkce_session(state: str | None = None, profile: str | None = None) -> dict:
     """Retrieve and remove stored PKCE session by state (with robust fallback to profile or newest)."""
     prof = profile or get_active_profile()
@@ -182,12 +213,11 @@ def pop_pkce_session(state: str | None = None, profile: str | None = None) -> di
         session_info = {}
         if state and state in data and isinstance(data[state], dict):
             session_info = data.pop(state)
+            if prof in data:
+                data.pop(prof, None)
         elif prof in data:
             val = data.pop(prof)
-            if isinstance(val, dict):
-                session_info = val
-            else:
-                session_info = {"verifier": val}
+            session_info = val if isinstance(val, dict) else {"verifier": val}
         elif data:
             # Fallback: find the newest valid session
             newest_key = None
@@ -200,6 +230,8 @@ def pop_pkce_session(state: str | None = None, profile: str | None = None) -> di
                         newest_key = k
             if newest_key:
                 session_info = data.pop(newest_key)
+                if prof in data:
+                    data.pop(prof, None)
 
         with open(PKCE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -410,7 +442,7 @@ def exchange_code_for_token(
         "redirect_uri": r_uri,
     }
 
-    verifier = code_verifier or pop_code_verifier(prof) or pop_pkce_session(profile=prof).get("verifier")
+    verifier = code_verifier or pop_code_verifier(prof) or get_pkce_session(profile=prof).get("verifier")
     if verifier:
         payload["code_verifier"] = verifier
 
@@ -424,6 +456,7 @@ def exchange_code_for_token(
     token_data = response.json()
     token_data["profile"] = prof
     save_token(token_data, profile=prof)
+    pop_pkce_session(profile=prof)
     return token_data
 
 
