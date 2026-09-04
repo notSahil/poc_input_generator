@@ -24,5 +24,11 @@ SF_API_VERSION = os.getenv("SF_API_VERSION", "v59.0")
 # === Server ===
 OAUTH_CALLBACK_PORT = int(os.getenv("OAUTH_CALLBACK_PORT", "1717"))
 
-# === Token ===
+# === Token & Environment Profiles ===
+PROFILE_FILE = PROJECT_ROOT / ".sf_profile.json"
+DEFAULT_PROFILE = "sandbox"
+PROFILES = {
+    "sandbox": "Sitetracker Developer Sandbox (Test)",
+    "prod": "Sitetracker Production (Live)"
+}
 TOKEN_FILE = PROJECT_ROOT / ".sf_auth.json"

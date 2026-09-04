@@ -103,10 +103,14 @@ def render(go):
         else:
             st.warning(f"⚠️ Missing file in `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
 
-        from salesforce.auth import is_token_valid
-        if is_token_valid():
+        from salesforce.auth import get_active_profile, is_token_valid
+        active_prof = get_active_profile()
+        env_badge = "🧪 Developer Sandbox" if active_prof == "sandbox" else "🏢 Production"
+
+        if is_token_valid(profile=active_prof):
+            st.caption(f"Connected Org: **{env_badge}**")
             if st.button("🔄 Fetch Live Data from Sitetracker", key="btn_fetch_live_st", type="primary"):
-                with st.spinner("Executing SOQL query against Sitetracker..."):
+                with st.spinner(f"Executing SOQL query against {env_badge}..."):
                     try:
                         from salesforce.data_fetcher import fetch_sitetracker_data
                         saved_csv = fetch_sitetracker_data(selected_report, st_dir)
@@ -115,7 +119,7 @@ def render(go):
                     except Exception as e:
                         st.error(f"Failed to fetch live data: {e}")
         else:
-            st.caption("🔒 *Log in via 'Data Export' to enable 1-click live SOQL fetching directly from Sitetracker.*")
+            st.caption(f"🔒 *Target Org: **{env_badge}** (Not Connected). Log in via 'Data Export' to enable 1-click live SOQL fetching.*")
 
 
     # ======================
@@ -400,10 +404,14 @@ def render(go):
 
 
 
-            from salesforce.auth import is_token_valid
-            if not is_token_valid():
-                st.warning("🔒 You must log in via the **Data Export** page before pushing records to Salesforce.")
+            from salesforce.auth import get_active_profile, is_token_valid
+            active_prof = get_active_profile()
+            env_badge = "🧪 Developer Sandbox" if active_prof == "sandbox" else "🏢 Production"
+
+            if not is_token_valid(profile=active_prof):
+                st.warning(f"🔒 You must log in to **{env_badge}** via the **Data Export** page before pushing records to Salesforce.")
             else:
+                st.info(f"Target Salesforce Org: **{env_badge}**")
                 col_c1, col_c2 = st.columns([2, 1])
                 with col_c1:
                     confirm_phrase = st.text_input(

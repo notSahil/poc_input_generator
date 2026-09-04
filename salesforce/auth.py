@@ -17,6 +17,60 @@ logger = logging.getLogger(__name__)
 
 
 # ==================================================
+# ==================================================
+# ENVIRONMENT PROFILES
+# ==================================================
+
+def get_active_profile() -> str:
+    """Get current active Salesforce environment profile ('sandbox' or 'prod')."""
+    if settings.PROFILE_FILE.exists():
+        try:
+            with open(settings.PROFILE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                prof = data.get("active_profile", settings.DEFAULT_PROFILE)
+                if prof in settings.PROFILES:
+                    return prof
+        except Exception as e:
+            logger.warning("Could not read profile file, using default: %s", e)
+    return settings.DEFAULT_PROFILE
+
+
+def set_active_profile(profile: str) -> None:
+    """Set current active Salesforce environment profile."""
+    if profile not in settings.PROFILES:
+        raise ValueError(f"Unknown profile: {profile}. Expected one of {list(settings.PROFILES.keys())}")
+    try:
+        with open(settings.PROFILE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"active_profile": profile}, f, indent=2)
+        logger.info("Active Salesforce profile set to: %s", profile)
+    except Exception as e:
+        logger.error("Failed to save active profile: %s", e)
+
+
+def get_token_file(profile: str | None = None) -> Path:
+    """Get the token file path for a given profile (or active profile if None)."""
+    prof = profile or get_active_profile()
+    profile_token_file = settings.PROJECT_ROOT / f".sf_auth_{prof}.json"
+    if profile_token_file.exists():
+        return profile_token_file
+    # Fallback to legacy single token file if it exists
+    if settings.TOKEN_FILE.exists() and prof == settings.DEFAULT_PROFILE:
+        return settings.TOKEN_FILE
+    return profile_token_file
+
+
+def sanitize_session_token(token_raw: str) -> str:
+    """Clean session token by stripping whitespace, 'MY_TOKEN:', and '###' separators."""
+    if not token_raw:
+        return ""
+    clean = token_raw.strip()
+    if "MY_TOKEN:" in clean:
+        clean = clean.split("MY_TOKEN:")[1].strip()
+    clean = clean.replace("###", "").strip().strip('"').strip("'")
+    return clean
+
+
+# ==================================================
 # CREDENTIALS CONFIGURATION
 # ==================================================
 
@@ -69,53 +123,76 @@ def get_login_url() -> str:
 # TOKEN STORE
 # ==================================================
 
-def save_token(token_data: dict) -> None:
-    """Save Salesforce OAuth token locally."""
+def save_token(token_data: dict, profile: str | None = None) -> None:
+    """Save Salesforce OAuth token locally for specified profile."""
     if "issued_at" not in token_data:
         token_data["saved_at"] = time.time()
 
-    with open(settings.TOKEN_FILE, "w", encoding="utf-8") as f:
+    token_path = get_token_file(profile)
+    with open(token_path, "w", encoding="utf-8") as f:
         json.dump(token_data, f, indent=2)
-    logger.info("Saved Salesforce OAuth token")
+
+    # Also sync to legacy TOKEN_FILE if default profile for backwards compatibility
+    if (profile or get_active_profile()) == settings.DEFAULT_PROFILE:
+        try:
+            with open(settings.TOKEN_FILE, "w", encoding="utf-8") as f:
+                json.dump(token_data, f, indent=2)
+        except Exception:
+            pass
+    logger.info("Saved Salesforce token to %s", token_path.name)
 
 
-def save_manual_token(access_token: str, instance_url: str) -> None:
-    """Save manually provided access token and instance URL."""
+def save_manual_token(access_token: str, instance_url: str, profile: str | None = None) -> None:
+    """Save manually provided access token and instance URL, automatically sanitizing token input."""
+    clean_token = sanitize_session_token(access_token)
+    clean_url = instance_url.strip().rstrip("/")
     token_data = {
-        "access_token": access_token.strip(),
-        "instance_url": instance_url.strip().rstrip("/"),
+        "access_token": clean_token,
+        "instance_url": clean_url,
         "token_type": "Bearer",
-        "saved_at": time.time()
+        "saved_at": time.time(),
+        "profile": profile or get_active_profile()
     }
-    save_token(token_data)
+    save_token(token_data, profile=profile)
 
 
-def load_token() -> dict | None:
-    """Load stored Salesforce token if exists."""
-    if not settings.TOKEN_FILE.exists():
-        return None
+def load_token(profile: str | None = None) -> dict | None:
+    """Load stored Salesforce token if exists for the profile."""
+    token_path = get_token_file(profile)
+    if not token_path.exists():
+        if settings.TOKEN_FILE.exists():
+            token_path = settings.TOKEN_FILE
+        else:
+            return None
 
     try:
-        with open(settings.TOKEN_FILE, "r", encoding="utf-8") as f:
+        with open(token_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        logger.error("Failed to read token file: %s", e)
+        logger.error("Failed to read token file %s: %s", token_path, e)
         return None
 
 
-def clear_token() -> None:
-    """Logout / clear stored token."""
-    if settings.TOKEN_FILE.exists():
+def clear_token(profile: str | None = None) -> None:
+    """Logout / clear stored token for specified profile."""
+    token_path = get_token_file(profile)
+    if token_path.exists():
         try:
-            os.remove(settings.TOKEN_FILE)
-            logger.info("Cleared Salesforce token")
+            os.remove(token_path)
+            logger.info("Cleared Salesforce token: %s", token_path.name)
         except Exception as e:
             logger.error("Failed to delete token file: %s", e)
 
+    if (profile or get_active_profile()) == settings.DEFAULT_PROFILE and settings.TOKEN_FILE.exists():
+        try:
+            os.remove(settings.TOKEN_FILE)
+        except Exception:
+            pass
 
-def is_token_valid() -> bool:
+
+def is_token_valid(profile: str | None = None) -> bool:
     """Check if stored token exists and hasn't expired."""
-    token = load_token()
+    token = load_token(profile)
     if not token or "access_token" not in token:
         return False
 
@@ -134,6 +211,7 @@ def is_token_valid() -> bool:
             return False
 
     return True
+
 
 
 # ==================================================

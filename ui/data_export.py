@@ -9,12 +9,14 @@ from config import settings
 from salesforce.auth import (
     clear_token,
     exchange_code_for_token,
+    get_active_profile,
     get_login_url,
     is_oauth_configured,
     is_token_valid,
     load_token,
     save_env_credentials,
     save_manual_token,
+    set_active_profile,
     start_oauth_server,
 )
 from salesforce.metadata import list_objects
@@ -34,29 +36,73 @@ def render(go):
         st.session_state.oauth_server_started = False
 
     # ==================================================
+    # ENVIRONMENT (LOCKED TO DEVELOPER SANDBOX)
+    # ==================================================
+    active_profile = "sandbox"
+    set_active_profile("sandbox")
+    env_label = "🧪 Sitetracker Developer Sandbox (developer)"
+
+    curr_tok = load_token(profile=active_profile)
+    is_conn = curr_tok is not None and is_token_valid(profile=active_profile)
+
+    col_env, col_badge = st.columns([3, 1])
+    with col_env:
+        st.markdown(f"**Target Environment:** `{env_label}`")
+    with col_badge:
+        if is_conn:
+            st.success("🟢 Connected")
+        else:
+            st.warning("⚪ Not Connected")
+
+    # ==================================================
     # AUTH CHECK
     # ==================================================
-    token = load_token()
-    logged_in = token is not None and is_token_valid()
+    token = load_token(profile=active_profile)
+    logged_in = token is not None and is_token_valid(profile=active_profile)
 
     if not logged_in:
-        st.info("🔐 Please connect your Salesforce / Sitetracker account to continue.")
+        st.info("🔐 Please connect your **Sitetracker Developer Sandbox** to continue.")
 
-        tab_oauth, tab_manual_token, tab_config = st.tabs([
-            "🔑 Connect via OAuth", "🎟️ Manual Token Input", "⚙️ OAuth Credentials Setup"
+        tab_token, tab_oauth, tab_config = st.tabs([
+            "⚡ Connect via Session Token", "🔑 Connect via OAuth", "⚙️ OAuth Setup"
         ])
 
-        # --- TAB 1: CONNECT VIA OAUTH ---
+        # --- TAB 1: DIRECT SESSION TOKEN ---
+        with tab_token:
+            st.subheader("⚡ Connect to Sandbox")
+            with st.form("sandbox_token_form"):
+                default_url = "https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+                inp_instance = st.text_input(
+                    "Salesforce Instance URL",
+                    value=token.get("instance_url", default_url) if token else default_url,
+                    placeholder="https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+                )
+                inp_token = st.text_input(
+                    "Session Token",
+                    type="password",
+                    placeholder="Paste Session ID here"
+                )
+                sub = st.form_submit_button("🔌 Connect to Sandbox", type="primary")
+
+                if sub:
+                    if not inp_instance or not inp_token:
+                        st.error("Please enter both the Instance URL and Session Token.")
+                    else:
+                        try:
+                            save_manual_token(inp_token, inp_instance, profile=active_profile)
+                            user_info = get_user_info(profile=active_profile)
+                            st.success(f"✅ Successfully connected as **{user_info.get('preferred_username', 'User')}**!")
+                            st.rerun()
+                        except Exception as err:
+                            clear_token(profile=active_profile)
+                            st.error(f"❌ Connection failed: {err}. Please check your token.")
+
+        # --- TAB 2: CONNECT VIA OAUTH ---
         with tab_oauth:
             if not is_oauth_configured():
-                st.warning(
-                    "⚠️ **OAuth Credentials Missing**: `SF_CLIENT_ID` and `SF_CLIENT_SECRET` are not yet configured.\n\n"
-                    "👉 Go to the **⚙️ OAuth Credentials Setup** tab above to enter your Salesforce Connected App credentials."
-                )
+                st.warning("⚠️ OAuth credentials not configured. Please use the **⚡ Connect via Session Token** tab.")
             else:
-                st.write("Click below to log in to your Salesforce / Sitetracker instance:")
-
-                # Ensure callback server is running
+                st.write("Click below to log in via Salesforce OAuth:")
                 if not st.session_state.oauth_server_started:
                     try:
                         threading.Thread(target=start_oauth_server, daemon=True).start()
@@ -64,75 +110,23 @@ def render(go):
                     except Exception as e:
                         logger.warning("Could not start background server: %s", e)
 
-                login_url = get_login_url()
-
                 col_btn, col_refresh = st.columns([1, 1])
                 with col_btn:
-                    if st.button("🌐 Open Salesforce Login Page", type="primary", key="btn_open_sf"):
-                        webbrowser.open(login_url)
-                        st.info("Browser window opened. After approving access, click 'Check Login Status' below.")
-
+                    if st.button("🌐 Open Salesforce Login", type="primary", key="btn_open_sf"):
+                        webbrowser.open(get_login_url())
+                        st.info("Browser window opened. After approving, click 'Check Login Status'.")
                 with col_refresh:
                     if st.button("🔄 Check Login Status", key="btn_check_login"):
-                        st.rerun()
-
-                st.caption(f"Callback redirect URI: `{settings.SF_REDIRECT_URI}`")
-
-                # Manual Auth Code fallback if redirect did not reach server
-                with st.expander("Having trouble with the redirect? Enter Auth Code manually"):
-                    st.caption("If your browser opened the redirect URL containing `?code=...`, paste the code or full URL below:")
-                    auth_input = st.text_input("Paste Authorization Code or Redirect URL", key="manual_auth_code_input")
-                    if st.button("Exchange Code", key="btn_exchange_manual"):
-                        if auth_input:
-                            code = auth_input.strip()
-                            if "code=" in code:
-                                code = code.split("code=")[1].split("&")[0]
-                            try:
-                                token_data = exchange_code_for_token(code)
-                                from salesforce.auth import save_token
-                                save_token(token_data)
-                                st.success("✅ Successfully authenticated!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Failed to exchange code: {e}")
-
-        # --- TAB 2: MANUAL TOKEN INPUT ---
-        with tab_manual_token:
-            st.subheader("Direct Access Token")
-            st.caption("If you already have a Bearer token (e.g. from Salesforce CLI `sf org display` or Workbench):")
-            with st.form("manual_token_form"):
-                inp_instance = st.text_input("Salesforce Instance URL (e.g. https://yourcompany.my.salesforce.com)", value=settings.SF_LOGIN_URL)
-                inp_token = st.text_input("Access / Session Token", type="password")
-                sub = st.form_submit_button("Save & Connect")
-                if sub:
-                    if not inp_instance or not inp_token:
-                        st.error("Please provide both Instance URL and Access Token.")
-                    else:
-                        save_manual_token(inp_token, inp_instance)
-                        st.success("✅ Token saved!")
                         st.rerun()
 
         # --- TAB 3: OAUTH CREDENTIALS SETUP ---
         with tab_config:
             st.subheader("Salesforce Connected App Credentials")
-            st.caption("Enter your Salesforce Connected App Client ID (Consumer Key) and Client Secret.")
-
             with st.form("sf_credentials_form"):
-                new_client_id = st.text_input("Client ID (Consumer Key)", value=settings.SF_CLIENT_ID)
-                new_client_secret = st.text_input("Client Secret (Consumer Secret)", value=settings.SF_CLIENT_SECRET, type="password")
-                new_login_url = st.selectbox(
-                    "Salesforce Login URL",
-                    ["https://login.salesforce.com", "https://test.salesforce.com", "Custom Domain"],
-                    index=0 if settings.SF_LOGIN_URL == "https://login.salesforce.com" else (1 if settings.SF_LOGIN_URL == "https://test.salesforce.com" else 2)
-                )
-
-                if new_login_url == "Custom Domain":
-                    custom_url = st.text_input("Enter Custom Domain (e.g. https://yourcompany.my.salesforce.com)", value=settings.SF_LOGIN_URL)
-                    login_url_final = custom_url
-                else:
-                    login_url_final = new_login_url
-
-                new_redirect_uri = st.text_input("Redirect URI (must match Connected App)", value=settings.SF_REDIRECT_URI)
+                new_client_id = st.text_input("Client ID", value=settings.SF_CLIENT_ID)
+                new_client_secret = st.text_input("Client Secret", value=settings.SF_CLIENT_SECRET, type="password")
+                new_login_url = st.text_input("Login URL", value="https://test.salesforce.com")
+                new_redirect_uri = st.text_input("Redirect URI", value=settings.SF_REDIRECT_URI)
 
                 submitted = st.form_submit_button("💾 Save Credentials")
                 if submitted:
@@ -142,20 +136,11 @@ def render(go):
                         save_env_credentials(
                             client_id=new_client_id,
                             client_secret=new_client_secret,
-                            login_url=login_url_final,
+                            login_url=new_login_url,
                             redirect_uri=new_redirect_uri
                         )
-                        st.success("✅ Credentials saved to `.env`! You can now log in via the 'Connect via OAuth' tab.")
+                        st.success("✅ Saved to `.env`!")
                         st.rerun()
-
-            st.info(
-                "💡 **How to create a Connected App in Salesforce:**\n"
-                "1. Go to **Setup** → **App Manager** → **New Connected App**\n"
-                "2. Enable **OAuth Settings**\n"
-                "3. Set Callback URL to: `http://localhost:1717/oauth/callback`\n"
-                "4. Add OAuth Scopes: `Manage user data via APIs (api)`, `Perform requests at any time (refresh_token, offline_access)`\n"
-                "5. Save and copy the **Consumer Key** and **Consumer Secret**."
-            )
 
         render_back_button(go, key="export_back_home")
         render_footer()
@@ -165,10 +150,10 @@ def render(go):
     # USER & ORG INFO (CONNECTED STATE)
     # ==================================================
     try:
-        user_info = get_user_info()
+        user_info = get_user_info(profile=active_profile)
     except Exception as e:
-        if "Bad_OAuth_Token" in str(e) or "403" in str(e) or "expired" in str(e).lower():
-            clear_token()
+        if "Bad_OAuth_Token" in str(e) or "403" in str(e) or "expired" in str(e).lower() or "not authenticated" in str(e).lower():
+            clear_token(profile=active_profile)
             st.error("Session expired or token invalid. Please log in again.")
             st.rerun()
             return
@@ -178,82 +163,60 @@ def render(go):
             render_footer()
             return
 
-    st.subheader("🔐 Connected Salesforce User")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.text(f"Username: {user_info.get('preferred_username', 'N/A')}")
-        st.text(f"User ID: {user_info.get('user_id', 'N/A')}")
-
-    with col2:
-        st.text(f"Org ID: {user_info.get('organization_id', 'N/A')}")
-        st.text(f"Instance: {token.get('instance_url', 'N/A')}")
-
-    # ==================================================
-    # API LIMITS & QUOTAS
-    # ==================================================
-    st.subheader("📊 Salesforce API Usage & Quotas")
+    # Fetch live sandbox details to verify connection
+    user_record = {}
+    org_data = {}
+    site_cnt = "N/A"
+    proj_cnt = "N/A"
     try:
         from salesforce.sf_client import get_sf_connection
         sf = get_sf_connection()
-        limits_data = sf.limits()
 
-        col_l1, col_l2, col_l3 = st.columns(3)
+        org_res = sf.query("SELECT Id, Name, OrganizationType, IsSandbox, InstanceName, PrimaryContact FROM Organization LIMIT 1")
+        if org_res.get("records"):
+            org_data = org_res["records"][0]
 
-        daily_api = limits_data.get("DailyApiRequests", {})
-        bulk_query = limits_data.get("DailyBulkV2QueryJobs", {})
+        uname = user_info.get("preferred_username", "")
+        user_res = sf.query(f"SELECT Id, Name, Email, Username, Profile.Name, UserRole.Name, TimeZoneSidKey, LastLoginDate FROM User WHERE Username = '{uname}' LIMIT 1")
+        if user_res.get("records"):
+            user_record = user_res["records"][0]
 
-        with col_l1:
-            rem = daily_api.get("Remaining", "N/A")
-            max_v = daily_api.get("Max", "N/A")
-            st.metric("REST API Requests Left", f"{rem} / {max_v}")
+        site_cnt = sf.query("SELECT COUNT() FROM sitetracker__Site__c")["totalSize"]
+        proj_cnt = sf.query("SELECT COUNT() FROM BT_Project__c")["totalSize"]
+    except Exception as ex:
+        logger.warning("Could not query extended sandbox info: %s", ex)
 
-        with col_l2:
-            rem_b = bulk_query.get("Remaining", "N/A")
-            max_b = bulk_query.get("Max", "N/A")
-            st.metric("Bulk 2.0 Query Jobs Left", f"{rem_b} / {max_b}")
+    st.success(f"🟢 Connected to **Sitetracker Developer Sandbox** (`{org_data.get('InstanceName', 'developer')}`)")
 
-        with col_l3:
-            st.metric("Session Status", "🟢 Active & Ready")
-    except Exception as e:
-        st.caption(f"Could not load API limits: {e}")
+    col_u, col_o = st.columns(2)
 
-    # ==================================================
-    # SALESFORCE OBJECTS
-    # ==================================================
-    st.subheader("📦 Available Salesforce Objects")
+    with col_u:
+        st.markdown("#### 👤 User Information")
+        st.markdown(f"**Name:** {user_record.get('Name', 'N/A')}")
+        st.markdown(f"**Email:** `{user_record.get('Email', 'N/A')}`")
+        st.markdown(f"**Username:** `{user_info.get('preferred_username', 'N/A')}`")
+        prof_name = user_record.get("Profile", {}).get("Name", "N/A") if user_record.get("Profile") else "N/A"
+        st.markdown(f"**Profile:** `{prof_name}`")
+        role_name = user_record.get("UserRole", {}).get("Name", "N/A") if user_record.get("UserRole") else "N/A"
+        st.markdown(f"**Role:** `{role_name}`")
+        st.markdown(f"**Timezone:** `{user_record.get('TimeZoneSidKey', 'Europe/London')}`")
 
-    try:
-        objects = list_objects()
-        object_df = [
-            {
-                "API Name": obj.get("name", ""),
-                "Label": obj.get("label", ""),
-                "Custom": obj.get("custom", False),
-                "Queryable": obj.get("queryable", False)
-            }
-            for obj in objects
-        ]
-        st.dataframe(object_df, use_container_width=True)
-    except Exception as e:
-        st.error(f"Failed to load Salesforce objects: {e}")
+    with col_o:
+        st.markdown("#### 🏢 Developer Sandbox Details")
+        st.markdown(f"**Organization:** **{org_data.get('Name', 'Sitetracker BT')}** ({org_data.get('OrganizationType', 'Unlimited Edition')})")
+        st.markdown(f"**Is Sandbox:** `{'Yes (Developer Sandbox)' if org_data.get('IsSandbox') else 'No'}`")
+        st.markdown(f"**Salesforce Pod / Instance:** `{org_data.get('InstanceName', 'SWE128S')}`")
+        st.markdown(f"**Organization ID:** `{user_info.get('organization_id', 'N/A')}`")
+        st.markdown(f"**Instance URL:** `{token.get('instance_url', 'N/A')}`")
+        st.markdown(f"**Live Sitetracker Sites in Org:** `{site_cnt}` record(s)")
+        st.markdown(f"**Live BT Projects in Org:** `{proj_cnt}` record(s)")
 
-    # ==================================================
-    # ACTIONS
-    # ==================================================
-    st.subheader("⚡ Data Actions")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("⬇️ Export Data from Object", key="export_data"):
-            st.info("Custom SOQL queries and automated exports can be configured here.")
-
-    with col2:
-        if st.button("🚪 Logout from Salesforce", key="export_logout"):
-            clear_token()
-            st.session_state.oauth_server_started = False
-            st.success("Logged out successfully.")
-            st.rerun()
+    st.write("")
+    if st.button("🚪 Logout from Salesforce", type="secondary", key="export_logout"):
+        clear_token(profile=active_profile)
+        st.session_state.oauth_server_started = False
+        st.success("Logged out successfully.")
+        st.rerun()
 
     st.divider()
     render_back_button(go)

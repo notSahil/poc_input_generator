@@ -18,12 +18,12 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `data_load.py`: UI page for selecting reports, previewing mappings, 1-click live SOQL fetching from Sitetracker, validating inputs, visual source grid with status badges, and running delta generation.
 - `run_history.py`: UI page for browsing past engine runs, viewing execution metrics, re-downloading output files, and inspecting archived source inputs.
 - `mapping_editor.py`: Interactive UI allowing the user to view and edit mapping rules directly in the browser with history/rollback capabilities.
-- `data_export.py`: Handles downloading the output files, authenticating via OAuth/manual tokens, inspecting SObjects, and monitoring live Salesforce API quotas and limits.
+- `data_export.py`: Handles environment profile switching (Sandbox vs Production), Workbench session token connection, displaying authenticated user profile details, and logout.
 
 ### `/salesforce` (Integrations)
-- `auth.py`: Handles OAuth, manual token authentication, and automatic token refreshing with Salesforce.
-- `client.py`: API wrapper for making legacy REST requests to SFDC.
-- `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by existing `.sf_auth.json` OAuth tokens with automatic expiration refresh.
+- `auth.py`: Handles OAuth, multi-environment profile token caching (`.sf_auth_sandbox.json`, `.sf_auth_prod.json`), Workbench session token sanitization, and automatic token refreshing.
+- `client.py`: API wrapper for making legacy REST requests to SFDC with profile awareness.
+- `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by active environment profile OAuth/session tokens with automatic expiration refresh.
 - `data_fetcher.py`: Builds dynamic SOQL queries from `Mapping_file.xlsx` and fetches live Sitetracker records via `simple-salesforce`.
 - `bulk_uploader.py`: Uploads `final_input_file.csv` to Salesforce via Bulk API 2.0 with payload column sanitization and record-level error logging.
 - `field_discovery.py`: Discovers Salesforce object metadata via `describe()`, filters updateable fields, and maps types to text/date/number/boolean.
@@ -36,6 +36,9 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 
 ### `/scripts` (Utilities)
 - `auto_deploy.sh`: Bash script run via cron on the Oracle server to automatically pull git updates.
+- `deploy_to_oracle.sh`: Bash script setting up VM, swap, iptables, uv, code-server, and systemd services on Oracle Cloud.
+- `scaffold_report.py`: CLI generator script for scaffolding new report configs.
+- `setup_ssl.sh`: Automated script for configuring Nginx reverse proxy with WebSocket support and Let's Encrypt HTTPS via DuckDNS or custom domain.
 
 ### Root Files
 - `cli.py`: Command-line interface for scaffolding or running reports without the UI.
@@ -77,5 +80,9 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 10. **1-Click Rollback Payload & Run History Browser (`core/engine.py`, `ui/run_history.py`, `ui/data_load.py`)**:
    - *Decision:* Generate a mirror `rollback_file.csv` containing pre-change Sitetracker values whenever deltas are computed, with an emergency revert gate in Section 6. Provide a dedicated Run History & Audit browser scanning existing `runs/` and `archive/` folders with 1-click downloads.
    - *Reason:* Gives the team an absolute safety net to undo accidental data writes and provides self-service auditability without needing command-line or IDE access.
+11. **Multi-Environment Profile Architecture & Workbench Quick Connect (`salesforce/auth.py`, `ui/data_export.py`, `ui/data_load.py`)**:
+   - *Decision:* Support isolated environment profiles (`sandbox` vs `prod`) storing distinct token caches (`.sf_auth_sandbox.json` vs `.sf_auth_prod.json`) and tracked in `.sf_profile.json`. Provide a guided Workbench session connection UI with automated token sanitization (stripping `MY_TOKEN:` and `###` artifacts) and environment badges in Data Load and Export pages.
+   - *Reason:* Allows developer/sandbox testing against real Sitetracker custom schemas without risking production data or overwriting corporate production credentials, providing a frictionless 1-click switch between environments.
+
 
 

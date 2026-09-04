@@ -7,8 +7,8 @@ from salesforce.auth import load_token
 
 
 class SalesforceClient:
-    def __init__(self):
-        token = load_token()
+    def __init__(self, profile: str | None = None):
+        token = load_token(profile)
         if not token or "access_token" not in token:
             raise SalesforceAuthError("Not authenticated with Salesforce. Please login first.")
 

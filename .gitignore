@@ -31,3 +31,5 @@ data/common/mapping_history/
 # Environment variables
 .env
 .sf_auth.json
+.sf_auth*.json
+.sf_profile*.json
