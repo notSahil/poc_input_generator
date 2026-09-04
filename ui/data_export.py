@@ -3,6 +3,7 @@
 import logging
 import threading
 import webbrowser
+from urllib.parse import parse_qs, urlparse
 import streamlit as st
 
 from config import settings
@@ -15,6 +16,7 @@ from salesforce.auth import (
     is_oauth_configured,
     is_token_valid,
     load_token,
+    pop_pkce_session,
     save_env_credentials,
     save_manual_token,
     set_active_profile,
@@ -72,84 +74,62 @@ def render(go):
         with tab_oauth:
             st.markdown("Enter your **External Client App** credentials to authenticate with your Sitetracker Sandbox.")
 
-            # Upfront Credentials Input Form
-            with st.form("oauth_login_form"):
-                st.markdown("##### 🔑 External Client App Credentials")
+            default_cid = st.session_state.get("inp_client_id", settings.SF_CLIENT_ID)
+            default_csec = st.session_state.get("inp_client_secret", settings.SF_CLIENT_SECRET)
+            default_url = st.session_state.get("inp_login_url", settings.SF_LOGIN_URL)
 
-                default_cid = st.session_state.get("inp_client_id", settings.SF_CLIENT_ID)
-                default_csec = st.session_state.get("inp_client_secret", settings.SF_CLIENT_SECRET)
-                default_url = st.session_state.get("inp_login_url", settings.SF_LOGIN_URL)
+            inp_cid = st.text_input(
+                "Consumer Key (Client ID)",
+                value=default_cid,
+                placeholder="Enter Consumer Key (e.g. 3MVG93Bty...)",
+                key="ui_inp_cid",
+                help="Found in Salesforce Setup > External Client App Manager > OAuth Settings"
+            )
+            inp_csec = st.text_input(
+                "Consumer Secret",
+                value=default_csec,
+                type="password",
+                placeholder="Enter Consumer Secret",
+                key="ui_inp_csec",
+                help="Found in Salesforce Setup > Manage Consumer Details"
+            )
+            inp_url = st.text_input(
+                "Salesforce Login URL",
+                value=default_url or "https://test.salesforce.com",
+                key="ui_inp_url",
+                help="https://test.salesforce.com for Sandboxes or your MyDomain URL"
+            )
+            remember = st.checkbox("💾 Remember credentials on this machine", value=bool(settings.SF_CLIENT_ID), key="ui_inp_remember")
 
-                inp_cid = st.text_input(
-                    "Consumer Key (Client ID)",
-                    value=default_cid,
-                    placeholder="Enter Consumer Key (e.g. 3MVG93Bty...)",
-                    help="Found in Salesforce Setup > External Client App Manager > OAuth Settings"
-                )
-                inp_csec = st.text_input(
-                    "Consumer Secret",
-                    value=default_csec,
-                    type="password",
-                    placeholder="Enter Consumer Secret",
-                    help="Found in Salesforce Setup > Manage Consumer Details"
-                )
-                inp_url = st.text_input(
-                    "Salesforce Login URL",
-                    value=default_url or "https://test.salesforce.com",
-                    help="https://test.salesforce.com for Sandboxes or your MyDomain URL"
-                )
-                remember = st.checkbox("💾 Remember credentials on this machine", value=False)
+            has_creds = bool(inp_cid.strip() and inp_csec.strip())
 
-                submit_prep = st.form_submit_button("⚡ Prepare Salesforce Login", type="primary")
+            if has_creds:
+                settings.SF_CLIENT_ID = inp_cid.strip()
+                settings.SF_CLIENT_SECRET = inp_csec.strip()
+                settings.SF_LOGIN_URL = inp_url.strip()
 
-                if submit_prep:
-                    if not inp_cid.strip() or not inp_csec.strip():
-                        st.error("Please enter both the Consumer Key and Consumer Secret.")
-                    else:
-                        st.session_state["inp_client_id"] = inp_cid.strip()
-                        st.session_state["inp_client_secret"] = inp_csec.strip()
-                        st.session_state["inp_login_url"] = inp_url.strip()
-                        st.session_state["remember_creds"] = remember
+                if remember:
+                    save_env_credentials(inp_cid.strip(), inp_csec.strip(), login_url=inp_url.strip())
+                else:
+                    clear_saved_credentials()
+                    settings.SF_CLIENT_ID = inp_cid.strip()
+                    settings.SF_CLIENT_SECRET = inp_csec.strip()
+                    settings.SF_LOGIN_URL = inp_url.strip()
 
-                        settings.SF_CLIENT_ID = inp_cid.strip()
-                        settings.SF_CLIENT_SECRET = inp_csec.strip()
-                        settings.SF_LOGIN_URL = inp_url.strip()
-
-                        if remember:
-                            save_env_credentials(inp_cid, inp_csec, login_url=inp_url)
-                        else:
-                            clear_saved_credentials()
-                            settings.SF_CLIENT_ID = inp_cid.strip()
-                            settings.SF_CLIENT_SECRET = inp_csec.strip()
-                            settings.SF_LOGIN_URL = inp_url.strip()
-
-                        st.session_state["oauth_ready"] = True
-                        st.session_state["oauth_url"] = get_login_url(
-                            client_id=inp_cid.strip(),
-                            login_url=inp_url.strip(),
-                            profile=active_profile
-                        )
-                        st.success("Credentials ready! Click the button below to authorize.")
-                        st.rerun()
-
-            active_cid = st.session_state.get("inp_client_id", settings.SF_CLIENT_ID)
-            active_csec = st.session_state.get("inp_client_secret", settings.SF_CLIENT_SECRET)
-
-            if active_cid and active_csec:
                 # Start local callback server in background thread if not already running
                 if not st.session_state.oauth_server_started:
                     t = threading.Thread(target=start_oauth_server, args=(settings.OAUTH_CALLBACK_PORT,), daemon=True)
                     t.start()
                     st.session_state.oauth_server_started = True
 
-                oauth_url = st.session_state.get("oauth_url") or get_login_url(
-                    client_id=active_cid,
-                    login_url=st.session_state.get("inp_login_url", settings.SF_LOGIN_URL),
+                oauth_url = get_login_url(
+                    client_id=inp_cid.strip(),
+                    client_secret=inp_csec.strip(),
+                    login_url=inp_url.strip(),
                     profile=active_profile
                 )
 
-                st.divider()
-                st.markdown("##### 🚀 Step 2: Authorize in Salesforce")
+                st.write("")
                 col_btn, col_check = st.columns([2, 1])
                 with col_btn:
                     st.link_button(
@@ -167,20 +147,32 @@ def render(go):
                         else:
                             st.info("Waiting for login to complete in your browser...")
 
-                # Manual Code Fallback (for corporate proxy / firewall environments)
-                with st.expander("📋 Manual Authorization Code (If browser didn't redirect automatically)", expanded=False):
-                    st.caption("If your browser redirected to a URL starting with `http://localhost:1717/oauth/callback?code=...`, paste the `code` value here:")
-                    manual_code = st.text_input("Authorization Code", placeholder="Paste code parameter from URL", key="inp_manual_auth_code")
-                    if st.button("🔌 Exchange Code & Connect", key="btn_exchange_auth_code"):
+                # Manual Code Fallback (for remote VM or corporate proxy)
+                with st.expander("📋 Manual Authorization Code (If browser redirected to localhost:1717)", expanded=False):
+                    st.caption("If your browser opened `http://localhost:1717/oauth/callback?...`, paste the full URL or code parameter here:")
+                    manual_code = st.text_input("Authorization Code or Callback URL", placeholder="Paste code or URL", key="inp_manual_auth_code")
+                    if st.button("🔌 Connect with Code", key="btn_exchange_auth_code"):
                         if not manual_code.strip():
-                            st.error("Please enter the authorization code.")
+                            st.error("Please enter the authorization code or redirect URL.")
                         else:
+                            raw_input = manual_code.strip()
+                            code_val = raw_input
+                            state_val = None
+                            if "?" in raw_input:
+                                parsed = urlparse(raw_input)
+                                qp = parse_qs(parsed.query)
+                                code_val = qp.get("code", [raw_input])[0]
+                                state_val = qp.get("state", [None])[0]
+
                             try:
+                                sess = pop_pkce_session(state=state_val, profile=active_profile)
+                                ver = sess.get("verifier")
                                 token_data = exchange_code_for_token(
-                                    manual_code.strip(),
-                                    client_id=active_cid,
-                                    client_secret=active_csec,
-                                    login_url=st.session_state.get("inp_login_url", settings.SF_LOGIN_URL),
+                                    code_val,
+                                    client_id=inp_cid.strip(),
+                                    client_secret=inp_csec.strip(),
+                                    login_url=inp_url.strip(),
+                                    code_verifier=ver,
                                     profile=active_profile
                                 )
                                 user_info = get_user_info(profile=active_profile)
@@ -189,6 +181,8 @@ def render(go):
                             except Exception as e:
                                 clear_token(profile=active_profile)
                                 st.error(f"❌ OAuth exchange failed: {e}")
+            else:
+                st.info("👆 Please enter your Consumer Key and Consumer Secret above to enable the login button.")
 
         # --------------------------------------------------
         # TAB 2: WORKBENCH SESSION TOKEN

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import secrets
 import socketserver
 import threading
 import time
@@ -122,8 +123,15 @@ def generate_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def save_code_verifier(verifier: str, profile: str | None = None) -> None:
-    """Save code verifier to match callback code exchange."""
+def save_pkce_session(
+    verifier: str,
+    client_id: str = "",
+    client_secret: str = "",
+    login_url: str = "",
+    profile: str | None = None
+) -> str:
+    """Save PKCE session keyed by unique state token."""
+    state = secrets.token_urlsafe(24)
     prof = profile or get_active_profile()
     try:
         data = {}
@@ -133,37 +141,67 @@ def save_code_verifier(verifier: str, profile: str | None = None) -> None:
                     data = json.load(f)
             except Exception:
                 data = {}
+        data[state] = {
+            "verifier": verifier,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "login_url": login_url,
+            "profile": prof,
+            "created_at": time.time(),
+        }
+        # Backward compatibility fallback
         data[prof] = verifier
         with open(PKCE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
     except Exception as e:
-        logger.warning("Could not persist PKCE verifier: %s", e)
+        logger.warning("Could not persist PKCE session: %s", e)
+    return state
 
 
-def pop_code_verifier(profile: str | None = None) -> str | None:
-    """Retrieve and remove stored PKCE code verifier."""
+def pop_pkce_session(state: str | None = None, profile: str | None = None) -> dict:
+    """Retrieve and remove stored PKCE session by state (or fallback to profile)."""
     prof = profile or get_active_profile()
     if not PKCE_FILE.exists():
-        return None
+        return {}
     try:
         with open(PKCE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        verifier = data.pop(prof, None)
+        session_info = {}
+        if state and state in data and isinstance(data[state], dict):
+            session_info = data.pop(state)
+        elif prof in data:
+            val = data.pop(prof)
+            if isinstance(val, dict):
+                session_info = val
+            else:
+                session_info = {"verifier": val}
         with open(PKCE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
-        return verifier
+        return session_info
     except Exception as e:
-        logger.warning("Could not pop PKCE verifier: %s", e)
-        return None
+        logger.warning("Could not pop PKCE session: %s", e)
+        return {}
+
+
+def save_code_verifier(verifier: str, profile: str | None = None) -> None:
+    """Save code verifier to match callback code exchange (legacy compatibility)."""
+    save_pkce_session(verifier, profile=profile)
+
+
+def pop_code_verifier(profile: str | None = None) -> str | None:
+    """Retrieve and remove stored PKCE code verifier (legacy compatibility)."""
+    sess = pop_pkce_session(profile=profile)
+    return sess.get("verifier")
 
 
 def get_login_url(
     client_id: str | None = None,
+    client_secret: str | None = None,
     redirect_uri: str | None = None,
     login_url: str | None = None,
     profile: str | None = None
 ) -> str:
-    """Generate the OAuth 2.0 authorization URL with PKCE (RFC 7636)."""
+    """Generate the OAuth 2.0 authorization URL with PKCE and state tracking (RFC 7636)."""
     prof = profile or get_active_profile()
     base_url = (login_url or settings.SF_LOGIN_URL).strip().rstrip("/")
     if prof == "sandbox" and "login.salesforce.com" in base_url:
@@ -172,10 +210,11 @@ def get_login_url(
         base_url = "https://login.salesforce.com"
 
     cid = (client_id or settings.SF_CLIENT_ID).strip()
+    csec = (client_secret or settings.SF_CLIENT_SECRET).strip()
     r_uri = (redirect_uri or settings.SF_REDIRECT_URI).strip()
 
     verifier, challenge = generate_pkce_pair()
-    save_code_verifier(verifier, prof)
+    state = save_pkce_session(verifier, client_id=cid, client_secret=csec, login_url=base_url, profile=prof)
 
     return (
         f"{base_url}/services/oauth2/authorize"
@@ -184,6 +223,7 @@ def get_login_url(
         f"&redirect_uri={r_uri}"
         f"&code_challenge={challenge}"
         f"&code_challenge_method=S256"
+        f"&state={state}"
     )
 
 
@@ -316,6 +356,7 @@ def exchange_code_for_token(
     client_secret: str | None = None,
     redirect_uri: str | None = None,
     login_url: str | None = None,
+    code_verifier: str | None = None,
     profile: str | None = None
 ) -> dict:
     """Exchange OAuth authorization code for access token."""
@@ -343,7 +384,7 @@ def exchange_code_for_token(
         "redirect_uri": r_uri,
     }
 
-    verifier = pop_code_verifier(prof)
+    verifier = code_verifier or pop_code_verifier(prof)
     if verifier:
         payload["code_verifier"] = verifier
 
@@ -414,6 +455,8 @@ class OAuthHandler(http.server.SimpleHTTPRequestHandler):
 
         query = parse_qs(parsed.query)
         auth_code = query.get("code")
+        state = query.get("state")
+        state_val = state[0] if state else None
 
         if not auth_code:
             self.send_response(400)
@@ -425,8 +468,22 @@ class OAuthHandler(http.server.SimpleHTTPRequestHandler):
 
         try:
             prof = get_active_profile()
-            token_data = exchange_code_for_token(auth_code, profile=prof)
-            save_token(token_data, profile=prof)
+            sess = pop_pkce_session(state=state_val, profile=prof)
+            cid = sess.get("client_id") or settings.SF_CLIENT_ID
+            csec = sess.get("client_secret") or settings.SF_CLIENT_SECRET
+            lurl = sess.get("login_url") or settings.SF_LOGIN_URL
+            session_prof = sess.get("profile") or prof
+            ver = sess.get("verifier")
+
+            token_data = exchange_code_for_token(
+                auth_code,
+                client_id=cid,
+                client_secret=csec,
+                login_url=lurl,
+                code_verifier=ver,
+                profile=session_prof
+            )
+            save_token(token_data, profile=session_prof)
 
             self.send_response(200)
             self.end_headers()
