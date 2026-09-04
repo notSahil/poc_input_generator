@@ -1,6 +1,7 @@
 report:
   name: Master Site Listing
   sf_id_column: "Id"
+  salesforce_object: "sitetracker__Site__c"
 
 folders:
   work_dir: Master_Site_Listing

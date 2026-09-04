@@ -37,8 +37,10 @@ def build_soql_for_report(report_name: str) -> tuple[str, str, dict[str, str]]:
         raw_obj = mapping_df["Object Name"].dropna().iloc[0] if "Object Name" in mapping_df.columns else "Site"
         object_name = str(raw_obj).strip()
 
-    # If object name has spaces or does not have suffix, ensure it can be queried
-    if " " in object_name and not object_name.endswith("__c"):
+    # If object name is Site, map to the real Sitetracker managed package object
+    if object_name.lower() == "site":
+        object_name = "sitetracker__Site__c"
+    elif " " in object_name and not object_name.endswith("__c"):
         # e.g. "BT Project" -> "BT_Project__c" or fallback
         object_name = f"{object_name.replace(' ', '_')}__c"
 
