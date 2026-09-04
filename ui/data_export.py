@@ -17,6 +17,7 @@ from salesforce.auth import (
     is_token_valid,
     load_token,
     pop_pkce_session,
+    sanitize_consumer_key,
     save_env_credentials,
     save_manual_token,
     set_active_profile,
@@ -103,11 +104,18 @@ def render(go):
             )
             remember = st.checkbox("💾 Remember credentials on this machine", value=saved_remember, key="ui_inp_remember")
 
-            has_creds = bool(inp_cid.strip() and inp_csec.strip())
+            clean_cid = sanitize_consumer_key(inp_cid)
+            clean_csec = (inp_csec or "").strip().strip("'\"")
+            clean_url = (inp_url or "").strip() or "https://test.salesforce.com"
+
+            if inp_cid.strip() and clean_cid != inp_cid.strip():
+                st.caption("ℹ️ Auto-corrected Consumer Key format (e.g. leading '3').")
+
+            has_creds = bool(clean_cid and clean_csec)
 
             if has_creds:
                 if remember:
-                    save_env_credentials(inp_cid.strip(), inp_csec.strip(), login_url=inp_url.strip())
+                    save_env_credentials(clean_cid, clean_csec, login_url=clean_url)
                 else:
                     clear_saved_credentials()
 
@@ -117,12 +125,22 @@ def render(go):
                     t.start()
                     st.session_state.oauth_server_started = True
 
-                oauth_url = get_login_url(
-                    client_id=inp_cid.strip(),
-                    client_secret=inp_csec.strip(),
-                    login_url=inp_url.strip(),
-                    profile=active_profile
-                )
+                # Stabilize OAuth URL: do not generate a new PKCE pair on every Streamlit rerun
+                creds_key = (clean_cid, clean_csec, clean_url, active_profile)
+                if st.session_state.get("oauth_creds_key") != creds_key or "oauth_url" not in st.session_state:
+                    st.session_state["oauth_creds_key"] = creds_key
+                    new_url = get_login_url(
+                        client_id=clean_cid,
+                        client_secret=clean_csec,
+                        login_url=clean_url,
+                        profile=active_profile
+                    )
+                    st.session_state["oauth_url"] = new_url
+                    parsed_u = urlparse(new_url)
+                    qp_u = parse_qs(parsed_u.query)
+                    st.session_state["active_oauth_state"] = qp_u.get("state", [""])[0]
+
+                oauth_url = st.session_state["oauth_url"]
 
                 st.divider()
                 st.markdown("##### 🚀 Step 2: Authorize & Connect")
@@ -145,9 +163,9 @@ def render(go):
 
                 # Mobile & Remote Browser Authorization Box
                 st.info(
-                    "📱 **Logging in from your phone? Follow these 3 steps:**\n\n"
-                    "1. Tap **🚀 Login with Salesforce** above. Log into Salesforce and tap **Allow**.\n"
-                    "2. Your phone's browser will redirect to `http://localhost:1717/...` and show *'Cannot connect to server'* (or *'This site can't be reached'*). **This is 100% normal on mobile!**\n"
+                    "📱 **Logging in from your phone or remote browser? Follow these 3 steps:**\n\n"
+                    "1. Tap **🚀 Login with Salesforce** above. Log in and tap **Allow**.\n"
+                    "2. Your browser will redirect to `http://localhost:1717/...` and show *'Cannot connect to server'* (or *'This site can't be reached'*). **This is completely normal on mobile or remote servers!**\n"
                     "3. **Tap your phone's address bar, copy that full URL**, switch back here, paste it below, and tap **Complete Login**:"
                 )
 
@@ -156,21 +174,23 @@ def render(go):
                     if not manual_code.strip():
                         st.error("Please paste the callback URL or authorization code.")
                     else:
-                        raw_input = manual_code.strip()
+                        raw_input = manual_code.strip().strip("'\"")
                         code_val = raw_input
-                        state_val = None
+                        state_val = st.session_state.get("active_oauth_state")
                         if "?" in raw_input:
                             parsed = urlparse(raw_input)
                             qp = parse_qs(parsed.query)
                             code_val = qp.get("code", [raw_input])[0]
-                            state_val = qp.get("state", [None])[0]
+                            extracted_state = qp.get("state", [None])[0]
+                            if extracted_state:
+                                state_val = extracted_state
 
                         try:
                             sess = pop_pkce_session(state=state_val, profile=active_profile)
                             ver = sess.get("verifier")
-                            cid_val = inp_cid.strip() or sess.get("client_id", "")
-                            csec_val = inp_csec.strip() or sess.get("client_secret", "")
-                            url_val = inp_url.strip() or sess.get("login_url", "") or "https://test.salesforce.com"
+                            cid_val = clean_cid or sess.get("client_id", "")
+                            csec_val = clean_csec or sess.get("client_secret", "")
+                            url_val = clean_url or sess.get("login_url", "") or "https://test.salesforce.com"
                             token_data = exchange_code_for_token(
                                 code_val,
                                 client_id=cid_val,
@@ -181,8 +201,12 @@ def render(go):
                             )
                             user_info = get_user_info(profile=active_profile)
                             st.success(f"✅ Successfully connected via OAuth 2.0 as **{user_info.get('preferred_username', 'User')}**!")
+                            st.session_state.pop("oauth_url", None)
+                            st.session_state.pop("active_oauth_state", None)
+                            st.session_state.pop("oauth_creds_key", None)
                             st.rerun()
                         except Exception as e:
+                            logger.error("OAuth exchange failed: %s", e, exc_info=True)
                             clear_token(profile=active_profile)
                             st.error(f"❌ OAuth exchange failed: {e}")
             else:

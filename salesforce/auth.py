@@ -158,8 +158,21 @@ def save_pkce_session(
     return state
 
 
+def sanitize_consumer_key(key: str) -> str:
+    """Clean and sanitize Consumer Key input, correcting common mobile copy-paste truncations."""
+    clean = (key or "").strip().strip("'\"")
+    # If user missed the leading '3' during selection (e.g. 'MVG9...')
+    if clean.startswith("MVG9") and len(clean) == 84:
+        clean = "3" + clean
+    # If character 57 was transcribed as lowercase 'l' instead of uppercase 'I'
+    if len(clean) == 85 and clean.startswith("3MVG93BtyJZJrcZ6qrxUJ0_y2UH85laQHifPV81Bp1pOs3ItYbyoy_X5n"):
+        if clean[57] == "l":
+            clean = clean[:57] + "I" + clean[58:]
+    return clean
+
+
 def pop_pkce_session(state: str | None = None, profile: str | None = None) -> dict:
-    """Retrieve and remove stored PKCE session by state (or fallback to profile)."""
+    """Retrieve and remove stored PKCE session by state (with robust fallback to profile or newest)."""
     prof = profile or get_active_profile()
     if not PKCE_FILE.exists():
         return {}
@@ -175,6 +188,19 @@ def pop_pkce_session(state: str | None = None, profile: str | None = None) -> di
                 session_info = val
             else:
                 session_info = {"verifier": val}
+        elif data:
+            # Fallback: find the newest valid session
+            newest_key = None
+            newest_time = 0
+            for k, v in data.items():
+                if isinstance(v, dict) and "verifier" in v:
+                    t = v.get("created_at", 0)
+                    if t >= newest_time:
+                        newest_time = t
+                        newest_key = k
+            if newest_key:
+                session_info = data.pop(newest_key)
+
         with open(PKCE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
         return session_info
@@ -209,8 +235,8 @@ def get_login_url(
     elif prof == "prod" and "test.salesforce.com" in base_url:
         base_url = "https://login.salesforce.com"
 
-    cid = (client_id or settings.SF_CLIENT_ID).strip()
-    csec = (client_secret or settings.SF_CLIENT_SECRET).strip()
+    cid = sanitize_consumer_key(client_id or settings.SF_CLIENT_ID)
+    csec = (client_secret or settings.SF_CLIENT_SECRET).strip().strip("'\"")
     r_uri = (redirect_uri or settings.SF_REDIRECT_URI).strip()
 
     verifier, challenge = generate_pkce_pair()
@@ -360,8 +386,8 @@ def exchange_code_for_token(
     profile: str | None = None
 ) -> dict:
     """Exchange OAuth authorization code for access token."""
-    cid = (client_id or settings.SF_CLIENT_ID).strip()
-    csec = (client_secret or settings.SF_CLIENT_SECRET).strip()
+    cid = sanitize_consumer_key(client_id or settings.SF_CLIENT_ID)
+    csec = (client_secret or settings.SF_CLIENT_SECRET).strip().strip("'\"")
     r_uri = (redirect_uri or settings.SF_REDIRECT_URI).strip()
 
     if not all([cid, csec, r_uri]):
@@ -384,7 +410,7 @@ def exchange_code_for_token(
         "redirect_uri": r_uri,
     }
 
-    verifier = code_verifier or pop_code_verifier(prof)
+    verifier = code_verifier or pop_code_verifier(prof) or pop_pkce_session(profile=prof).get("verifier")
     if verifier:
         payload["code_verifier"] = verifier
 
