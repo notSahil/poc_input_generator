@@ -171,37 +171,6 @@ def sanitize_consumer_key(key: str) -> str:
     return clean
 
 
-def get_pkce_session(state: str | None = None, profile: str | None = None) -> dict:
-    """Retrieve stored PKCE session by state (with robust fallback to profile or newest) WITHOUT deleting it."""
-    prof = profile or get_active_profile()
-    if not PKCE_FILE.exists():
-        return {}
-    try:
-        with open(PKCE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if state and state in data and isinstance(data[state], dict):
-            return data[state]
-        if prof in data:
-            val = data[prof]
-            return val if isinstance(val, dict) else {"verifier": val}
-        if data:
-            # Fallback: find the newest valid session
-            newest_val = None
-            newest_time = 0
-            for k, v in data.items():
-                if isinstance(v, dict) and "verifier" in v:
-                    t = v.get("created_at", 0)
-                    if t >= newest_time:
-                        newest_time = t
-                        newest_val = v
-            if newest_val:
-                return newest_val
-        return {}
-    except Exception as e:
-        logger.warning("Could not retrieve PKCE session: %s", e)
-        return {}
-
-
 def pop_pkce_session(state: str | None = None, profile: str | None = None) -> dict:
     """Retrieve and remove stored PKCE session by state (with robust fallback to profile or newest)."""
     prof = profile or get_active_profile()
@@ -213,11 +182,12 @@ def pop_pkce_session(state: str | None = None, profile: str | None = None) -> di
         session_info = {}
         if state and state in data and isinstance(data[state], dict):
             session_info = data.pop(state)
-            if prof in data:
-                data.pop(prof, None)
         elif prof in data:
             val = data.pop(prof)
-            session_info = val if isinstance(val, dict) else {"verifier": val}
+            if isinstance(val, dict):
+                session_info = val
+            else:
+                session_info = {"verifier": val}
         elif data:
             # Fallback: find the newest valid session
             newest_key = None
@@ -230,8 +200,6 @@ def pop_pkce_session(state: str | None = None, profile: str | None = None) -> di
                         newest_key = k
             if newest_key:
                 session_info = data.pop(newest_key)
-                if prof in data:
-                    data.pop(prof, None)
 
         with open(PKCE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -442,7 +410,7 @@ def exchange_code_for_token(
         "redirect_uri": r_uri,
     }
 
-    verifier = code_verifier or pop_code_verifier(prof) or get_pkce_session(profile=prof).get("verifier")
+    verifier = code_verifier or pop_code_verifier(prof) or pop_pkce_session(profile=prof).get("verifier")
     if verifier:
         payload["code_verifier"] = verifier
 
@@ -456,61 +424,6 @@ def exchange_code_for_token(
     token_data = response.json()
     token_data["profile"] = prof
     save_token(token_data, profile=prof)
-    pop_pkce_session(profile=prof)
-    return token_data
-
-
-def login_with_password(
-    username: str,
-    password: str,
-    client_id: str | None = None,
-    client_secret: str | None = None,
-    login_url: str | None = None,
-    security_token: str = "",
-    profile: str | None = None
-) -> dict:
-    """Direct OAuth 2.0 Username-Password flow (ideal for mobile and remote headless environments without redirects)."""
-    cid = sanitize_consumer_key(client_id or settings.SF_CLIENT_ID)
-    csec = (client_secret or settings.SF_CLIENT_SECRET).strip().strip("'\"")
-
-    if not cid or not csec:
-        raise RuntimeError("Missing Consumer Key or Consumer Secret")
-
-    if not username or not password:
-        raise RuntimeError("Missing Username or Password")
-
-    prof = profile or get_active_profile()
-    base_url = (login_url or settings.SF_LOGIN_URL).strip().rstrip("/")
-    if prof == "sandbox" and "login.salesforce.com" in base_url:
-        base_url = "https://test.salesforce.com"
-    elif prof == "prod" and "test.salesforce.com" in base_url:
-        base_url = "https://login.salesforce.com"
-
-    token_url = f"{base_url}/services/oauth2/token"
-
-    clean_pw = password.strip()
-    clean_sec = security_token.strip()
-    full_pw = f"{clean_pw}{clean_sec}"
-
-    payload = {
-        "grant_type": "password",
-        "client_id": cid,
-        "client_secret": csec,
-        "username": username.strip(),
-        "password": full_pw,
-    }
-
-    response = requests.post(token_url, data=payload)
-
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Salesforce login failed ({response.status_code}): {response.text}"
-        )
-
-    token_data = response.json()
-    token_data["profile"] = prof
-    save_token(token_data, profile=prof)
-    logger.info("Successfully authenticated via direct OAuth password flow as '%s' (%s)", username, prof)
     return token_data
 
 

@@ -3,7 +3,7 @@
 import logging
 import threading
 import webbrowser
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 import streamlit as st
 
 from config import settings
@@ -13,11 +13,9 @@ from salesforce.auth import (
     exchange_code_for_token,
     get_active_profile,
     get_login_url,
-    get_pkce_session,
     is_oauth_configured,
     is_token_valid,
     load_token,
-    login_with_password,
     pop_pkce_session,
     sanitize_consumer_key,
     save_env_credentials,
@@ -69,85 +67,10 @@ def render(go):
     if not logged_in:
         st.info("🔐 Please connect your **Sitetracker Developer Sandbox** to continue.")
 
-        tab_direct, tab_oauth, tab_token = st.tabs([
-            "📱 Direct Login (Mobile & Laptop)",
-            "🌐 Browser OAuth (Localhost Redirect)",
-            "⚡ Session Token (Workbench)"
-        ])
+        tab_oauth, tab_token = st.tabs(["🔑 1-Click OAuth (Connected App)", "⚡ Session Token (Workbench)"])
 
         # --------------------------------------------------
-        # TAB 1: DIRECT CREDENTIALS LOGIN (NO REDIRECTS NEEDED)
-        # --------------------------------------------------
-        with tab_direct:
-            st.markdown("Authenticate directly with your Salesforce credentials. **Ideal for mobile phones, laptops, and remote servers (zero browser redirects required).**")
-            with st.form("direct_login_form"):
-                d_user = st.text_input(
-                    "Salesforce Username",
-                    placeholder="e.g. your_email@company.com.sandbox",
-                    help="Your Salesforce login username"
-                )
-                d_pass = st.text_input(
-                    "Salesforce Password",
-                    type="password",
-                    placeholder="Your Salesforce password",
-                    help="Your Salesforce login password"
-                )
-                d_token = st.text_input(
-                    "Security Token (Optional)",
-                    type="password",
-                    placeholder="Security token (if required by your org)",
-                    help="Leave blank if logging in from a trusted network or sandbox that does not require a security token"
-                )
-                d_cid = st.text_input(
-                    "Consumer Key (Client ID)",
-                    value="3MVG93BtyJZJrcZ6qrxUJ0_y2UH85laQHifPV81Bp1pOs3ItYbyoy_X5nItYbtuM.o9.nDdY2HC6Hry0mqzla",
-                    help="Your External Client App / Connected App Consumer Key"
-                )
-                d_csec = st.text_input(
-                    "Consumer Secret",
-                    value="468F6C55528EAC4C2C06F752536FD6CDF77CF471741D5DCF30B5325402BC8A61",
-                    type="password",
-                    help="Your Consumer Secret"
-                )
-                d_url = st.text_input(
-                    "Salesforce Login URL",
-                    value="https://test.salesforce.com" if active_profile == "sandbox" else "https://login.salesforce.com",
-                    help="https://test.salesforce.com for Developer Sandbox"
-                )
-                d_remember = st.checkbox("💾 Remember credentials on this machine", value=False, key="direct_remember")
-                d_submit = st.form_submit_button("🔌 Connect Directly to Sitetracker", type="primary", use_container_width=True)
-
-                if d_submit:
-                    if not d_user.strip() or not d_pass.strip():
-                        st.error("Please provide both Username and Password.")
-                    elif not d_cid.strip() or not d_csec.strip():
-                        st.error("Please provide Consumer Key and Consumer Secret.")
-                    else:
-                        with st.spinner("Authenticating with Salesforce..."):
-                            try:
-                                clean_cid = sanitize_consumer_key(d_cid)
-                                clean_csec = d_csec.strip().strip("'\"")
-                                token_data = login_with_password(
-                                    username=d_user.strip(),
-                                    password=d_pass.strip(),
-                                    client_id=clean_cid,
-                                    client_secret=clean_csec,
-                                    login_url=d_url.strip(),
-                                    security_token=d_token.strip(),
-                                    profile=active_profile
-                                )
-                                if d_remember:
-                                    save_env_credentials(clean_cid, clean_csec, login_url=d_url.strip())
-                                user_info = get_user_info(profile=active_profile)
-                                st.success(f"✅ Successfully connected to Sitetracker as **{user_info.get('preferred_username', d_user)}**!")
-                                st.rerun()
-                            except Exception as e:
-                                logger.error("Direct login failed: %s", e, exc_info=True)
-                                clear_token(profile=active_profile)
-                                st.error(f"❌ Direct login failed: {e}")
-
-        # --------------------------------------------------
-        # TAB 2: EXTERNAL CLIENT APP OAUTH 2.0
+        # TAB 1: EXTERNAL CLIENT APP OAUTH 2.0
         # --------------------------------------------------
         with tab_oauth:
             st.markdown("Enter your **External Client App** credentials to authenticate with your Sitetracker Sandbox.")
@@ -241,9 +164,9 @@ def render(go):
                 # Mobile & Remote Browser Authorization Box
                 st.info(
                     "📱 **Logging in from your phone or remote browser? Follow these 3 steps:**\n\n"
-                    "1. Click **🚀 Login with Salesforce** above, sign in, and tap **Allow**.\n"
-                    "2. Your browser will redirect to `http://localhost:1717/...` and show *'This site can't be reached'* (or *'Cannot connect'*). **This is completely normal on remote servers!**\n"
-                    "3. **Copy that full URL from your browser address bar**, paste it below, and click **Complete Login**:"
+                    "1. Tap **🚀 Login with Salesforce** above. Log in and tap **Allow**.\n"
+                    "2. Your browser will redirect to `http://localhost:1717/...` and show *'Cannot connect to server'* (or *'This site can't be reached'*). **This is completely normal on mobile or remote servers!**\n"
+                    "3. **Tap your phone's address bar, copy that full URL**, switch back here, paste it below, and tap **Complete Login**:"
                 )
 
                 manual_code = st.text_input("Paste Redirected URL or Code here", placeholder="http://localhost:1717/oauth/callback?code=...", key="inp_manual_auth_code")
@@ -254,30 +177,17 @@ def render(go):
                         raw_input = manual_code.strip().strip("'\"")
                         code_val = raw_input
                         state_val = st.session_state.get("active_oauth_state")
-
-                        # Robust query string extraction
-                        query_str = ""
                         if "?" in raw_input:
-                            query_str = raw_input.split("?", 1)[1]
-                        elif "code=" in raw_input:
-                            query_str = raw_input
-
-                        if query_str:
-                            qp = parse_qs(query_str)
-                            if "code" in qp:
-                                code_val = qp["code"][0]
-                            if "state" in qp:
-                                state_val = qp["state"][0]
-
-                        code_val = unquote(code_val).strip()
+                            parsed = urlparse(raw_input)
+                            qp = parse_qs(parsed.query)
+                            code_val = qp.get("code", [raw_input])[0]
+                            extracted_state = qp.get("state", [None])[0]
+                            if extracted_state:
+                                state_val = extracted_state
 
                         try:
-                            sess = get_pkce_session(state=state_val, profile=active_profile)
+                            sess = pop_pkce_session(state=state_val, profile=active_profile)
                             ver = sess.get("verifier")
-                            if not ver:
-                                st.warning("⚠️ Active PKCE security session was not found. If this was from a previous attempt, please click **🚀 Login with Salesforce** above to start fresh.")
-                                st.stop()
-
                             cid_val = clean_cid or sess.get("client_id", "")
                             csec_val = clean_csec or sess.get("client_secret", "")
                             url_val = clean_url or sess.get("login_url", "") or "https://test.salesforce.com"
@@ -289,9 +199,6 @@ def render(go):
                                 code_verifier=ver,
                                 profile=active_profile
                             )
-                            # Remove PKCE session only on success
-                            pop_pkce_session(state=state_val, profile=active_profile)
-
                             user_info = get_user_info(profile=active_profile)
                             st.success(f"✅ Successfully connected via OAuth 2.0 as **{user_info.get('preferred_username', 'User')}**!")
                             st.session_state.pop("oauth_url", None)
