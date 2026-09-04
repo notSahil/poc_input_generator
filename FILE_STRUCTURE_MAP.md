@@ -83,6 +83,12 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 11. **Multi-Environment Profile Architecture & Workbench Quick Connect (`salesforce/auth.py`, `ui/data_export.py`, `ui/data_load.py`)**:
    - *Decision:* Support isolated environment profiles (`sandbox` vs `prod`) storing distinct token caches (`.sf_auth_sandbox.json` vs `.sf_auth_prod.json`) and tracked in `.sf_profile.json`. Provide a guided Workbench session connection UI with automated token sanitization (stripping `MY_TOKEN:` and `###` artifacts) and environment badges in Data Load and Export pages.
    - *Reason:* Allows developer/sandbox testing against real Sitetracker custom schemas without risking production data or overwriting corporate production credentials, providing a frictionless 1-click switch between environments.
-12. **Sitetracker Managed Package Object Resolution (`salesforce/data_fetcher.py`, `config/reports/master_site_listing.yml`)**:
+12. **Sitetracker Managed Package Object Resolution (`salesforce/data_fetcher.py`, `salesforce/bulk_uploader.py`, `config/reports/master_site_listing.yml`)**:
    - *Decision:* Automatically map generic object names like `Site` to the Sitetracker managed package custom object `sitetracker__Site__c` rather than standard Salesforce `Site` (which is for Experience Cloud / Sites).
-   - *Reason:* Sitetracker stores site tracking records under `sitetracker__Site__c`. Querying standard `Site` causes Salesforce API to throw `INVALID_FIELD` on Sitetracker custom fields.
+   - *Reason:* Sitetracker stores site tracking records under `sitetracker__Site__c`. Querying or updating standard `Site` causes Salesforce API to throw `INVALID_FIELD` or `INVALID_TYPE`.
+13. **Bulk API 2.0 Date ISO Serialization (`salesforce/bulk_uploader.py`)**:
+   - *Decision:* Automatically convert UK date formatted values (`DD/MM/YYYY`) into standard ISO format (`YYYY-MM-DD`) during payload cleaning before submitting Bulk API 2.0 ingest jobs.
+   - *Reason:* Salesforce Bulk API 2.0 uses `xsd:date` schema deserialization, which strictly rejects `DD/MM/YYYY` formats with `INVALID_FIELD: Failed to deserialize field`. Automatic ISO formatting maintains human UK format in CSVs/UI while ensuring 100% Salesforce API compliance.
+
+
+
