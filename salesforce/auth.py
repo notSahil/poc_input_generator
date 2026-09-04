@@ -157,14 +157,22 @@ def pop_code_verifier(profile: str | None = None) -> str | None:
         return None
 
 
-def get_login_url(profile: str | None = None) -> str:
+def get_login_url(
+    client_id: str | None = None,
+    redirect_uri: str | None = None,
+    login_url: str | None = None,
+    profile: str | None = None
+) -> str:
     """Generate the OAuth 2.0 authorization URL with PKCE (RFC 7636)."""
     prof = profile or get_active_profile()
-    base_url = settings.SF_LOGIN_URL
+    base_url = (login_url or settings.SF_LOGIN_URL).strip().rstrip("/")
     if prof == "sandbox" and "login.salesforce.com" in base_url:
         base_url = "https://test.salesforce.com"
     elif prof == "prod" and "test.salesforce.com" in base_url:
         base_url = "https://login.salesforce.com"
+
+    cid = (client_id or settings.SF_CLIENT_ID).strip()
+    r_uri = (redirect_uri or settings.SF_REDIRECT_URI).strip()
 
     verifier, challenge = generate_pkce_pair()
     save_code_verifier(verifier, prof)
@@ -172,8 +180,8 @@ def get_login_url(profile: str | None = None) -> str:
     return (
         f"{base_url}/services/oauth2/authorize"
         f"?response_type=code"
-        f"&client_id={settings.SF_CLIENT_ID}"
-        f"&redirect_uri={settings.SF_REDIRECT_URI}"
+        f"&client_id={cid}"
+        f"&redirect_uri={r_uri}"
         f"&code_challenge={challenge}"
         f"&code_challenge_method=S256"
     )
@@ -250,6 +258,30 @@ def clear_token(profile: str | None = None) -> None:
             pass
 
 
+def clear_saved_credentials() -> None:
+    """Clear saved credentials in .env and runtime settings."""
+    settings.SF_CLIENT_ID = ""
+    settings.SF_CLIENT_SECRET = ""
+    env_file = settings.PROJECT_ROOT / ".env"
+    if env_file.exists():
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            new_lines = []
+            for line in lines:
+                if line.startswith("SF_CLIENT_ID="):
+                    new_lines.append("SF_CLIENT_ID=\n")
+                elif line.startswith("SF_CLIENT_SECRET="):
+                    new_lines.append("SF_CLIENT_SECRET=\n")
+                else:
+                    new_lines.append(line)
+            with open(env_file, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            logger.info("Cleared saved credentials from .env")
+        except Exception as e:
+            logger.error("Failed to clear credentials from .env: %s", e)
+
+
 def is_token_valid(profile: str | None = None) -> bool:
     """Check if stored token exists and hasn't expired."""
     token = load_token(profile)
@@ -278,13 +310,24 @@ def is_token_valid(profile: str | None = None) -> bool:
 # OAUTH CLIENT
 # ==================================================
 
-def exchange_code_for_token(auth_code: str, profile: str | None = None) -> dict:
+def exchange_code_for_token(
+    auth_code: str,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    redirect_uri: str | None = None,
+    login_url: str | None = None,
+    profile: str | None = None
+) -> dict:
     """Exchange OAuth authorization code for access token."""
-    if not all([settings.SF_CLIENT_ID, settings.SF_CLIENT_SECRET, settings.SF_REDIRECT_URI]):
-        raise RuntimeError("Missing Salesforce OAuth configuration in settings or .env")
+    cid = (client_id or settings.SF_CLIENT_ID).strip()
+    csec = (client_secret or settings.SF_CLIENT_SECRET).strip()
+    r_uri = (redirect_uri or settings.SF_REDIRECT_URI).strip()
+
+    if not all([cid, csec, r_uri]):
+        raise RuntimeError("Missing Salesforce OAuth configuration (Client ID, Secret, or Redirect URI)")
 
     prof = profile or get_active_profile()
-    base_url = settings.SF_LOGIN_URL
+    base_url = (login_url or settings.SF_LOGIN_URL).strip().rstrip("/")
     if prof == "sandbox" and "login.salesforce.com" in base_url:
         base_url = "https://test.salesforce.com"
     elif prof == "prod" and "test.salesforce.com" in base_url:
@@ -295,9 +338,9 @@ def exchange_code_for_token(auth_code: str, profile: str | None = None) -> dict:
     payload = {
         "grant_type": "authorization_code",
         "code": auth_code.strip(),
-        "client_id": settings.SF_CLIENT_ID,
-        "client_secret": settings.SF_CLIENT_SECRET,
-        "redirect_uri": settings.SF_REDIRECT_URI,
+        "client_id": cid,
+        "client_secret": csec,
+        "redirect_uri": r_uri,
     }
 
     verifier = pop_code_verifier(prof)
