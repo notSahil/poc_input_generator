@@ -150,7 +150,7 @@ def save_pkce_session(
             "created_at": time.time(),
         }
         # Backward compatibility fallback
-        data[prof] = verifier
+        data[prof] = data[state]
         with open(PKCE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
     except Exception as e:

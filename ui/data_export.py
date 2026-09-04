@@ -74,14 +74,16 @@ def render(go):
         with tab_oauth:
             st.markdown("Enter your **External Client App** credentials to authenticate with your Sitetracker Sandbox.")
 
-            default_cid = st.session_state.get("inp_client_id", settings.SF_CLIENT_ID)
-            default_csec = st.session_state.get("inp_client_secret", settings.SF_CLIENT_SECRET)
-            default_url = st.session_state.get("inp_login_url", settings.SF_LOGIN_URL)
+            # Keep blank by default unless user explicitly chose to remember
+            saved_remember = st.session_state.get("ui_inp_remember", False)
+            default_cid = settings.SF_CLIENT_ID if saved_remember else ""
+            default_csec = settings.SF_CLIENT_SECRET if saved_remember else ""
+            default_url = "https://test.salesforce.com"
 
             inp_cid = st.text_input(
                 "Consumer Key (Client ID)",
                 value=default_cid,
-                placeholder="Enter Consumer Key (e.g. 3MVG93Bty...)",
+                placeholder="Paste Consumer Key (e.g. 3MVG93Bty...)",
                 key="ui_inp_cid",
                 help="Found in Salesforce Setup > External Client App Manager > OAuth Settings"
             )
@@ -89,32 +91,25 @@ def render(go):
                 "Consumer Secret",
                 value=default_csec,
                 type="password",
-                placeholder="Enter Consumer Secret",
+                placeholder="Paste Consumer Secret",
                 key="ui_inp_csec",
                 help="Found in Salesforce Setup > Manage Consumer Details"
             )
             inp_url = st.text_input(
                 "Salesforce Login URL",
-                value=default_url or "https://test.salesforce.com",
+                value=default_url,
                 key="ui_inp_url",
                 help="https://test.salesforce.com for Sandboxes or your MyDomain URL"
             )
-            remember = st.checkbox("💾 Remember credentials on this machine", value=bool(settings.SF_CLIENT_ID), key="ui_inp_remember")
+            remember = st.checkbox("💾 Remember credentials on this machine", value=saved_remember, key="ui_inp_remember")
 
             has_creds = bool(inp_cid.strip() and inp_csec.strip())
 
             if has_creds:
-                settings.SF_CLIENT_ID = inp_cid.strip()
-                settings.SF_CLIENT_SECRET = inp_csec.strip()
-                settings.SF_LOGIN_URL = inp_url.strip()
-
                 if remember:
                     save_env_credentials(inp_cid.strip(), inp_csec.strip(), login_url=inp_url.strip())
                 else:
                     clear_saved_credentials()
-                    settings.SF_CLIENT_ID = inp_cid.strip()
-                    settings.SF_CLIENT_SECRET = inp_csec.strip()
-                    settings.SF_LOGIN_URL = inp_url.strip()
 
                 # Start local callback server in background thread if not already running
                 if not st.session_state.oauth_server_started:
@@ -129,7 +124,8 @@ def render(go):
                     profile=active_profile
                 )
 
-                st.write("")
+                st.divider()
+                st.markdown("##### 🚀 Step 2: Authorize & Connect")
                 col_btn, col_check = st.columns([2, 1])
                 with col_btn:
                     st.link_button(
@@ -147,42 +143,50 @@ def render(go):
                         else:
                             st.info("Waiting for login to complete in your browser...")
 
-                # Manual Code Fallback (for remote VM or corporate proxy)
-                with st.expander("📋 Manual Authorization Code (If browser redirected to localhost:1717)", expanded=False):
-                    st.caption("If your browser opened `http://localhost:1717/oauth/callback?...`, paste the full URL or code parameter here:")
-                    manual_code = st.text_input("Authorization Code or Callback URL", placeholder="Paste code or URL", key="inp_manual_auth_code")
-                    if st.button("🔌 Connect with Code", key="btn_exchange_auth_code"):
-                        if not manual_code.strip():
-                            st.error("Please enter the authorization code or redirect URL.")
-                        else:
-                            raw_input = manual_code.strip()
-                            code_val = raw_input
-                            state_val = None
-                            if "?" in raw_input:
-                                parsed = urlparse(raw_input)
-                                qp = parse_qs(parsed.query)
-                                code_val = qp.get("code", [raw_input])[0]
-                                state_val = qp.get("state", [None])[0]
+                # Mobile & Remote Browser Authorization Box
+                st.info(
+                    "📱 **Logging in from your phone? Follow these 3 steps:**\n\n"
+                    "1. Tap **🚀 Login with Salesforce** above. Log into Salesforce and tap **Allow**.\n"
+                    "2. Your phone's browser will redirect to `http://localhost:1717/...` and show *'Cannot connect to server'* (or *'This site can't be reached'*). **This is 100% normal on mobile!**\n"
+                    "3. **Tap your phone's address bar, copy that full URL**, switch back here, paste it below, and tap **Complete Login**:"
+                )
 
-                            try:
-                                sess = pop_pkce_session(state=state_val, profile=active_profile)
-                                ver = sess.get("verifier")
-                                token_data = exchange_code_for_token(
-                                    code_val,
-                                    client_id=inp_cid.strip(),
-                                    client_secret=inp_csec.strip(),
-                                    login_url=inp_url.strip(),
-                                    code_verifier=ver,
-                                    profile=active_profile
-                                )
-                                user_info = get_user_info(profile=active_profile)
-                                st.success(f"✅ Successfully connected via OAuth 2.0 as **{user_info.get('preferred_username', 'User')}**!")
-                                st.rerun()
-                            except Exception as e:
-                                clear_token(profile=active_profile)
-                                st.error(f"❌ OAuth exchange failed: {e}")
+                manual_code = st.text_input("Paste Redirected URL or Code here", placeholder="http://localhost:1717/oauth/callback?code=...", key="inp_manual_auth_code")
+                if st.button("🔌 Complete Login", key="btn_exchange_auth_code", type="primary"):
+                    if not manual_code.strip():
+                        st.error("Please paste the callback URL or authorization code.")
+                    else:
+                        raw_input = manual_code.strip()
+                        code_val = raw_input
+                        state_val = None
+                        if "?" in raw_input:
+                            parsed = urlparse(raw_input)
+                            qp = parse_qs(parsed.query)
+                            code_val = qp.get("code", [raw_input])[0]
+                            state_val = qp.get("state", [None])[0]
+
+                        try:
+                            sess = pop_pkce_session(state=state_val, profile=active_profile)
+                            ver = sess.get("verifier")
+                            cid_val = inp_cid.strip() or sess.get("client_id", "")
+                            csec_val = inp_csec.strip() or sess.get("client_secret", "")
+                            url_val = inp_url.strip() or sess.get("login_url", "") or "https://test.salesforce.com"
+                            token_data = exchange_code_for_token(
+                                code_val,
+                                client_id=cid_val,
+                                client_secret=csec_val,
+                                login_url=url_val,
+                                code_verifier=ver,
+                                profile=active_profile
+                            )
+                            user_info = get_user_info(profile=active_profile)
+                            st.success(f"✅ Successfully connected via OAuth 2.0 as **{user_info.get('preferred_username', 'User')}**!")
+                            st.rerun()
+                        except Exception as e:
+                            clear_token(profile=active_profile)
+                            st.error(f"❌ OAuth exchange failed: {e}")
             else:
-                st.info("👆 Please enter your Consumer Key and Consumer Secret above to enable the login button.")
+                st.info("👆 Please enter your Consumer Key and Consumer Secret above to begin.")
 
         # --------------------------------------------------
         # TAB 2: WORKBENCH SESSION TOKEN
@@ -290,8 +294,12 @@ def render(go):
     st.write("")
     if st.button("🚪 Logout from Salesforce", type="secondary", key="export_logout"):
         clear_token(profile=active_profile)
-        if not st.session_state.get("remember_creds", False):
+        if not st.session_state.get("ui_inp_remember", False):
             clear_saved_credentials()
+            st.session_state.pop("ui_inp_cid", None)
+            st.session_state.pop("ui_inp_csec", None)
+            st.session_state.pop("inp_manual_auth_code", None)
+            st.session_state.pop("ui_inp_remember", None)
             st.session_state.pop("inp_client_id", None)
             st.session_state.pop("inp_client_secret", None)
             st.session_state.pop("oauth_url", None)
