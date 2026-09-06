@@ -3,7 +3,7 @@
 import streamlit as st
 from config.logging_config import setup_logging
 from ui.styles import apply_slds_theme, render_pill
-from salesforce.auth import get_active_profile, is_token_valid
+from salesforce.auth import check_connection_status, get_active_profile, is_token_valid
 
 # Setup root logging
 setup_logging()
@@ -40,9 +40,16 @@ def go(page_name: str):
 
 def render_home():
     active_prof = get_active_profile()
-    is_auth = is_token_valid(profile=active_prof)
+    is_auth, status_label = check_connection_status(profile=active_prof)
     env_label = "Developer Sandbox" if active_prof == "sandbox" else "Production Org"
     env_color = "amber" if active_prof == "sandbox" else "blue"
+
+    if is_auth:
+        status_dot = '<span style="color:#04844B; font-size:0.8rem; font-weight:600;">● Connected</span>'
+    elif status_label == "Disconnected":
+        status_dot = '<span style="color:#64748B; font-size:0.8rem; font-weight:600;">○ Disconnected</span>'
+    else:
+        status_dot = f'<span style="color:#EA001E; font-size:0.8rem; font-weight:600;">● {status_label}</span>'
 
     col_hero, col_status = st.columns([3, 1])
     with col_hero:
@@ -56,7 +63,7 @@ def render_home():
                 <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase;">Active Environment</div>
                 <div style="font-weight:700; color:#032D60; font-size:0.95rem; display:flex; justify-content:flex-end; align-items:center; gap:6px; margin-top:4px;">
                     {render_pill(env_label, env_color)}
-                    {'<span style="color:#04844B; font-size:0.8rem;">● Connected</span>' if is_auth else '<span style="color:#EA001E; font-size:0.8rem;">● Offline</span>'}
+                    {status_dot}
                 </div>
             </div>
             """,

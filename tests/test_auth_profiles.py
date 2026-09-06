@@ -96,6 +96,7 @@ def test_exchange_code_for_token(tmp_path, monkeypatch):
     from salesforce.auth import exchange_code_for_token
 
     monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "TOKEN_FILE", tmp_path / ".sf_auth.json")
     monkeypatch.setattr(settings, "SF_CLIENT_ID", "mock_id")
     monkeypatch.setattr(settings, "SF_CLIENT_SECRET", "mock_secret")
     monkeypatch.setattr(settings, "SF_REDIRECT_URI", "http://localhost:1717/oauth/callback")
@@ -133,5 +134,46 @@ def test_pkce_generation_and_challenge(monkeypatch, tmp_path):
     login_url = get_login_url(profile="sandbox")
     assert "code_challenge=" in login_url
     assert "code_challenge_method=S256" in login_url
+
+
+def test_check_connection_status(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock, patch
+    from salesforce.auth import check_connection_status, clear_token, save_manual_token
+
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "PROFILE_FILE", tmp_path / ".sf_profile.json")
+    monkeypatch.setattr(settings, "TOKEN_FILE", tmp_path / ".sf_auth.json")
+
+    # 1. No token -> Disconnected
+    is_conn, status = check_connection_status("sandbox", force_check=True)
+    assert not is_conn
+    assert status == "Disconnected"
+
+    # 2. Token present, mock successful live ping -> Connected
+    save_manual_token("valid_access_token_123", "https://test.salesforce.com", profile="sandbox")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"user_id": "005...", "username": "test@domain.com"}
+
+    with patch("requests.get", return_value=mock_resp):
+        is_conn, status = check_connection_status("sandbox", force_check=True)
+        assert is_conn is True
+        assert status == "Connected"
+
+    # 3. Token revoked/expired (HTTP 401) and no refresh token -> Session Expired
+    mock_resp_401 = MagicMock()
+    mock_resp_401.status_code = 401
+
+    with patch("requests.get", return_value=mock_resp_401):
+        is_conn, status = check_connection_status("sandbox", force_check=True)
+        assert is_conn is False
+        assert status == "Session Expired"
+
+    # 4. Clear token -> Disconnected immediately
+    clear_token("sandbox")
+    is_conn, status = check_connection_status("sandbox")
+    assert not is_conn
+    assert status == "Disconnected"
 
 

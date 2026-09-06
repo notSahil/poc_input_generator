@@ -46,6 +46,7 @@ def set_active_profile(profile: str) -> None:
         with open(settings.PROFILE_FILE, "w", encoding="utf-8") as f:
             json.dump({"active_profile": profile}, f, indent=2)
         logger.info("Active Salesforce profile set to: %s", profile)
+        invalidate_connection_cache()
     except Exception as e:
         logger.error("Failed to save active profile: %s", e)
 
@@ -53,13 +54,7 @@ def set_active_profile(profile: str) -> None:
 def get_token_file(profile: str | None = None) -> Path:
     """Get the token file path for a given profile (or active profile if None)."""
     prof = profile or get_active_profile()
-    profile_token_file = settings.PROJECT_ROOT / f".sf_auth_{prof}.json"
-    if profile_token_file.exists():
-        return profile_token_file
-    # Fallback to legacy single token file if it exists
-    if settings.TOKEN_FILE.exists() and prof == settings.DEFAULT_PROFILE:
-        return settings.TOKEN_FILE
-    return profile_token_file
+    return settings.PROJECT_ROOT / f".sf_auth_{prof}.json"
 
 
 def sanitize_session_token(token_raw: str) -> str:
@@ -257,27 +252,35 @@ def get_login_url(
 # TOKEN STORE
 # ==================================================
 
+# In-memory cache for live connection checks: profile -> (timestamp, is_connected, status_message)
+_CONNECTION_STATUS_CACHE: dict[str, tuple[float, bool, str]] = {}
+
+
+def invalidate_connection_cache(profile: str | None = None) -> None:
+    """Clear cached connection status for a profile or all profiles."""
+    if profile:
+        _CONNECTION_STATUS_CACHE.pop(profile, None)
+    else:
+        _CONNECTION_STATUS_CACHE.clear()
+
+
 def save_token(token_data: dict, profile: str | None = None) -> None:
     """Save Salesforce OAuth token locally for specified profile."""
+    prof = profile or get_active_profile()
     if "issued_at" not in token_data:
         token_data["saved_at"] = time.time()
 
-    token_path = get_token_file(profile)
+    token_path = get_token_file(prof)
     with open(token_path, "w", encoding="utf-8") as f:
         json.dump(token_data, f, indent=2)
 
-    # Also sync to legacy TOKEN_FILE if default profile for backwards compatibility
-    if (profile or get_active_profile()) == settings.DEFAULT_PROFILE:
-        try:
-            with open(settings.TOKEN_FILE, "w", encoding="utf-8") as f:
-                json.dump(token_data, f, indent=2)
-        except Exception:
-            pass
+    invalidate_connection_cache(prof)
     logger.info("Saved Salesforce token to %s", token_path.name)
 
 
 def save_manual_token(access_token: str, instance_url: str, profile: str | None = None) -> None:
     """Save manually provided access token and instance URL, automatically sanitizing token input."""
+    prof = profile or get_active_profile()
     clean_token = sanitize_session_token(access_token)
     clean_url = instance_url.strip().rstrip("/")
     token_data = {
@@ -285,17 +288,19 @@ def save_manual_token(access_token: str, instance_url: str, profile: str | None 
         "instance_url": clean_url,
         "token_type": "Bearer",
         "saved_at": time.time(),
-        "profile": profile or get_active_profile()
+        "profile": prof
     }
-    save_token(token_data, profile=profile)
+    save_token(token_data, profile=prof)
 
 
 def load_token(profile: str | None = None) -> dict | None:
     """Load stored Salesforce token if exists for the profile."""
-    token_path = get_token_file(profile)
+    prof = profile or get_active_profile()
+    token_path = get_token_file(prof)
     if not token_path.exists():
-        if settings.TOKEN_FILE.exists():
-            token_path = settings.TOKEN_FILE
+        legacy_file = settings.PROJECT_ROOT / ".sf_auth.json"
+        if prof == settings.DEFAULT_PROFILE and legacy_file.exists():
+            token_path = legacy_file
         else:
             return None
 
@@ -309,7 +314,8 @@ def load_token(profile: str | None = None) -> dict | None:
 
 def clear_token(profile: str | None = None) -> None:
     """Logout / clear stored token for specified profile."""
-    token_path = get_token_file(profile)
+    prof = profile or get_active_profile()
+    token_path = get_token_file(prof)
     if token_path.exists():
         try:
             os.remove(token_path)
@@ -317,11 +323,14 @@ def clear_token(profile: str | None = None) -> None:
         except Exception as e:
             logger.error("Failed to delete token file: %s", e)
 
-    if (profile or get_active_profile()) == settings.DEFAULT_PROFILE and settings.TOKEN_FILE.exists():
+    legacy_file = settings.PROJECT_ROOT / ".sf_auth.json"
+    if prof == settings.DEFAULT_PROFILE and legacy_file.exists():
         try:
-            os.remove(settings.TOKEN_FILE)
+            os.remove(legacy_file)
         except Exception:
             pass
+
+    invalidate_connection_cache(prof)
 
 
 def clear_saved_credentials() -> None:
@@ -348,8 +357,12 @@ def clear_saved_credentials() -> None:
             logger.error("Failed to clear credentials from .env: %s", e)
 
 
-def is_token_valid(profile: str | None = None) -> bool:
+def is_token_valid(profile: str | None = None, check_live: bool = False) -> bool:
     """Check if stored token exists and hasn't expired."""
+    if check_live:
+        is_conn, _ = check_connection_status(profile=profile)
+        return is_conn
+
     token = load_token(profile)
     if not token or "access_token" not in token:
         return False
@@ -369,6 +382,111 @@ def is_token_valid(profile: str | None = None) -> bool:
             return False
 
     return True
+
+
+def check_connection_status(
+    profile: str | None = None,
+    force_check: bool = False,
+    timeout: float = 2.5
+) -> tuple[bool, str]:
+    """
+    Dynamically verify Salesforce connection status.
+
+    Returns:
+        tuple: (is_connected: bool, status_label: str)
+        status_label can be 'Connected', 'Disconnected', 'Session Expired', or 'Offline'.
+    """
+    prof = profile or get_active_profile()
+
+    # 1. Fast disk check
+    token = load_token(prof)
+    if not token or "access_token" not in token or not str(token.get("access_token", "")).strip():
+        invalidate_connection_cache(prof)
+        return False, "Disconnected"
+
+    instance_url = token.get("instance_url", "").strip().rstrip("/")
+    if not instance_url:
+        invalidate_connection_cache(prof)
+        return False, "Disconnected"
+
+    # 2. Check cached result (TTL: 30 seconds)
+    now = time.time()
+    if not force_check and prof in _CONNECTION_STATUS_CACHE:
+        cached_time, cached_ok, cached_msg = _CONNECTION_STATUS_CACHE[prof]
+        if now - cached_time < 30.0:
+            return cached_ok, cached_msg
+
+    # 3. Arithmetic timestamp expiration check
+    issued_at = token.get("issued_at")
+    saved_at = token.get("saved_at")
+    is_timestamp_expired = False
+    if issued_at:
+        try:
+            if now - (int(issued_at) / 1000) > 7000:
+                is_timestamp_expired = True
+        except (ValueError, TypeError):
+            pass
+    elif saved_at:
+        try:
+            if now - float(saved_at) > 7000:
+                is_timestamp_expired = True
+        except (ValueError, TypeError):
+            pass
+
+    if is_timestamp_expired:
+        refresh_tok = token.get("refresh_token")
+        if refresh_tok and settings.SF_CLIENT_ID and settings.SF_CLIENT_SECRET:
+            try:
+                logger.info("Token expired by timestamp. Attempting auto-refresh for %s...", prof)
+                token = refresh_access_token(refresh_tok, profile=prof)
+            except Exception as e:
+                logger.warning("Auto-refresh failed during connection check: %s", e)
+                _CONNECTION_STATUS_CACHE[prof] = (now, False, "Session Expired")
+                return False, "Session Expired"
+        else:
+            _CONNECTION_STATUS_CACHE[prof] = (now, False, "Session Expired")
+            return False, "Session Expired"
+
+    # 4. Fast live ping to Salesforce userinfo endpoint
+    headers = {
+        "Authorization": f"Bearer {token['access_token']}",
+        "Content-Type": "application/json"
+    }
+    userinfo_url = f"{instance_url}/services/oauth2/userinfo"
+    try:
+        resp = requests.get(userinfo_url, headers=headers, timeout=timeout)
+        if resp.status_code == 200:
+            _CONNECTION_STATUS_CACHE[prof] = (now, True, "Connected")
+            return True, "Connected"
+        elif resp.status_code in (401, 403):
+            # Attempt auto-refresh if refresh token is present
+            refresh_tok = token.get("refresh_token")
+            if refresh_tok and settings.SF_CLIENT_ID and settings.SF_CLIENT_SECRET:
+                try:
+                    logger.info("Session returned %s. Attempting auto-refresh for %s...", resp.status_code, prof)
+                    new_token = refresh_access_token(refresh_tok, profile=prof)
+                    headers["Authorization"] = f"Bearer {new_token['access_token']}"
+                    resp2 = requests.get(userinfo_url, headers=headers, timeout=timeout)
+                    if resp2.status_code == 200:
+                        _CONNECTION_STATUS_CACHE[prof] = (now, True, "Connected")
+                        return True, "Connected"
+                except Exception as ref_err:
+                    logger.warning("Token refresh failed: %s", ref_err)
+
+            _CONNECTION_STATUS_CACHE[prof] = (now, False, "Session Expired")
+            return False, "Session Expired"
+        else:
+            logger.warning("Salesforce userinfo check returned HTTP %s", resp.status_code)
+            _CONNECTION_STATUS_CACHE[prof] = (now, False, "Offline")
+            return False, "Offline"
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as net_err:
+        logger.warning("Network connection check failed for %s: %s", prof, net_err)
+        _CONNECTION_STATUS_CACHE[prof] = (now, False, "Offline")
+        return False, "Offline"
+    except Exception as e:
+        logger.warning("Unexpected error during connection check: %s", e)
+        _CONNECTION_STATUS_CACHE[prof] = (now, False, "Offline")
+        return False, "Offline"
 
 
 

@@ -92,11 +92,18 @@ def _render_step_source(reports: list) -> bool:
             help="Select the data load configuration model defining Primary Keys and target fields."
         )
 
-    from salesforce.auth import get_active_profile, is_token_valid
+    from salesforce.auth import check_connection_status, get_active_profile
     active_prof = get_active_profile()
-    is_auth = is_token_valid(profile=active_prof)
+    is_auth, status_label = check_connection_status(profile=active_prof)
     env_label = "Developer Sandbox" if active_prof == "sandbox" else "Production Org"
     env_color = "amber" if active_prof == "sandbox" else "blue"
+
+    if is_auth:
+        status_dot = '<span style="color:#04844B; font-size:0.8rem; font-weight:600;">● Connected</span>'
+    elif status_label == "Disconnected":
+        status_dot = '<span style="color:#64748B; font-size:0.8rem; font-weight:600;">○ Disconnected</span>'
+    else:
+        status_dot = f'<span style="color:#EA001E; font-size:0.8rem; font-weight:600;">● {status_label}</span>'
 
     with col_env:
         st.markdown(
@@ -105,7 +112,7 @@ def _render_step_source(reports: list) -> bool:
                 <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase;">Connected Org</div>
                 <div style="font-weight:700; color:#032D60; font-size:0.95rem; display:flex; align-items:center; gap:6px; margin-top:2px;">
                     {render_pill(env_label, env_color)}
-                    {'<span style="color:#04844B; font-size:0.8rem; font-weight:600;">● Online</span>' if is_auth else '<span style="color:#EA001E; font-size:0.8rem; font-weight:600;">● Disconnected</span>'}
+                    {status_dot}
                 </div>
             </div>
             """,
@@ -200,23 +207,15 @@ def _render_step_source(reports: list) -> bool:
             st.caption(f"Place file in: `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
 
         if is_auth:
-            if len(report_objects) > 1:
-                fetch_obj = st.selectbox(
-                    "Target Object for SOQL Query",
-                    report_objects,
-                    key="sel_fetch_soql_obj",
-                    help="Select which Salesforce object to query records from."
-                )
-                btn_fetch_label = f"🔄 Fetch Live {fetch_obj} Records (SOQL)"
-            else:
-                fetch_obj = report_objects[0] if report_objects else None
-                btn_fetch_label = "🔄 Fetch Live Data from Sitetracker (SOQL)"
+            if report_objects:
+                obj_refs = " & ".join(f"**{o}**" for o in report_objects)
+                st.caption(f"ℹ️ Queries mapped fields across: {obj_refs}")
 
-            if st.button(btn_fetch_label, key="btn_fetch_live_st", type="primary"):
+            if st.button("🔄 Fetch Live Data from Sitetracker (SOQL)", key="btn_fetch_live_st", type="primary"):
                 with st.spinner(f"Executing SOQL query against {env_label}..."):
                     try:
                         from salesforce.data_fetcher import fetch_sitetracker_data
-                        saved_csv = fetch_sitetracker_data(selected_report, st_dir, target_object=fetch_obj)
+                        saved_csv = fetch_sitetracker_data(selected_report, st_dir)
                         st.success(f"✅ Fetched live records to `{saved_csv.name}`!")
                         st.rerun()
                     except MappingError as e:
