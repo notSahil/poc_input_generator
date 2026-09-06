@@ -25,11 +25,21 @@ logger = logging.getLogger(__name__)
 
 
 def _read_csv_preview(path: Path) -> pd.DataFrame:
-    """Safely read CSV files for UI preview handling both UTF-8 and Latin-1/Windows-1252 encodings."""
+    """Safely read CSV files for UI preview handling both UTF-8 and Latin-1 encodings and casting to str."""
     try:
-        return pd.read_csv(path, dtype=str, encoding="utf-8")
+        df = pd.read_csv(path, dtype=str, encoding="utf-8")
     except UnicodeDecodeError:
-        return pd.read_csv(path, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
+        df = pd.read_csv(path, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
+    return df.fillna("").astype(str)
+
+
+def _read_excel_preview(path: Path) -> pd.DataFrame:
+    """Safely read Excel files for UI preview with all columns cast to strings to prevent Arrow serialization errors."""
+    try:
+        df = pd.read_excel(path, dtype=str)
+    except Exception:
+        df = pd.read_excel(path)
+    return df.fillna("").astype(str)
 
 
 def _init_wizard_state():
@@ -41,7 +51,7 @@ def _init_wizard_state():
     if "last_run_result" not in st.session_state:
         st.session_state.last_run_result = None
     if "mapping_confirmed" not in st.session_state:
-        st.session_state.mapping_confirmed = False
+        st.session_state.mapping_confirmed = True  # Default to True so user is not blocked
     if "insert_nulls_toggle" not in st.session_state:
         st.session_state.insert_nulls_toggle = False
 
@@ -50,7 +60,7 @@ def _init_wizard_state():
 # STEP 1: SOURCE & OBJECT SELECTION
 # =========================================================
 
-def _render_step_source(reports: list):
+def _render_step_source(reports: list) -> bool:
     st.markdown("### 1️⃣ Source Data & Salesforce Object")
     st.caption("Select the configured report model and verify input spreadsheets or trigger a live Sitetracker fetch.")
 
@@ -73,7 +83,7 @@ def _render_step_source(reports: list):
                 current_idx = idx
                 break
 
-    col_sel, col_env = st.columns([2, 1])
+    col_sel, col_env = st.columns([2.5, 1.5])
     with col_sel:
         selected_display = st.selectbox(
             "Target Report Model",
@@ -95,7 +105,7 @@ def _render_step_source(reports: list):
                 <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase;">Connected Org</div>
                 <div style="font-weight:700; color:#032D60; font-size:0.95rem; display:flex; align-items:center; gap:6px; margin-top:2px;">
                     {render_pill(env_label, env_color)}
-                    {'<span style="color:#04844B; font-size:0.8rem;">● Online</span>' if is_auth else '<span style="color:#EA001E; font-size:0.8rem;">● Disconnected</span>'}
+                    {'<span style="color:#04844B; font-size:0.8rem; font-weight:600;">● Online</span>' if is_auth else '<span style="color:#EA001E; font-size:0.8rem; font-weight:600;">● Disconnected</span>'}
                 </div>
             </div>
             """,
@@ -118,6 +128,7 @@ def _render_step_source(reports: list):
     src_files = [f.name for f in src_dir.iterdir() if f.is_file() and not f.name.startswith(".")] if src_dir.exists() else []
     st_files = [f.name for f in st_dir.iterdir() if f.is_file() and not f.name.startswith(".")] if st_dir.exists() else []
 
+    st.markdown("<div style='margin-top: 14px;'></div>", unsafe_allow_html=True)
     col_src_card, col_st_card = st.columns(2)
 
     with col_src_card:
@@ -125,35 +136,36 @@ def _render_step_source(reports: list):
             f"""
             <div class="slds-card">
                 <div class="slds-card-title">📄 Source Excel / CSV Input</div>
-                <div class="slds-card-subtitle">Spreadsheet with new site values to be pushed to Sitetracker.</div>
+                <div class="slds-card-subtitle">Spreadsheet containing site updates to push into Sitetracker.</div>
             """,
             unsafe_allow_html=True
         )
         if src_files:
-            st.success(f"✅ Found: **`{src_files[0]}`**")
+            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Found: {src_files[0]}', 'green')}</div>", unsafe_allow_html=True)
             with st.expander(f"👁️ Preview Source Data ({src_files[0]})", expanded=False):
                 try:
                     sf_path = src_dir / src_files[0]
-                    src_view_df = pd.read_excel(sf_path) if sf_path.suffix.lower() == ".xlsx" else _read_csv_preview(sf_path)
+                    src_view_df = _read_excel_preview(sf_path) if sf_path.suffix.lower() == ".xlsx" else _read_csv_preview(sf_path)
                     st.caption(f"📁 {len(src_view_df):,} rows • {len(src_view_df.columns)} columns")
                     st.dataframe(src_view_df.head(100), use_container_width=True)
                 except Exception as e:
                     st.error(f"Could not load source file: {e}")
         else:
-            st.warning(f"⚠️ Missing file. Place Excel in: `{src_dir.relative_to(settings.PROJECT_ROOT)}`")
+            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill('Missing source file', 'amber')}</div>", unsafe_allow_html=True)
+            st.caption(f"Place input file in: `{src_dir.relative_to(settings.PROJECT_ROOT)}`")
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_st_card:
         st.markdown(
             f"""
             <div class="slds-card">
-                <div class="slds-card-title">🔄 Current Sitetracker Baseline Data</div>
-                <div class="slds-card-subtitle">Existing records from Sitetracker used to calculate true deltas.</div>
+                <div class="slds-card-title">🔄 Sitetracker Baseline Data</div>
+                <div class="slds-card-subtitle">Current records from Sitetracker used to compute deltas.</div>
             """,
             unsafe_allow_html=True
         )
         if st_files:
-            st.success(f"✅ Found: **`{st_files[0]}`**")
+            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Found: {st_files[0]}', 'green')}</div>", unsafe_allow_html=True)
             with st.expander(f"👁️ Preview Sitetracker Data ({st_files[0]})", expanded=False):
                 try:
                     st_view_df = _read_csv_preview(st_dir / st_files[0])
@@ -162,7 +174,8 @@ def _render_step_source(reports: list):
                 except Exception as e:
                     st.error(f"Could not load Sitetracker baseline: {e}")
         else:
-            st.warning(f"⚠️ Missing baseline file in: `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
+            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill('Missing baseline file', 'amber')}</div>", unsafe_allow_html=True)
+            st.caption(f"Place file in: `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
 
         if is_auth:
             if st.button("🔄 Fetch Live Data from Sitetracker (SOQL)", key="btn_fetch_live_st", type="primary"):
@@ -204,17 +217,16 @@ def _render_step_mapping(selected_report: str):
 
     # High level mapping health metrics
     total_fields = len(mapping_df)
-    pk_col = mapping_df.columns[0] if not mapping_df.empty else "N/A"
-    
+    yaml_cfg = YamlConfigLoader.load(selected_report)
+    pk_name = yaml_cfg.get("primary_key", {}).get("source_column", "Site ID")
+    target_obj = yaml_cfg.get("report", {}).get("salesforce_object") or "sitetracker__Site__c"
+
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:
         st.markdown(render_kpi_card("Mapped Fields", f"{total_fields}", "100% Configured", "success"), unsafe_allow_html=True)
     with col_m2:
-        yaml_cfg = YamlConfigLoader.load(selected_report)
-        pk_name = yaml_cfg.get("primary_key", {}).get("source_column", "Site ID")
         st.markdown(render_kpi_card("Primary Key", pk_name, "Deduplication Anchor", "default"), unsafe_allow_html=True)
     with col_m3:
-        target_obj = yaml_cfg.get("report", {}).get("salesforce_object") or "sitetracker__Site__c"
         st.markdown(render_kpi_card("Target Object", target_obj, "Sitetracker Object", "default"), unsafe_allow_html=True)
 
     st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
@@ -302,7 +314,7 @@ def _render_step_mapping(selected_report: str):
 # STEP 3: DELTA GENERATION & AUDIT ENGINE
 # =========================================================
 
-def _render_step_delta(selected_report: str):
+def _render_step_delta(selected_report: str) -> bool:
     st.markdown("### 3️⃣ Delta Engine & Validation Audit")
     st.caption("Execute row-by-row comparison against baseline Sitetracker data to compute strict updates.")
 
@@ -315,7 +327,7 @@ def _render_step_delta(selected_report: str):
 
     col_btn, col_info = st.columns([1.5, 3])
     with col_btn:
-        run_delta = st.button("🚀 Run Delta Comparison Engine", type="primary", use_container_width=True)
+        run_delta = st.button("🚀 Run Delta Comparison Engine", type="primary", use_container_width=True, key="btn_run_delta_engine")
     with col_info:
         st.caption("Compares source input vs Sitetracker baseline, enforces Primary Key integrity, and isolates field modifications.")
 
@@ -342,68 +354,71 @@ def _render_step_delta(selected_report: str):
                 logger.exception("Engine failed unexpectedly")
 
     # Display KPI Metrics & Results if result exists
-    if st.session_state.last_run_result is not None:
+    has_result = st.session_state.last_run_result is not None and st.session_state.last_run_result.report_name == selected_report
+    if has_result:
         result = st.session_state.last_run_result
-        if result.report_name == selected_report:
-            st.markdown("#### 📊 Execution Results & Audit Metrics")
+        st.markdown("<div style='margin-top: 18px;'></div>", unsafe_allow_html=True)
+        st.markdown("#### 📊 Execution Results & Audit Metrics")
 
-            k_col1, k_col2, k_col3, k_col4 = st.columns(4)
-            with k_col1:
-                st.markdown(render_kpi_card("Total Source Rows", f"{result.total_source_records:,}", "Processed records", "default"), unsafe_allow_html=True)
-            with k_col2:
-                st.markdown(render_kpi_card("Updates (Deltas)", f"{result.delta_records:,}", "Target updates", "success"), unsafe_allow_html=True)
-            with k_col3:
-                st.markdown(render_kpi_card("Errors / Rejected", f"{result.error_records:,}", "Quarantined rows", "error" if result.error_records > 0 else "default"), unsafe_allow_html=True)
-            with k_col4:
-                st.markdown(render_kpi_card("Unchanged / Skipped", f"{result.skipped_records:,}", "No action needed", "default"), unsafe_allow_html=True)
+        k_col1, k_col2, k_col3, k_col4 = st.columns(4)
+        with k_col1:
+            st.markdown(render_kpi_card("Total Source Rows", f"{result.total_source_records:,}", "Processed records", "default"), unsafe_allow_html=True)
+        with k_col2:
+            st.markdown(render_kpi_card("Updates (Deltas)", f"{result.delta_records:,}", "Target updates", "success"), unsafe_allow_html=True)
+        with k_col3:
+            st.markdown(render_kpi_card("Errors / Rejected", f"{result.error_records:,}", "Quarantined rows", "error" if result.error_records > 0 else "default"), unsafe_allow_html=True)
+        with k_col4:
+            st.markdown(render_kpi_card("Unchanged / Skipped", f"{result.skipped_records:,}", "No action needed", "default"), unsafe_allow_html=True)
 
-            # Tab inspection
-            val_file = result.run_dir / "validation_report.csv"
-            final_file = result.run_dir / "final_input_file.csv"
-            err_file = result.run_dir / "error_records.csv"
-            chg_file = result.run_dir / "field_level_changes.csv"
+        # Tab inspection
+        val_file = result.run_dir / "validation_report.csv"
+        final_file = result.run_dir / "final_input_file.csv"
+        err_file = result.run_dir / "error_records.csv"
+        chg_file = result.run_dir / "field_level_changes.csv"
 
-            tab_grid, tab_changes, tab_errors, tab_summary = st.tabs([
-                "🎨 Visual Source Grid",
-                f"👁️ Field-Level Changes ({result.field_changes_count})",
-                f"🚫 Error Diagnostics ({result.error_records})",
-                "📄 Run Summary"
-            ])
+        tab_grid, tab_changes, tab_errors, tab_summary = st.tabs([
+            "🎨 Visual Source Grid",
+            f"👁️ Field-Level Changes ({result.field_changes_count})",
+            f"🚫 Error Diagnostics ({result.error_records})",
+            "📄 Run Summary"
+        ])
 
-            with tab_grid:
-                if val_file.exists():
-                    val_df = pd.read_csv(val_file, dtype=str)
-                    badge_map = {
-                        "SUCCESS": "🟢 UPDATED",
-                        "ERROR": "🔴 ERROR (REJECTED)",
-                        "SKIPPED": "⚪ UNCHANGED",
-                        "DUPLICATE_SKIPPED": "⚠️ DUPLICATE (SKIPPED)",
-                    }
-                    status_list = [badge_map.get(str(r.get("Final_Status", "")), f"⚪ {r.get('Final_Status', '')}") for _, r in val_df.iterrows()]
-                    val_df.insert(0, "Execution Status", status_list)
-                    st.dataframe(val_df, use_container_width=True)
+        with tab_grid:
+            if val_file.exists():
+                val_df = pd.read_csv(val_file, dtype=str)
+                badge_map = {
+                    "SUCCESS": "🟢 UPDATED",
+                    "ERROR": "🔴 ERROR (REJECTED)",
+                    "SKIPPED": "⚪ UNCHANGED",
+                    "DUPLICATE_SKIPPED": "⚠️ DUPLICATE (SKIPPED)",
+                }
+                status_list = [badge_map.get(str(r.get("Final_Status", "")), f"⚪ {r.get('Final_Status', '')}") for _, r in val_df.iterrows()]
+                val_df.insert(0, "Execution Status", status_list)
+                st.dataframe(val_df, use_container_width=True)
 
-            with tab_changes:
-                if chg_file.exists():
-                    chg_df = pd.read_csv(chg_file, dtype=str)
-                    if not chg_df.empty:
-                        st.dataframe(chg_df, use_container_width=True)
-                    else:
-                        st.info("No field-level changes detected.")
+        with tab_changes:
+            if chg_file.exists():
+                chg_df = pd.read_csv(chg_file, dtype=str)
+                if not chg_df.empty:
+                    st.dataframe(chg_df, use_container_width=True)
+                else:
+                    st.info("No field-level changes detected.")
 
-            with tab_errors:
-                if err_file.exists():
-                    err_df = pd.read_csv(err_file, dtype=str)
-                    if not err_df.empty:
-                        st.dataframe(err_df, use_container_width=True)
-                    else:
-                        st.info("No validation errors found in this run! 🎉")
+        with tab_errors:
+            if err_file.exists():
+                err_df = pd.read_csv(err_file, dtype=str)
+                if not err_df.empty:
+                    st.dataframe(err_df, use_container_width=True)
+                else:
+                    st.info("No validation errors found in this run! 🎉")
 
-            with tab_summary:
-                sum_file = result.run_dir / "run_summary.txt"
-                if sum_file.exists():
-                    with open(sum_file, "r", encoding="utf-8") as f:
-                        st.text(f.read())
+        with tab_summary:
+            sum_file = result.run_dir / "run_summary.txt"
+            if sum_file.exists():
+                with open(sum_file, "r", encoding="utf-8") as f:
+                    st.text(f.read())
+
+    return has_result
 
 
 # =========================================================
@@ -568,75 +583,81 @@ def render(go):
         render_footer()
         return
 
-    # Render Pipeline Stepper
-    stepper_idx = render_pipeline_stepper(st.session_state.data_load_step, key="pipeline_stepper_ui")
-    if stepper_idx is not None and stepper_idx != st.session_state.data_load_step:
-        st.session_state.data_load_step = stepper_idx
+    # Render Native Pipeline Stepper
+    new_step = render_pipeline_stepper(st.session_state.data_load_step)
+    if new_step != st.session_state.data_load_step:
+        st.session_state.data_load_step = new_step
         st.rerun()
 
-    st.markdown("<div style='margin-top: 18px;'></div>", unsafe_allow_html=True)
-
-    # Step Router
     current_step = st.session_state.data_load_step
-
-    def _next_step():
-        st.session_state.data_load_step = min(current_step + 1, 3)
-
-    def _prev_step():
-        st.session_state.data_load_step = max(current_step - 1, 0)
 
     if current_step == 0:
         has_selection = _render_step_source(reports)
-        render_step_navigation(
+        nav = render_step_navigation(
             current_step=0,
             total_steps=4,
-            on_next=_next_step,
             next_label="Next: Field Mapping ➔",
-            next_disabled=not has_selection
+            next_disabled=not has_selection,
+            key_prefix="step0_nav"
         )
+        if nav == "next":
+            st.session_state.data_load_step = 1
+            st.rerun()
 
     elif current_step == 1:
         if not st.session_state.selected_report:
             st.session_state.data_load_step = 0
             st.rerun()
         _render_step_mapping(st.session_state.selected_report)
-        render_step_navigation(
+        nav = render_step_navigation(
             current_step=1,
             total_steps=4,
-            on_prev=_prev_step,
-            on_next=_next_step,
-            next_label="Next: Delta Engine ➔",
             prev_label="⬅ Back: Source Data",
-            next_disabled=not st.session_state.mapping_confirmed
+            next_label="Next: Delta Engine ➔",
+            next_disabled=not st.session_state.mapping_confirmed,
+            key_prefix="step1_nav"
         )
+        if nav == "prev":
+            st.session_state.data_load_step = 0
+            st.rerun()
+        elif nav == "next":
+            st.session_state.data_load_step = 2
+            st.rerun()
 
     elif current_step == 2:
         if not st.session_state.selected_report:
             st.session_state.data_load_step = 0
             st.rerun()
-        _render_step_delta(st.session_state.selected_report)
-        has_result = st.session_state.last_run_result is not None and st.session_state.last_run_result.report_name == st.session_state.selected_report
-        render_step_navigation(
+        has_result = _render_step_delta(st.session_state.selected_report)
+        nav = render_step_navigation(
             current_step=2,
             total_steps=4,
-            on_prev=_prev_step,
-            on_next=_next_step,
-            next_label="Next: Review & Ingest ➔",
             prev_label="⬅ Back: Field Mapping",
-            next_disabled=not has_result
+            next_label="Next: Review & Ingest ➔",
+            next_disabled=not has_result,
+            key_prefix="step2_nav"
         )
+        if nav == "prev":
+            st.session_state.data_load_step = 1
+            st.rerun()
+        elif nav == "next":
+            st.session_state.data_load_step = 3
+            st.rerun()
 
     elif current_step == 3:
         if not st.session_state.selected_report:
             st.session_state.data_load_step = 0
             st.rerun()
         _render_step_ingest(st.session_state.selected_report)
-        render_step_navigation(
+        nav = render_step_navigation(
             current_step=3,
             total_steps=4,
-            on_prev=_prev_step,
-            prev_label="⬅ Back: Delta Engine"
+            prev_label="⬅ Back: Delta Engine",
+            key_prefix="step3_nav"
         )
+        if nav == "prev":
+            st.session_state.data_load_step = 2
+            st.rerun()
 
     # Home Navigation & Footer
     st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)

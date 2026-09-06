@@ -38,14 +38,24 @@ def test_apply_slds_theme(mock_markdown):
     assert kwargs.get("unsafe_allow_html") is True
 
 
-@patch("streamlit_antd_components.steps")
-def test_render_pipeline_stepper(mock_sac_steps):
-    """Verify pipeline stepper passes correct configuration to sac.steps."""
-    mock_sac_steps.return_value = 2
-    selected = render_pipeline_stepper(1, key="test_stepper")
-    assert selected == 2
-    mock_sac_steps.assert_called_once()
-    _, kwargs = mock_sac_steps.call_args
-    assert kwargs.get("index") == 1
-    assert kwargs.get("variant") == "navigation"
-    assert kwargs.get("color") == "blue"
+@patch("streamlit.columns")
+@patch("streamlit.markdown")
+def test_render_pipeline_stepper(mock_markdown, mock_columns):
+    """Verify native pipeline stepper creates 4 stage columns and renders active step."""
+    mock_cols = [MagicMock(), MagicMock(), MagicMock(), MagicMock()]
+    mock_columns.return_value = mock_cols
+
+    selected = render_pipeline_stepper(active_index=1)
+    assert selected == 1
+    mock_columns.assert_called_once_with(4)
+
+
+@patch("streamlit.columns")
+@patch("streamlit.button")
+def test_render_step_navigation_actions(mock_button, mock_columns):
+    """Verify navigation buttons trigger prev/next actions."""
+    mock_columns.return_value = [MagicMock(), MagicMock(), MagicMock()]
+    mock_button.return_value = True
+
+    action = render_step_navigation(current_step=1, total_steps=4, key_prefix="test_nav")
+    assert action in ("prev", "next")
