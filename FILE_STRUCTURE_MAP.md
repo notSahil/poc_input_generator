@@ -45,6 +45,14 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `quick_test.py`: End-to-end integration test script.
 - `app.py`: Symlink or wrapper to `ui/app.py` for running Streamlit from root.
 
+### `/.agents/skills` (AI Agent Custom Skills)
+- `senior-architect-review/`: Multi-pass architectural review & iterative plan refinement with anti-duplication audits.
+- `new-feature-add/`: Senior developer feature workflow with isolation, ADR logging, and zero-regression tests.
+- `python-pro/`: Python 3.12+ type annotations (PEP 604), pathlib, and PEP 8 standards.
+- `data-engineer/`: Pandas vectorization, memory optimization, and defensive data processing.
+- `unit-testing-test-generate/`: Pytest AAA pattern, fixtures, and external mock standards.
+- `uv-package-manager/`: Fast package and environment management via `uv`.
+
 ---
 
 ## 2. Architecture Decision Records (ADRs)
@@ -92,3 +100,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 14. **Salesforce Connected App OAuth 2.0 Integration with Auto-Refresh (`salesforce/auth.py`, `ui/data_export.py`, `config/settings.py`)**:
    - *Decision:* Implement full OAuth 2.0 Web Server Flow via Connected App (Consumer Key & Secret) supporting 1-click browser authorization, background local callback interception on port 1717, manual authorization-code fallback for corporate proxy environments, and automatic token refresh (`refresh_token`) to prevent session timeouts.
    - *Reason:* Eliminates manual 1-hour session token expiration and Workbench copy-pasting, providing an enterprise-standard, permanent SSO login experience.
+15. **Dataloader-Style Null Wipe Safeguard & '#N/A' Bulk API 2.0 Ingest (`core/engine.py`, `salesforce/bulk_uploader.py`, `ui/data_load.py`, `cli.py`)**:
+   - *Decision:* Blank cells in the source input file are ignored by default (`insert_nulls=False`), preserving existing Sitetracker data. Users can explicitly enable the 'Overwrite with Blanks (Insert Nulls)' toggle in the UI or CLI (`--insert-nulls`), which serializes empty fields as `#N/A`. The Bulk API 2.0 uploader preserves `#N/A` strings and avoids pandas default NA conversion (`keep_default_na=False`).
+   - *Reason:* Salesforce Bulk API 2.0 ignores empty strings in CSV uploads; only the literal string `#N/A` instructs Salesforce to clear a field. Defaulting to ignore-blanks prevents accidental data wipes if users upload partial spreadsheets, while `#N/A` enables explicit field clearance matching Dataloader.io behavior.
+

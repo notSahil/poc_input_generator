@@ -34,6 +34,9 @@ class RunResult:
     duplicate_primary_keys: list[str] = field(default_factory=list)
     invalid_dates: list[str] = field(default_factory=list)
 
+    # Behavior settings
+    insert_nulls: bool = False
+
     # New classification counters (Dataloader.io style)
     error_records: int = 0          # Rows rejected for any validation failure
     skipped_records: int = 0        # Rows with no changes detected

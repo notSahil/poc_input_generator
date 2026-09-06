@@ -20,10 +20,11 @@ warnings.filterwarnings("ignore", message="Parsing dates", category=UserWarning)
 
 
 class InputFileEngine:
-    def __init__(self, report_name: str):
+    def __init__(self, report_name: str, *, insert_nulls: bool = False):
         self.report_name = report_name
         self.logger = logging.getLogger(f"core.engine.{report_name}")
         self.yaml_cfg = YamlConfigLoader.load(report_name)
+        self.insert_nulls = insert_nulls or self.yaml_cfg.get("behavior", {}).get("insert_nulls", False)
 
         folders = self.yaml_cfg["folders"]
         self.base_dir = settings.DATA_DIR / folders["work_dir"]
@@ -226,8 +227,16 @@ class InputFileEngine:
                 if src_val == "" and st_val == "":
                     continue
 
+                # If source is blank and insert_nulls is disabled → safely ignore blank (preserve Sitetracker value)
+                if src_val == "" and not self.insert_nulls:
+                    continue
+
                 # ── Data type validation ──────────────────────────────────
-                if dtype == "date":
+                if src_val == "":
+                    # Explicit wipe requested via insert_nulls: use Salesforce Bulk API '#N/A'
+                    src_fmt = "#N/A"
+                    st_fmt = st_val
+                elif dtype == "date":
                     src_fmt, ok = DataNormalizer.normalize_date_uk(src_val)
                     if not ok:
                         row_errors.append(
@@ -448,7 +457,8 @@ class InputFileEngine:
 
         with open(out("run_summary.txt"), "w", encoding="utf-8") as f:
             f.write(f"Report Name: {self.report_name}\n")
-            f.write(f"Run time: {run_day} {run_time}\n\n")
+            f.write(f"Run time: {run_day} {run_time}\n")
+            f.write(f"Insert Nulls: {'ENABLED (Overwriting blanks with #N/A)' if self.insert_nulls else 'DISABLED (Blanks ignored - Safe Mode)'}\n\n")
 
             f.write("==== COUNTS ====\n")
             f.write(f"Total source records:    {len(src_df)}\n")
@@ -517,6 +527,7 @@ class InputFileEngine:
             invalid_primary_keys=invalid_pks_df[pk_src].tolist() if not invalid_pks_df.empty else [],
             duplicate_primary_keys=duplicate_pk_values,
             invalid_dates=[e["Error_Message"] for e in error_rows if e.get("Error_Code") == "INVALID_DATE"],
+            insert_nulls=self.insert_nulls,
             # New counters
             error_records=total_errors,
             skipped_records=total_skipped,

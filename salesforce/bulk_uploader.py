@@ -72,6 +72,8 @@ def clean_payload_for_salesforce(df: pd.DataFrame, report_name: str | None = Non
                 if pd.isna(val) or not str(val).strip() or str(val).lower() == "nan":
                     return None
                 val_str = str(val).strip()
+                if val_str == "#N/A":
+                    return "#N/A"
                 try:
                     dt = pd.to_datetime(val_str, dayfirst=True)
                     return dt.strftime("%Y-%m-%d")
@@ -80,7 +82,8 @@ def clean_payload_for_salesforce(df: pd.DataFrame, report_name: str | None = Non
 
             clean_df[col] = clean_df[col].apply(_format_date)
 
-    # Replace NaN with None for valid JSON serialization
+    # Convert empty strings to None while preserving explicit '#N/A' null-wipes
+    clean_df = clean_df.replace({"": None})
     records = clean_df.where(pd.notnull(clean_df), None).to_dict("records")
     return records
 
@@ -109,7 +112,7 @@ def push_delta_to_sitetracker(
         raise FileNotFoundError(f"Input file not found at: {csv_file}")
 
     try:
-        df = pd.read_csv(csv_file, dtype=str)
+        df = pd.read_csv(csv_file, dtype=str, keep_default_na=False)
     except pd.errors.EmptyDataError:
         df = pd.DataFrame()
 

@@ -20,11 +20,12 @@ from scripts.scaffold_report import scaffold
 def cmd_run(args):
     """Execute the delta engine for a specific report."""
     print(f"\n🚀 Running Delta Engine for report: '{args.report}'...")
-    engine = InputFileEngine(args.report)
+    engine = InputFileEngine(args.report, insert_nulls=args.insert_nulls)
     try:
         result = engine.run(skip_validation=args.skip_validation)
         print(f"\n✅ Delta Generation Complete:")
         print(f"   - Report:               {result.report_name}")
+        print(f"   - Insert Nulls Mode:    {'ENABLED (#N/A wipes)' if args.insert_nulls else 'DISABLED (Safe mode)'}")
         print(f"   - Total Source Records: {result.total_source_records}")
         print(f"   - Valid Source Records: {result.valid_source_records}")
         print(f"   - Delta Upload Records: {result.delta_records}")
@@ -124,6 +125,7 @@ def main():
     p_run = subparsers.add_parser("run", help="Run the delta comparison engine for a report")
     p_run.add_argument("--report", required=True, help="Name of the report (e.g. 'Apollo 10G')")
     p_run.add_argument("--skip-validation", action="store_true", help="Skip pre-execution validation checks")
+    p_run.add_argument("--insert-nulls", action="store_true", help="Overwrite existing Sitetracker values with #N/A if source cell is blank")
     p_run.set_defaults(func=cmd_run)
 
     # Command: validate

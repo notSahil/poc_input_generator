@@ -32,6 +32,26 @@ def test_clean_payload_for_salesforce():
     assert "Project Ref" not in rec
 
 
+def test_clean_payload_preserves_hash_na_for_null_wipe():
+    """Verify that #N/A strings are preserved across text and date fields for Bulk API 2.0 null clearance."""
+    raw_df = pd.DataFrame([
+        {
+            "Id": "a12345678901234567",
+            "Status__c": "#N/A",
+            "Target_Date__c": "#N/A",
+            "Empty_Field__c": ""
+        }
+    ])
+
+    records = clean_payload_for_salesforce(raw_df)
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["Status__c"] == "#N/A"
+    assert rec["Target_Date__c"] == "#N/A"
+    assert rec["Empty_Field__c"] is None
+
+
+
 def test_push_delta_empty_csv(tmp_path):
     empty_csv = tmp_path / "empty_input.csv"
     pd.DataFrame().to_csv(empty_csv, index=False)

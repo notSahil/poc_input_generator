@@ -16,6 +16,14 @@ from ui.components import render_back_button, render_download_with_confirmation,
 logger = logging.getLogger(__name__)
 
 
+def _read_csv_preview(path: Path) -> pd.DataFrame:
+    """Safely read CSV files for UI preview handling both UTF-8 and Latin-1/Windows-1252 encodings."""
+    try:
+        return pd.read_csv(path, dtype=str, encoding="utf-8")
+    except UnicodeDecodeError:
+        return pd.read_csv(path, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
+
+
 def render(go):
     render_header("📥 Data Load & Input File Generator", "Generate Sitetracker-ready update files by comparing source data against current exports")
 
@@ -81,7 +89,7 @@ def render(go):
             with st.expander(f"👁️ View Source Data ({src_files[0]})", expanded=False):
                 try:
                     sf_path = src_dir / src_files[0]
-                    src_view_df = pd.read_excel(sf_path) if sf_path.suffix.lower() == ".xlsx" else pd.read_csv(sf_path, dtype=str)
+                    src_view_df = pd.read_excel(sf_path) if sf_path.suffix.lower() == ".xlsx" else _read_csv_preview(sf_path)
                     st.caption(f"📁 {len(src_view_df):,} rows • {len(src_view_df.columns)} columns")
                     st.dataframe(src_view_df, use_container_width=True)
                 except Exception as e:
@@ -95,7 +103,7 @@ def render(go):
             st.success(f"✅ Found: **`{st_files[0]}`**")
             with st.expander(f"👁️ View Sitetracker Data ({st_files[0]})", expanded=False):
                 try:
-                    st_view_df = pd.read_csv(st_dir / st_files[0], dtype=str)
+                    st_view_df = _read_csv_preview(st_dir / st_files[0])
                     st.caption(f"📁 {len(st_view_df):,} rows • {len(st_view_df.columns)} columns")
                     st.dataframe(st_view_df, use_container_width=True)
                 except Exception as e:
@@ -116,6 +124,8 @@ def render(go):
                         saved_csv = fetch_sitetracker_data(selected_report, st_dir)
                         st.success(f"✅ Fetched live records to `{saved_csv.name}`!")
                         st.rerun()
+                    except MappingError as e:
+                        st.error(f"⚠️ **Field Mapping Error**:\n\n{e}")
                     except Exception as e:
                         st.error(f"Failed to fetch live data: {e}")
         else:
@@ -183,6 +193,13 @@ def render(go):
     # ======================
     st.subheader("5️⃣ Execution")
 
+    with st.expander("⚙️ Advanced Dataloader Settings", expanded=False):
+        insert_nulls = st.checkbox(
+            "⚠️ Overwrite with Blanks (Insert Nulls)",
+            value=False,
+            help="If enabled, empty cells in the source file will explicitly wipe / clear existing values in Sitetracker with #N/A. If disabled (recommended safe default), empty cells are ignored and existing Sitetracker values are preserved."
+        )
+
     confirm_mapping = st.checkbox(
         "I have reviewed the field mappings and input data and confirm they are correct."
     )
@@ -194,7 +211,7 @@ def render(go):
 
         with st.spinner("Running comparison engine…"):
             try:
-                engine = InputFileEngine(selected_report)
+                engine = InputFileEngine(selected_report, insert_nulls=insert_nulls)
                 result = engine.run()
                 st.session_state.last_run_result = result
                 st.success("✅ Delta processing completed successfully!")
@@ -296,7 +313,7 @@ def render(go):
             with tab_final:
                 st.caption("Final Sitetracker input payload: records and fields prepared for upload.")
                 if final_file.exists():
-                    final_df = pd.read_csv(final_file, dtype=str)
+                    final_df = pd.read_csv(final_file, dtype=str, keep_default_na=False)
                     if not final_df.empty:
                         st.dataframe(final_df, use_container_width=True)
                     else:
@@ -350,7 +367,7 @@ def render(go):
                 if src_files:
                     try:
                         sf_path = src_dir / src_files[0]
-                        src_view_df = pd.read_excel(sf_path) if sf_path.suffix.lower() == ".xlsx" else pd.read_csv(sf_path, dtype=str)
+                        src_view_df = pd.read_excel(sf_path) if sf_path.suffix.lower() == ".xlsx" else _read_csv_preview(sf_path)
                         st.caption(f"📁 {len(src_view_df):,} rows • {len(src_view_df.columns)} columns")
                         st.dataframe(src_view_df, use_container_width=True)
                     except Exception as e:
@@ -362,7 +379,7 @@ def render(go):
                 st.caption("Current Sitetracker export data compared against.")
                 if st_files:
                     try:
-                        st_view_df = pd.read_csv(st_dir / st_files[0], dtype=str)
+                        st_view_df = _read_csv_preview(st_dir / st_files[0])
                         st.caption(f"📁 {len(st_view_df):,} rows • {len(st_view_df.columns)} columns")
                         st.dataframe(st_view_df, use_container_width=True)
                     except Exception as e:
@@ -392,7 +409,7 @@ def render(go):
             # Show data and changes preview (Vertical: Top & Bottom)
             final_file_push = last_res.run_dir / "final_input_file.csv"
             if final_file_push.exists():
-                final_push_df = pd.read_csv(final_file_push, dtype=str)
+                final_push_df = pd.read_csv(final_file_push, dtype=str, keep_default_na=False)
                 with st.expander(f"📥 Preview Final Input File ({len(final_push_df)} Records to be Uploaded)", expanded=False):
                     st.dataframe(final_push_df, use_container_width=True)
 
