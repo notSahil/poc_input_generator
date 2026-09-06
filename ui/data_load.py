@@ -1,4 +1,4 @@
-"""Streamlit UI page for Data Load / Input File Generation."""
+"""Streamlit UI page for Data Load / Input File Generation with Dataloader.io guided pipeline."""
 
 import logging
 from pathlib import Path
@@ -11,7 +11,15 @@ from core.engine import InputFileEngine
 from core.exceptions import EngineSkipError, InputGeneratorError, MappingError, ValidationError
 from core.mapping_loader import MappingLoader
 from core.validator import InputValidator
-from ui.components import render_back_button, render_download_with_confirmation, render_footer, render_header
+from ui.components import (
+    render_back_button,
+    render_download_with_confirmation,
+    render_footer,
+    render_header,
+    render_pipeline_stepper,
+    render_step_navigation,
+)
+from ui.styles import apply_slds_theme, render_kpi_card, render_pill
 
 logger = logging.getLogger(__name__)
 
@@ -24,24 +32,29 @@ def _read_csv_preview(path: Path) -> pd.DataFrame:
         return pd.read_csv(path, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
 
 
-def render(go):
-    render_header("📥 Data Load & Input File Generator", "Generate Sitetracker-ready update files by comparing source data against current exports")
+def _init_wizard_state():
+    """Ensure wizard session state variables are initialized."""
+    if "data_load_step" not in st.session_state:
+        st.session_state.data_load_step = 0
+    if "selected_report" not in st.session_state:
+        st.session_state.selected_report = None
+    if "last_run_result" not in st.session_state:
+        st.session_state.last_run_result = None
+    if "mapping_confirmed" not in st.session_state:
+        st.session_state.mapping_confirmed = False
+    if "insert_nulls_toggle" not in st.session_state:
+        st.session_state.insert_nulls_toggle = False
 
-    # ======================
-    # 1. REPORT SELECTION
-    # ======================
-    reports = YamlConfigLoader.list_reports()
 
-    if not reports:
-        st.error(f"No reports configured in `{settings.CONFIG_DIR}`.")
-        st.info("You can scaffold a new report via CLI: `python cli.py scaffold <report_name>`")
-        render_back_button(go)
-        render_footer()
-        return
+# =========================================================
+# STEP 1: SOURCE & OBJECT SELECTION
+# =========================================================
 
-    st.subheader("1️⃣ Select Report")
+def _render_step_source(reports: list):
+    st.markdown("### 1️⃣ Source Data & Salesforce Object")
+    st.caption("Select the configured report model and verify input spreadsheets or trigger a live Sitetracker fetch.")
 
-    # Map display name with status indicator
+    # Map display names with readiness indicator
     report_options = {}
     for r in reports:
         badges = []
@@ -49,28 +62,53 @@ def render(go):
             badges.append("no source")
         if not r.has_sitetracker:
             badges.append("no sitetracker")
-        
         status_suffix = f" ⚠️ ({', '.join(badges)})" if badges else " ✅ (ready)"
         report_options[f"{r.name}{status_suffix}"] = r.name
 
-    selected_display = st.selectbox(
-        "Choose configured report",
-        ["-- Select Report --"] + sorted(report_options.keys()),
-        index=0
-    )
+    current_idx = 0
+    keys = ["-- Select Report --"] + sorted(report_options.keys())
+    if st.session_state.selected_report:
+        for idx, k in enumerate(keys):
+            if k != "-- Select Report --" and report_options[k] == st.session_state.selected_report:
+                current_idx = idx
+                break
+
+    col_sel, col_env = st.columns([2, 1])
+    with col_sel:
+        selected_display = st.selectbox(
+            "Target Report Model",
+            keys,
+            index=current_idx,
+            help="Select the data load configuration model defining Primary Keys and target fields."
+        )
+
+    from salesforce.auth import get_active_profile, is_token_valid
+    active_prof = get_active_profile()
+    is_auth = is_token_valid(profile=active_prof)
+    env_label = "Developer Sandbox" if active_prof == "sandbox" else "Production Org"
+    env_color = "amber" if active_prof == "sandbox" else "blue"
+
+    with col_env:
+        st.markdown(
+            f"""
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:10px 14px; margin-top:24px;">
+                <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase;">Connected Org</div>
+                <div style="font-weight:700; color:#032D60; font-size:0.95rem; display:flex; align-items:center; gap:6px; margin-top:2px;">
+                    {render_pill(env_label, env_color)}
+                    {'<span style="color:#04844B; font-size:0.8rem;">● Online</span>' if is_auth else '<span style="color:#EA001E; font-size:0.8rem;">● Disconnected</span>'}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
     if selected_display == "-- Select Report --":
-        st.info("Please select a report to continue.")
-        render_back_button(go)
-        render_footer()
-        return
+        st.session_state.selected_report = None
+        st.info("💡 Please select a report model above to inspect data sources.")
+        return False
 
     selected_report = report_options[selected_display]
-
-    # ======================
-    # 2. DATA SOURCE STATUS & LIVE FETCH
-    # ======================
-    st.subheader("2️⃣ Input Data Files & Live Fetch")
+    st.session_state.selected_report = selected_report
 
     yaml_cfg = YamlConfigLoader.load(selected_report)
     work_dir = settings.DATA_DIR / yaml_cfg["folders"]["work_dir"]
@@ -83,42 +121,52 @@ def render(go):
     col_src_card, col_st_card = st.columns(2)
 
     with col_src_card:
-        st.markdown("#### 📄 Source Excel File")
+        st.markdown(
+            f"""
+            <div class="slds-card">
+                <div class="slds-card-title">📄 Source Excel / CSV Input</div>
+                <div class="slds-card-subtitle">Spreadsheet with new site values to be pushed to Sitetracker.</div>
+            """,
+            unsafe_allow_html=True
+        )
         if src_files:
             st.success(f"✅ Found: **`{src_files[0]}`**")
-            with st.expander(f"👁️ View Source Data ({src_files[0]})", expanded=False):
+            with st.expander(f"👁️ Preview Source Data ({src_files[0]})", expanded=False):
                 try:
                     sf_path = src_dir / src_files[0]
                     src_view_df = pd.read_excel(sf_path) if sf_path.suffix.lower() == ".xlsx" else _read_csv_preview(sf_path)
                     st.caption(f"📁 {len(src_view_df):,} rows • {len(src_view_df.columns)} columns")
-                    st.dataframe(src_view_df, use_container_width=True)
+                    st.dataframe(src_view_df.head(100), use_container_width=True)
                 except Exception as e:
                     st.error(f"Could not load source file: {e}")
         else:
-            st.warning(f"⚠️ Missing source file. Place Excel in: `{src_dir.relative_to(settings.PROJECT_ROOT)}`")
+            st.warning(f"⚠️ Missing file. Place Excel in: `{src_dir.relative_to(settings.PROJECT_ROOT)}`")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with col_st_card:
-        st.markdown("#### 🔄 Sitetracker Data")
+        st.markdown(
+            f"""
+            <div class="slds-card">
+                <div class="slds-card-title">🔄 Current Sitetracker Baseline Data</div>
+                <div class="slds-card-subtitle">Existing records from Sitetracker used to calculate true deltas.</div>
+            """,
+            unsafe_allow_html=True
+        )
         if st_files:
             st.success(f"✅ Found: **`{st_files[0]}`**")
-            with st.expander(f"👁️ View Sitetracker Data ({st_files[0]})", expanded=False):
+            with st.expander(f"👁️ Preview Sitetracker Data ({st_files[0]})", expanded=False):
                 try:
                     st_view_df = _read_csv_preview(st_dir / st_files[0])
                     st.caption(f"📁 {len(st_view_df):,} rows • {len(st_view_df.columns)} columns")
-                    st.dataframe(st_view_df, use_container_width=True)
+                    st.dataframe(st_view_df.head(100), use_container_width=True)
                 except Exception as e:
-                    st.error(f"Could not load Sitetracker data: {e}")
+                    st.error(f"Could not load Sitetracker baseline: {e}")
         else:
-            st.warning(f"⚠️ Missing file in `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
+            st.warning(f"⚠️ Missing baseline file in: `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
 
-        from salesforce.auth import get_active_profile, is_token_valid
-        active_prof = get_active_profile()
-        env_badge = "🧪 Developer Sandbox" if active_prof == "sandbox" else "🏢 Production"
-
-        if is_token_valid(profile=active_prof):
-            st.caption(f"Connected Org: **{env_badge}**")
-            if st.button("🔄 Fetch Live Data from Sitetracker", key="btn_fetch_live_st", type="primary"):
-                with st.spinner(f"Executing SOQL query against {env_badge}..."):
+        if is_auth:
+            if st.button("🔄 Fetch Live Data from Sitetracker (SOQL)", key="btn_fetch_live_st", type="primary"):
+                with st.spinner(f"Executing SOQL query against {env_label}..."):
                     try:
                         from salesforce.data_fetcher import fetch_sitetracker_data
                         saved_csv = fetch_sitetracker_data(selected_report, st_dir)
@@ -129,13 +177,19 @@ def render(go):
                     except Exception as e:
                         st.error(f"Failed to fetch live data: {e}")
         else:
-            st.caption(f"🔒 *Target Org: **{env_badge}** (Not Connected). Log in via 'Data Export' to enable 1-click live SOQL fetching.*")
+            st.caption("🔒 *Org is disconnected. Log in via 'Data Export' to enable 1-click live SOQL fetching.*")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    return True
 
 
-    # ======================
-    # 3. MAPPING PREVIEW
-    # ======================
-    st.subheader("3️⃣ Field Mapping Details")
+# =========================================================
+# STEP 2: FIELD MAPPING CANVAS (DATALOADER.IO STYLE)
+# =========================================================
+
+def _render_step_mapping(selected_report: str):
+    st.markdown("### 2️⃣ Visual Field Mapping & Schema Validation")
+    st.caption("Verify how source spreadsheet columns map to Sitetracker API fields and data types.")
 
     try:
         mapping_loader = MappingLoader(settings.MAPPING_FILE, selected_report)
@@ -144,38 +198,87 @@ def render(go):
         st.warning(f"Could not load mapping for '{selected_report}': {e}")
         mapping_df = pd.DataFrame()
 
-    if not mapping_df.empty:
-        # Object selection filter
-        if "Object Name" in mapping_df.columns:
-            objects = ["All Objects"] + sorted(mapping_df["Object Name"].dropna().unique().tolist())
-            selected_object = st.selectbox("Filter preview by Object", objects, index=0)
-            if selected_object != "All Objects":
-                preview_df = mapping_df[mapping_df["Object Name"] == selected_object]
-            else:
-                preview_df = mapping_df
-        else:
-            preview_df = mapping_df
+    if mapping_df.empty:
+        st.info("No field mappings defined yet for this report. You can configure them in the Mapping Editor.")
+        return
 
-        st.dataframe(preview_df, use_container_width=True)
-    else:
-        st.info("No field mappings defined yet for this report. You can edit them in the Mapping Editor.")
+    # High level mapping health metrics
+    total_fields = len(mapping_df)
+    pk_col = mapping_df.columns[0] if not mapping_df.empty else "N/A"
+    
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.markdown(render_kpi_card("Mapped Fields", f"{total_fields}", "100% Configured", "success"), unsafe_allow_html=True)
+    with col_m2:
+        yaml_cfg = YamlConfigLoader.load(selected_report)
+        pk_name = yaml_cfg.get("primary_key", {}).get("source_column", "Site ID")
+        st.markdown(render_kpi_card("Primary Key", pk_name, "Deduplication Anchor", "default"), unsafe_allow_html=True)
+    with col_m3:
+        target_obj = yaml_cfg.get("report", {}).get("salesforce_object") or "sitetracker__Site__c"
+        st.markdown(render_kpi_card("Target Object", target_obj, "Sitetracker Object", "default"), unsafe_allow_html=True)
 
-    # ======================
-    # 4. VALIDATION
-    # ======================
-    st.subheader("4️⃣ Validation & Readiness")
+    st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
 
-    col_val1, col_val2 = st.columns([1, 3])
-    with col_val1:
-        run_validation = st.button("🔍 Validate Inputs First")
+    # Dataloader-style Visual Mapping List
+    st.markdown(
+        """
+        <div class="mapping-header">
+            <div>Source Column (Spreadsheet)</div>
+            <div style="text-align: center;">Mapping & Rule</div>
+            <div style="text-align: right;">Sitetracker Target Field</div>
+        </div>
+        <div class="mapping-list">
+        """,
+        unsafe_allow_html=True
+    )
 
-    if run_validation:
+    src_col_name = "Source Field Name" if "Source Field Name" in mapping_df.columns else mapping_df.columns[0]
+    st_col_name = "Sitetracker Field Name" if "Sitetracker Field Name" in mapping_df.columns else (mapping_df.columns[1] if len(mapping_df.columns) > 1 else src_col_name)
+    type_col_name = "Data Type" if "Data Type" in mapping_df.columns else None
+
+    for _, row in mapping_df.iterrows():
+        src_val = str(row.get(src_col_name, ""))
+        tgt_val = str(row.get(st_col_name, ""))
+        dtype = str(row.get(type_col_name, "TEXT")).upper() if type_col_name else "TEXT"
+
+        badge_color = "green" if "DATE" in dtype else ("blue" if "ID" in dtype or "KEY" in dtype else "purple")
+        rule_pill = render_pill(dtype, badge_color)
+
+        st.markdown(
+            f"""
+            <div class="mapping-item">
+                <div>
+                    <div class="mapping-source-col">{src_val}</div>
+                    <div class="mapping-source-sample">Source Input Header</div>
+                </div>
+                <div class="mapping-arrow-col">
+                    <div>{rule_pill}</div>
+                    <div style="font-size:0.75rem; color:#94A3B8;">➔</div>
+                </div>
+                <div class="mapping-target-col">
+                    <div class="mapping-target-field">{tgt_val}</div>
+                    <div style="font-size:0.75rem; color:#64748B;">API Field Target</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Detailed Table inspection in expander
+    with st.expander("📋 View Complete Mapping Table & Rules", expanded=False):
+        st.dataframe(mapping_df, use_container_width=True)
+
+    # Pre-flight Validation
+    st.markdown("#### 🔍 Pre-Flight Validation Check")
+    if st.button("Run Pre-Flight Validation Check", key="btn_preflight_val"):
         try:
             validator = InputValidator(selected_report)
             val_res = validator.validate_all()
 
             if val_res.is_valid:
-                st.success("✅ All validation checks passed!")
+                st.success("✅ All pre-flight validation checks passed! Ready for delta computation.")
             else:
                 st.error("❌ Validation errors found:")
                 for err in val_res.errors:
@@ -188,30 +291,38 @@ def render(go):
         except Exception as e:
             st.error(f"Validation execution failed: {e}")
 
-    # ======================
-    # 5. CONFIRMATION & EXECUTION
-    # ======================
-    st.subheader("5️⃣ Execution")
-
-    with st.expander("⚙️ Advanced Dataloader Settings", expanded=False):
-        insert_nulls = st.checkbox(
-            "⚠️ Overwrite with Blanks (Insert Nulls)",
-            value=False,
-            help="If enabled, empty cells in the source file will explicitly wipe / clear existing values in Sitetracker with #N/A. If disabled (recommended safe default), empty cells are ignored and existing Sitetracker values are preserved."
-        )
-
-    confirm_mapping = st.checkbox(
-        "I have reviewed the field mappings and input data and confirm they are correct."
+    st.session_state.mapping_confirmed = st.checkbox(
+        "I have verified the field mappings and source column schemas.",
+        value=st.session_state.mapping_confirmed,
+        key="chk_confirm_mapping"
     )
 
-    if st.button("🚀 Generate Input File", type="primary"):
-        if not confirm_mapping:
-            st.error("Please confirm the mapping before running.")
-            st.stop()
 
-        with st.spinner("Running comparison engine…"):
+# =========================================================
+# STEP 3: DELTA GENERATION & AUDIT ENGINE
+# =========================================================
+
+def _render_step_delta(selected_report: str):
+    st.markdown("### 3️⃣ Delta Engine & Validation Audit")
+    st.caption("Execute row-by-row comparison against baseline Sitetracker data to compute strict updates.")
+
+    with st.expander("⚙️ Dataloader Execution Settings", expanded=False):
+        st.session_state.insert_nulls_toggle = st.checkbox(
+            "⚠️ Overwrite with Blanks (Insert Nulls)",
+            value=st.session_state.insert_nulls_toggle,
+            help="If enabled, empty cells in the source file will wipe existing values in Sitetracker with #N/A. If disabled (safe default), empty cells are ignored and existing values are preserved."
+        )
+
+    col_btn, col_info = st.columns([1.5, 3])
+    with col_btn:
+        run_delta = st.button("🚀 Run Delta Comparison Engine", type="primary", use_container_width=True)
+    with col_info:
+        st.caption("Compares source input vs Sitetracker baseline, enforces Primary Key integrity, and isolates field modifications.")
+
+    if run_delta:
+        with st.spinner("Executing comparison engine & validating rows..."):
             try:
-                engine = InputFileEngine(selected_report, insert_nulls=insert_nulls)
+                engine = InputFileEngine(selected_report, insert_nulls=st.session_state.insert_nulls_toggle)
                 result = engine.run()
                 st.session_state.last_run_result = result
                 st.success("✅ Delta processing completed successfully!")
@@ -230,105 +341,49 @@ def render(go):
                 st.error(f"❌ Unexpected engine failure: {e}")
                 logger.exception("Engine failed unexpectedly")
 
-    # ==================================================
-    # 5b. RUN RESULTS DASHBOARD (PERSISTENT & SAFE)
-    # ==================================================
-    if "last_run_result" in st.session_state and st.session_state.last_run_result is not None:
+    # Display KPI Metrics & Results if result exists
+    if st.session_state.last_run_result is not None:
         result = st.session_state.last_run_result
         if result.report_name == selected_report:
-            st.markdown("### 📊 Run Results Dashboard")
-            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-            m_col1.metric("✅ Success (Updates)", result.delta_records)
-            m_col2.metric("🚫 Errors (Rejected)", result.error_records)
-            m_col3.metric("⏭️ Skipped Records", result.skipped_records)
-            m_col4.metric("📋 Total Processed", result.total_source_records)
+            st.markdown("#### 📊 Execution Results & Audit Metrics")
 
-            # Direct Download Buttons Row (with Confirmation Popovers)
-            st.markdown("##### 📥 Download Output Files")
-            d_col1, d_col2, d_col3, d_col4, d_col5 = st.columns(5)
+            k_col1, k_col2, k_col3, k_col4 = st.columns(4)
+            with k_col1:
+                st.markdown(render_kpi_card("Total Source Rows", f"{result.total_source_records:,}", "Processed records", "default"), unsafe_allow_html=True)
+            with k_col2:
+                st.markdown(render_kpi_card("Updates (Deltas)", f"{result.delta_records:,}", "Target updates", "success"), unsafe_allow_html=True)
+            with k_col3:
+                st.markdown(render_kpi_card("Errors / Rejected", f"{result.error_records:,}", "Quarantined rows", "error" if result.error_records > 0 else "default"), unsafe_allow_html=True)
+            with k_col4:
+                st.markdown(render_kpi_card("Unchanged / Skipped", f"{result.skipped_records:,}", "No action needed", "default"), unsafe_allow_html=True)
 
-            final_file = result.run_dir / "final_input_file.csv"
-            render_download_with_confirmation(
-                d_col1, "📥 Final Input File", final_file,
-                help_text="Ready for upload into Sitetracker", key="final_input"
-            )
-
-            rb_file = result.run_dir / "rollback_file.csv"
-            render_download_with_confirmation(
-                d_col2, "🔙 Rollback File", rb_file,
-                help_text="Pre-change Sitetracker values to undo this run", key="rollback"
-            )
-
-            err_file = result.run_dir / "error_records.csv"
-            render_download_with_confirmation(
-                d_col3, "🚫 Error Records", err_file,
-                help_text="Rejected rows with Salesforce-style error codes", key="errors"
-            )
-
-            succ_file = result.run_dir / "success_records.csv"
-            render_download_with_confirmation(
-                d_col4, "✅ Success Records", succ_file,
-                help_text="Rows that passed validation with change summary", key="success"
-            )
-
+            # Tab inspection
             val_file = result.run_dir / "validation_report.csv"
-            render_download_with_confirmation(
-                d_col5, "📋 Validation Report", val_file,
-                help_text="Full audit trail per row and check", key="validation"
-            )
+            final_file = result.run_dir / "final_input_file.csv"
+            err_file = result.run_dir / "error_records.csv"
+            chg_file = result.run_dir / "field_level_changes.csv"
 
-            # Detailed Inspection Tabs
-            tab_grid, tab_final, tab_err, tab_chg, tab_skip, tab_dup, tab_src, tab_st, tab_sum = st.tabs([
+            tab_grid, tab_changes, tab_errors, tab_summary = st.tabs([
                 "🎨 Visual Source Grid",
-                f"📥 Final Input File ({result.delta_records})",
-                f"🚫 Errors ({result.error_records})",
-                f"👁️ Changes ({result.field_changes_count})",
-                f"⏭️ Skipped ({result.skipped_records})",
-                f"⚠️ Duplicates ({len(result.duplicate_primary_keys)})",
-                "📄 Source Data",
-                "📊 Sitetracker Data",
+                f"👁️ Field-Level Changes ({result.field_changes_count})",
+                f"🚫 Error Diagnostics ({result.error_records})",
                 "📄 Run Summary"
             ])
 
             with tab_grid:
-                st.caption("Visual breakdown of source data with execution status badges.")
                 if val_file.exists():
                     val_df = pd.read_csv(val_file, dtype=str)
-                    
-                    # Add Status Badge column
                     badge_map = {
                         "SUCCESS": "🟢 UPDATED",
                         "ERROR": "🔴 ERROR (REJECTED)",
                         "SKIPPED": "⚪ UNCHANGED",
                         "DUPLICATE_SKIPPED": "⚠️ DUPLICATE (SKIPPED)",
                     }
-                    status_list = []
-                    for _, r in val_df.iterrows():
-                        raw_st = str(r.get("Final_Status", ""))
-                        status_list.append(badge_map.get(raw_st, f"⚪ {raw_st}"))
-                    
+                    status_list = [badge_map.get(str(r.get("Final_Status", "")), f"⚪ {r.get('Final_Status', '')}") for _, r in val_df.iterrows()]
                     val_df.insert(0, "Execution Status", status_list)
                     st.dataframe(val_df, use_container_width=True)
 
-            with tab_final:
-                st.caption("Final Sitetracker input payload: records and fields prepared for upload.")
-                if final_file.exists():
-                    final_df = pd.read_csv(final_file, dtype=str, keep_default_na=False)
-                    if not final_df.empty:
-                        st.dataframe(final_df, use_container_width=True)
-                    else:
-                        st.info("No records in final input file.")
-
-            with tab_err:
-                if err_file.exists():
-                    err_df = pd.read_csv(err_file, dtype=str)
-                    if not err_df.empty:
-                        st.dataframe(err_df, use_container_width=True)
-                    else:
-                        st.info("No validation errors found in this run! 🎉")
-
-            with tab_chg:
-                chg_file = result.run_dir / "field_level_changes.csv"
+            with tab_changes:
                 if chg_file.exists():
                     chg_df = pd.read_csv(chg_file, dtype=str)
                     if not chg_df.empty:
@@ -336,188 +391,254 @@ def render(go):
                     else:
                         st.info("No field-level changes detected.")
 
-            with tab_skip:
-                skip_file = result.run_dir / "skipped_records.csv"
-                if skip_file.exists():
-                    skip_df = pd.read_csv(skip_file, dtype=str)
-                    if not skip_df.empty:
-                        st.dataframe(skip_df, use_container_width=True)
+            with tab_errors:
+                if err_file.exists():
+                    err_df = pd.read_csv(err_file, dtype=str)
+                    if not err_df.empty:
+                        st.dataframe(err_df, use_container_width=True)
                     else:
-                        st.info("No records were skipped in this run.")
+                        st.info("No validation errors found in this run! 🎉")
 
-            with tab_dup:
-                st.caption("Quarantined subsequent duplicate rows (first occurrence was processed into final file).")
-                dup_file = result.run_dir / "duplicate_primary_keys.csv"
-                if dup_file.exists():
-                    dup_df = pd.read_csv(dup_file, dtype=str)
-                    if not dup_df.empty:
-                        render_download_with_confirmation(
-                            st, "📥 Download Quarantined Duplicates CSV", dup_file,
-                            download_filename="duplicate_primary_keys.csv", key="tab_dup_dl"
-                        )
-                        st.dataframe(dup_df, use_container_width=True)
-                    else:
-                        st.info("No duplicate primary keys found in this run! 🎉")
-                else:
-                    st.info("No duplicate primary keys file found.")
-
-
-            with tab_src:
-                st.caption("Raw source spreadsheet data loaded for this run.")
-                if src_files:
-                    try:
-                        sf_path = src_dir / src_files[0]
-                        src_view_df = pd.read_excel(sf_path) if sf_path.suffix.lower() == ".xlsx" else _read_csv_preview(sf_path)
-                        st.caption(f"📁 {len(src_view_df):,} rows • {len(src_view_df.columns)} columns")
-                        st.dataframe(src_view_df, use_container_width=True)
-                    except Exception as e:
-                        st.error(f"Could not load source file: {e}")
-                else:
-                    st.info("No source file found.")
-
-            with tab_st:
-                st.caption("Current Sitetracker export data compared against.")
-                if st_files:
-                    try:
-                        st_view_df = _read_csv_preview(st_dir / st_files[0])
-                        st.caption(f"📁 {len(st_view_df):,} rows • {len(st_view_df.columns)} columns")
-                        st.dataframe(st_view_df, use_container_width=True)
-                    except Exception as e:
-                        st.error(f"Could not load Sitetracker data: {e}")
-                else:
-                    st.info("No Sitetracker data file found.")
-
-            with tab_sum:
-                summary_file = result.run_dir / "run_summary.txt"
-                if summary_file.exists():
-                    with open(summary_file, "r", encoding="utf-8") as f:
+            with tab_summary:
+                sum_file = result.run_dir / "run_summary.txt"
+                if sum_file.exists():
+                    with open(sum_file, "r", encoding="utf-8") as f:
                         st.text(f.read())
 
-            st.caption(f"📂 Run Output Directory: `{result.run_dir}`")
 
+# =========================================================
+# STEP 4: REVIEW & INGEST (DOWNLOADS & BULK API 2.0)
+# =========================================================
 
-    # ======================
-    # 6. PUSH TO SITETRACKER (BULK API 2.0)
-    # ======================
-    if "last_run_result" in st.session_state and st.session_state.last_run_result is not None:
-        last_res = st.session_state.last_run_result
-        if last_res.report_name == selected_report and last_res.delta_records > 0:
-            st.markdown("---")
-            st.subheader("6️⃣ Push to Sitetracker (Bulk API 2.0)")
-            st.caption("Safely upload the generated delta records directly to Sitetracker asynchronously.")
+def _render_step_ingest(selected_report: str):
+    st.markdown("### 4️⃣ Review, Downloads & Sitetracker Ingest")
+    st.caption("Download the strict 5-file output suite or push updates directly to Sitetracker via Bulk API 2.0.")
 
-            # Show data and changes preview (Vertical: Top & Bottom)
-            final_file_push = last_res.run_dir / "final_input_file.csv"
-            if final_file_push.exists():
-                final_push_df = pd.read_csv(final_file_push, dtype=str, keep_default_na=False)
-                with st.expander(f"📥 Preview Final Input File ({len(final_push_df)} Records to be Uploaded)", expanded=False):
-                    st.dataframe(final_push_df, use_container_width=True)
+    result = st.session_state.last_run_result
+    if result is None or result.report_name != selected_report:
+        st.info("💡 Please execute the Delta Engine in Step 3 before reviewing and downloading output files.")
+        return
 
-            changes_file = last_res.run_dir / "field_level_changes.csv"
-            if changes_file.exists():
-                changes_df = pd.read_csv(changes_file, dtype=str)
-                with st.expander(f"👁️ Preview Field-Level Changes ({len(changes_df)} Fields Changed)", expanded=False):
-                    st.dataframe(changes_df, use_container_width=True)
+    # Direct Download Hub
+    st.markdown("#### 📥 Standard Output Files Hub")
+    st.caption("All files generated following strict Sitetracker data contracts.")
 
+    d_col1, d_col2, d_col3, d_col4, d_col5 = st.columns(5)
+    final_file = result.run_dir / "final_input_file.csv"
+    render_download_with_confirmation(
+        d_col1, "📥 Final Input File", final_file,
+        help_text="Ready for upload into Sitetracker", key="ingest_final"
+    )
 
+    rb_file = result.run_dir / "rollback_file.csv"
+    render_download_with_confirmation(
+        d_col2, "🔙 Rollback File", rb_file,
+        help_text="Pre-change Sitetracker values to undo this run", key="ingest_rb"
+    )
 
-            from salesforce.auth import get_active_profile, is_token_valid
-            active_prof = get_active_profile()
-            env_badge = "🧪 Developer Sandbox" if active_prof == "sandbox" else "🏢 Production"
+    err_file = result.run_dir / "error_records.csv"
+    render_download_with_confirmation(
+        d_col3, "🚫 Error Records", err_file,
+        help_text="Rejected rows with Salesforce-style error codes", key="ingest_err"
+    )
 
-            if not is_token_valid(profile=active_prof):
-                st.warning(f"🔒 You must log in to **{env_badge}** via the **Data Export** page before pushing records to Salesforce.")
-            else:
-                st.info(f"Target Salesforce Org: **{env_badge}**")
-                col_c1, col_c2 = st.columns([2, 1])
-                with col_c1:
-                    confirm_phrase = st.text_input(
-                        "Type CONFIRM to enable upload",
-                        placeholder="CONFIRM",
-                        key="input_confirm_bulk_push"
+    succ_file = result.run_dir / "success_records.csv"
+    render_download_with_confirmation(
+        d_col4, "✅ Success Records", succ_file,
+        help_text="Rows that passed validation with change summary", key="ingest_succ"
+    )
+
+    val_file = result.run_dir / "validation_report.csv"
+    render_download_with_confirmation(
+        d_col5, "📋 Validation Report", val_file,
+        help_text="Full audit trail per row and check", key="ingest_val"
+    )
+
+    # Bulk API 2.0 Ingest Gate
+    st.markdown("---")
+    st.markdown("#### 🚀 Push to Sitetracker (Bulk API 2.0)")
+    st.caption("Safely upload the generated delta records directly to Sitetracker asynchronously.")
+
+    from salesforce.auth import get_active_profile, is_token_valid
+    active_prof = get_active_profile()
+    env_badge = "🧪 Developer Sandbox" if active_prof == "sandbox" else "🏢 Production"
+
+    if not is_token_valid(profile=active_prof):
+        st.warning(f"🔒 You must log in to **{env_badge}** via the **Data Export** page before pushing records to Salesforce.")
+        return
+
+    st.info(f"Target Salesforce Org: **{env_badge}**")
+
+    # Preview before upload
+    if final_file.exists():
+        final_push_df = pd.read_csv(final_file, dtype=str, keep_default_na=False)
+        with st.expander(f"📥 Preview Payload ({len(final_push_df)} Records to be Ingested)", expanded=False):
+            st.dataframe(final_push_df, use_container_width=True)
+
+    col_c1, col_c2 = st.columns([2, 1])
+    with col_c1:
+        confirm_phrase = st.text_input(
+            "Type CONFIRM to enable Bulk API 2.0 Ingest",
+            placeholder="CONFIRM",
+            key="input_confirm_bulk_push_v2"
+        )
+
+    with col_c2:
+        st.write("")
+        st.write("")
+        push_enabled = (confirm_phrase.strip() == "CONFIRM")
+        if st.button("🚀 Ingest Deltas to Sitetracker", type="primary", disabled=not push_enabled, key="btn_execute_bulk_push_v2"):
+            with st.spinner("Submitting Bulk API 2.0 ingest job to Salesforce..."):
+                try:
+                    from salesforce.bulk_uploader import push_delta_to_sitetracker
+                    yaml_cfg = YamlConfigLoader.load(selected_report)
+                    obj_name = yaml_cfg.get("report", {}).get("salesforce_object") or "Site__c"
+
+                    bulk_res = push_delta_to_sitetracker(
+                        csv_path=final_file,
+                        object_name=obj_name,
+                        report_name=selected_report,
+                        operation="update"
                     )
 
-                with col_c2:
-                    st.write("")
-                    st.write("")
-                    push_enabled = (confirm_phrase.strip() == "CONFIRM")
-                    if st.button("🚀 Push Deltas to Sitetracker", type="primary", disabled=not push_enabled, key="btn_execute_bulk_push"):
-                        with st.spinner("Submitting Bulk API 2.0 ingest job to Salesforce..."):
-                            try:
-                                from salesforce.bulk_uploader import push_delta_to_sitetracker
-                                final_csv = last_res.run_dir / "final_input_file.csv"
+                    if bulk_res.all_succeeded:
+                        st.success(f"🎉 Successfully updated all {bulk_res.successful_records} records in Sitetracker! (Job ID: `{bulk_res.job_id}`)")
+                    else:
+                        st.warning(f"⚠️ Processed {bulk_res.total_records} records: {bulk_res.successful_records} succeeded, {bulk_res.failed_records} failed. (Job ID: `{bulk_res.job_id}`)")
+                        if bulk_res.failures_csv_path and bulk_res.failures_csv_path.exists():
+                            st.error(f"Failure details saved to: `{bulk_res.failures_csv_path.name}`")
+                            fail_df = pd.DataFrame(bulk_res.failures)
+                            st.dataframe(fail_df, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Bulk API upload failed: {e}")
 
-                                # Determine target object
-                                yaml_cfg = YamlConfigLoader.load(selected_report)
-                                obj_name = yaml_cfg.get("report", {}).get("salesforce_object") or "Site__c"
-                                if not obj_name and not mapping_df.empty and "Object Name" in mapping_df.columns:
-                                    obj_name = mapping_df["Object Name"].dropna().iloc[0]
+    # Emergency Rollback / Revert Safety Net
+    if rb_file.exists():
+        with st.expander("⏪ Emergency Rollback Safety Net", expanded=False):
+            st.warning("⚠️ **Safety Net**: Revert pre-change values back into Sitetracker to restore records to how they were prior to this run.")
+            rb_df = pd.read_csv(rb_file, dtype=str)
+            st.dataframe(rb_df, use_container_width=True)
 
-                                bulk_res = push_delta_to_sitetracker(
-                                    csv_path=final_csv,
-                                    object_name=obj_name,
-                                    report_name=selected_report,
-                                    operation="update"
-                                )
+            col_rb1, col_rb2 = st.columns([2, 1])
+            with col_rb1:
+                confirm_revert = st.text_input(
+                    "Type REVERT to enable rollback",
+                    placeholder="REVERT",
+                    key="input_confirm_bulk_revert_v2"
+                )
+            with col_rb2:
+                st.write("")
+                st.write("")
+                revert_enabled = (confirm_revert.strip() == "REVERT")
+                if st.button("⏪ Execute Rollback in Sitetracker", type="secondary", disabled=not revert_enabled, key="btn_execute_bulk_revert_v2"):
+                    with st.spinner("Submitting Rollback job to Salesforce Bulk API 2.0..."):
+                        try:
+                            from salesforce.bulk_uploader import push_delta_to_sitetracker
+                            yaml_cfg = YamlConfigLoader.load(selected_report)
+                            obj_name = yaml_cfg.get("report", {}).get("salesforce_object") or "Site__c"
 
-                                if bulk_res.all_succeeded:
-                                    st.success(f"🎉 Successfully updated all {bulk_res.successful_records} records in Sitetracker! (Job ID: `{bulk_res.job_id}`)")
-                                else:
-                                    st.warning(f"⚠️ Processed {bulk_res.total_records} records: {bulk_res.successful_records} succeeded, {bulk_res.failed_records} failed. (Job ID: `{bulk_res.job_id}`)")
-                                    if bulk_res.failures_csv_path and bulk_res.failures_csv_path.exists():
-                                        st.error(f"Failure details saved to: `{bulk_res.failures_csv_path.name}`")
-                                        fail_df = pd.DataFrame(bulk_res.failures)
-                                        st.dataframe(fail_df, use_container_width=True)
-                            except Exception as e:
-                                st.error(f"Bulk API upload failed: {e}")
-
-                # Emergency Rollback / Revert Safety Net
-                rb_csv = last_res.run_dir / "rollback_file.csv"
-                if rb_csv.exists():
-                    st.write("")
-                    with st.expander("⏪ Emergency Rollback / Revert to Previous Sitetracker State", expanded=False):
-                        st.warning("⚠️ **Safety Net**: This will push the pre-change values back into Sitetracker to restore records to how they were before this run.")
-                        rb_df = pd.read_csv(rb_csv, dtype=str)
-                        st.dataframe(rb_df, use_container_width=True)
-
-                        col_rb1, col_rb2 = st.columns([2, 1])
-                        with col_rb1:
-                            confirm_revert = st.text_input(
-                                "Type REVERT to enable rollback",
-                                placeholder="REVERT",
-                                key="input_confirm_bulk_revert"
+                            rb_res = push_delta_to_sitetracker(
+                                csv_path=rb_file,
+                                object_name=obj_name,
+                                report_name=selected_report,
+                                operation="update"
                             )
-                        with col_rb2:
-                            st.write("")
-                            st.write("")
-                            revert_enabled = (confirm_revert.strip() == "REVERT")
-                            if st.button("⏪ Execute Rollback in Sitetracker", type="secondary", disabled=not revert_enabled, key="btn_execute_bulk_revert"):
-                                with st.spinner("Submitting Rollback job to Salesforce Bulk API 2.0..."):
-                                    try:
-                                        from salesforce.bulk_uploader import push_delta_to_sitetracker
-                                        yaml_cfg = YamlConfigLoader.load(selected_report)
-                                        obj_name = yaml_cfg.get("report", {}).get("salesforce_object") or "Site__c"
-                                        if not obj_name and not mapping_df.empty and "Object Name" in mapping_df.columns:
-                                            obj_name = mapping_df["Object Name"].dropna().iloc[0]
+                            if rb_res.all_succeeded:
+                                st.success(f"⏪ Rollback successful! All {rb_res.successful_records} records reverted to previous state. (Job ID: `{rb_res.job_id}`)")
+                            else:
+                                st.warning(f"⚠️ Revert processed with {rb_res.failed_records} errors.")
+                        except Exception as e:
+                            st.error(f"Rollback failed: {e}")
 
-                                        rb_res = push_delta_to_sitetracker(
-                                            csv_path=rb_csv,
-                                            object_name=obj_name,
-                                            report_name=selected_report,
-                                            operation="update"
-                                        )
-                                        if rb_res.all_succeeded:
-                                            st.success(f"⏪ Rollback successful! All {rb_res.successful_records} records reverted to their previous state in Sitetracker. (Job ID: `{rb_res.job_id}`)")
-                                        else:
-                                            st.warning(f"⚠️ Revert processed with {rb_res.failed_records} errors.")
-                                    except Exception as e:
-                                        st.error(f"Rollback failed: {e}")
 
-    # ======================
-    # NAVIGATION & FOOTER
-    # ======================
-    st.divider()
-    col_nav1, _ = st.columns([1, 4])
-    with col_nav1:
+# =========================================================
+# MAIN RENDER FUNCTION
+# =========================================================
+
+def render(go):
+    apply_slds_theme()
+    _init_wizard_state()
+
+    render_header("⚡ Sitetracker Data Ingestion Pipeline", "Dataloader-style guided workflow for field mapping, validation, and Bulk updates")
+
+    reports = YamlConfigLoader.list_reports()
+    if not reports:
+        st.error(f"No reports configured in `{settings.CONFIG_DIR}`.")
         render_back_button(go)
+        render_footer()
+        return
+
+    # Render Pipeline Stepper
+    stepper_idx = render_pipeline_stepper(st.session_state.data_load_step, key="pipeline_stepper_ui")
+    if stepper_idx is not None and stepper_idx != st.session_state.data_load_step:
+        st.session_state.data_load_step = stepper_idx
+        st.rerun()
+
+    st.markdown("<div style='margin-top: 18px;'></div>", unsafe_allow_html=True)
+
+    # Step Router
+    current_step = st.session_state.data_load_step
+
+    def _next_step():
+        st.session_state.data_load_step = min(current_step + 1, 3)
+
+    def _prev_step():
+        st.session_state.data_load_step = max(current_step - 1, 0)
+
+    if current_step == 0:
+        has_selection = _render_step_source(reports)
+        render_step_navigation(
+            current_step=0,
+            total_steps=4,
+            on_next=_next_step,
+            next_label="Next: Field Mapping ➔",
+            next_disabled=not has_selection
+        )
+
+    elif current_step == 1:
+        if not st.session_state.selected_report:
+            st.session_state.data_load_step = 0
+            st.rerun()
+        _render_step_mapping(st.session_state.selected_report)
+        render_step_navigation(
+            current_step=1,
+            total_steps=4,
+            on_prev=_prev_step,
+            on_next=_next_step,
+            next_label="Next: Delta Engine ➔",
+            prev_label="⬅ Back: Source Data",
+            next_disabled=not st.session_state.mapping_confirmed
+        )
+
+    elif current_step == 2:
+        if not st.session_state.selected_report:
+            st.session_state.data_load_step = 0
+            st.rerun()
+        _render_step_delta(st.session_state.selected_report)
+        has_result = st.session_state.last_run_result is not None and st.session_state.last_run_result.report_name == st.session_state.selected_report
+        render_step_navigation(
+            current_step=2,
+            total_steps=4,
+            on_prev=_prev_step,
+            on_next=_next_step,
+            next_label="Next: Review & Ingest ➔",
+            prev_label="⬅ Back: Field Mapping",
+            next_disabled=not has_result
+        )
+
+    elif current_step == 3:
+        if not st.session_state.selected_report:
+            st.session_state.data_load_step = 0
+            st.rerun()
+        _render_step_ingest(st.session_state.selected_report)
+        render_step_navigation(
+            current_step=3,
+            total_steps=4,
+            on_prev=_prev_step,
+            prev_label="⬅ Back: Delta Engine"
+        )
+
+    # Home Navigation & Footer
+    st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+    render_back_button(go, label="🏠 Return to Home Hub")
     render_footer()

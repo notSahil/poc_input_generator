@@ -1,10 +1,22 @@
-"""Main Streamlit Application Router."""
+"""Main Streamlit Application Router with Salesforce Lightning Design System styling."""
 
 import streamlit as st
 from config.logging_config import setup_logging
+from ui.styles import apply_slds_theme, render_pill
+from salesforce.auth import get_active_profile, is_token_valid
 
 # Setup root logging
 setup_logging()
+
+# Set global page config once
+st.set_page_config(
+    page_title="Sitetracker Data Hub",
+    page_icon="⚡",
+    layout="wide"
+)
+
+# Apply global SLDS styling
+apply_slds_theme()
 
 # ======================
 # SESSION INIT
@@ -27,58 +39,127 @@ def go(page_name: str):
 # ======================
 
 def render_home():
-    st.set_page_config(
-        page_title="Sitetracker Data Hub",
-        page_icon="⚡",
-        layout="wide"
-    )
+    active_prof = get_active_profile()
+    is_auth = is_token_valid(profile=active_prof)
+    env_label = "Developer Sandbox" if active_prof == "sandbox" else "Production Org"
+    env_color = "amber" if active_prof == "sandbox" else "blue"
 
-    st.title("⚡ Sitetracker Data Hub")
-    st.caption("Centralized tool for generating Sitetracker input files, mapping fields, and exporting Salesforce data")
+    col_hero, col_status = st.columns([3, 1])
+    with col_hero:
+        st.title("⚡ Sitetracker Data Hub")
+        st.caption("Centralized enterprise workspace for generating Sitetracker input files, mapping schemas, and synchronizing Salesforce records.")
 
-    st.subheader("Select Operation")
+    with col_status:
+        st.markdown(
+            f"""
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:12px 16px; text-align:right;">
+                <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase;">Active Environment</div>
+                <div style="font-weight:700; color:#032D60; font-size:0.95rem; display:flex; justify-content:flex-end; align-items:center; gap:6px; margin-top:4px;">
+                    {render_pill(env_label, env_color)}
+                    {'<span style="color:#04844B; font-size:0.8rem;">● Connected</span>' if is_auth else '<span style="color:#EA001E; font-size:0.8rem;">● Offline</span>'}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
+    st.subheader("Select Operation Module")
 
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.info("### 📥 Data Load Operation\nCompare source spreadsheets with Sitetracker data, compute deltas, and produce validated upload files.")
+        st.markdown(
+            """
+            <div class="slds-card" style="min-height: 220px; display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div class="slds-card-title">📥 Data Ingestion Pipeline</div>
+                    <div class="slds-card-subtitle" style="margin-top: 8px;">
+                        Guided 4-step wizard comparing spreadsheets against Sitetracker exports, validating schemas, and producing validated upload files.
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         st.button(
-            "Go to Data Load →",
+            "Launch Data Load ➔",
             use_container_width=True,
             type="primary",
             on_click=go,
-            args=("data_load",)
+            args=("data_load",),
+            key="btn_nav_dataload"
         )
 
     with col2:
-        st.info("### 📜 Run History & Audit\nBrowse past engine executions, re-download historical files, and inspect archived inputs.")
+        st.markdown(
+            """
+            <div class="slds-card" style="min-height: 220px; display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div class="slds-card-title">📜 Run History & Audit</div>
+                    <div class="slds-card-subtitle" style="margin-top: 8px;">
+                        Browse past engine executions, re-download historical 5-file output packages, and inspect archived inputs with full audit logs.
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         st.button(
-            "Go to Run History →",
+            "View Run History ➔",
             use_container_width=True,
             on_click=go,
-            args=("run_history",)
+            args=("run_history",),
+            key="btn_nav_history"
         )
 
     with col3:
-        st.info("### 📝 Mapping Editor\nInteractively edit column mappings, define new data models, and track version history with backups.")
+        st.markdown(
+            """
+            <div class="slds-card" style="min-height: 220px; display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div class="slds-card-title">📝 Schema & Mapping Editor</div>
+                    <div class="slds-card-subtitle" style="margin-top: 8px;">
+                        Interactively view and edit Excel column mappings in real time, configure target models, and manage revision history.
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         st.button(
-            "Go to Mapping Editor →",
+            "Open Mapping Editor ➔",
             use_container_width=True,
             on_click=go,
-            args=("mapping_editor",)
+            args=("mapping_editor",),
+            key="btn_nav_mapping"
         )
 
     with col4:
-        st.info("### 📤 Data Export Operation\nAuthenticate with Salesforce OAuth, inspect objects, and extract live Sitetracker records.")
+        st.markdown(
+            """
+            <div class="slds-card" style="min-height: 220px; display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div class="slds-card-title">📤 Salesforce Data Export</div>
+                    <div class="slds-card-subtitle" style="margin-top: 8px;">
+                        Manage multi-environment OAuth sessions, switch between Sandbox and Production, and query live Sitetracker schemas.
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         st.button(
-            "Go to Data Export →",
+            "Export & Connect ➔",
             use_container_width=True,
             on_click=go,
-            args=("export_login",)
+            args=("export_login",),
+            key="btn_nav_export"
         )
 
+    st.markdown("<div style='margin-top: 32px;'></div>", unsafe_allow_html=True)
     st.divider()
-    st.caption("Sitetracker Input File Generator • Internal Engineering Tool")
+    st.caption("Sitetracker Input File Generator • Enterprise Data Operations Platform")
 
 
 # ======================

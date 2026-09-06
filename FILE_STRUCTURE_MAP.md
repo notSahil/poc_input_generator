@@ -14,8 +14,9 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `exceptions.py`: Custom error handling.
 
 ### `/ui` (Streamlit Frontend)
-- `app.py`: The main Streamlit entry point. Renders the dashboard and triggers the core engine.
-- `data_load.py`: UI page for selecting reports, previewing mappings, 1-click live SOQL fetching from Sitetracker, validating inputs, visual source grid with status badges, and running delta generation.
+- `components.py`: Shared UI components including Dataloader.io 4-stage pipeline stepper, step navigation buttons, headers, and download confirmation popovers.
+- `styles.py`: Salesforce Lightning Design System (SLDS) design tokens, CSS styling, executive KPI metric cards, and status pill badges.
+- `data_load.py`: Guided 4-step Dataloader.io pipeline (Source & Object ➔ Visual Field Mapping Canvas ➔ Delta & Validation Engine ➔ Review, Downloads & Bulk API Ingest).
 - `run_history.py`: UI page for browsing past engine runs, viewing execution metrics, re-downloading output files, and inspecting archived source inputs.
 - `mapping_editor.py`: Interactive UI allowing the user to view and edit mapping rules directly in the browser with history/rollback capabilities.
 - `data_export.py`: Handles environment profile switching (Sandbox vs Production), Workbench session token connection, displaying authenticated user profile details, and logout.
@@ -103,4 +104,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 15. **Dataloader-Style Null Wipe Safeguard & '#N/A' Bulk API 2.0 Ingest (`core/engine.py`, `salesforce/bulk_uploader.py`, `ui/data_load.py`, `cli.py`)**:
    - *Decision:* Blank cells in the source input file are ignored by default (`insert_nulls=False`), preserving existing Sitetracker data. Users can explicitly enable the 'Overwrite with Blanks (Insert Nulls)' toggle in the UI or CLI (`--insert-nulls`), which serializes empty fields as `#N/A`. The Bulk API 2.0 uploader preserves `#N/A` strings and avoids pandas default NA conversion (`keep_default_na=False`).
    - *Reason:* Salesforce Bulk API 2.0 ignores empty strings in CSV uploads; only the literal string `#N/A` instructs Salesforce to clear a field. Defaulting to ignore-blanks prevents accidental data wipes if users upload partial spreadsheets, while `#N/A` enables explicit field clearance matching Dataloader.io behavior.
+16. **Dataloader.io Enterprise UI Overhaul & Guided Pipeline Stepper (`ui/data_load.py`, `ui/styles.py`, `ui/components.py`, `app.py`)**:
+   - *Decision:* Restyle the frontend using Salesforce Lightning Design System (SLDS) CSS tokens and refactor `ui/data_load.py` from a monolithic vertical scrolling page into a guided 4-step pipeline wizard (`1. Source & Object` ➔ `2. Field Mapping` ➔ `3. Delta Engine` ➔ `4. Review & Ingest`) with visual 3-column connector cards, executive KPI metric tiles, and `streamlit-antd-components` stepper integration.
+   - *Reason:* Eliminates vertical scroll fatigue, establishes a clear mental model of data pipeline progression, gives users immediate visual confidence in field mappings and schema health, and creates an enterprise-grade user experience identical to MuleSoft Dataloader.io.
 
