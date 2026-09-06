@@ -19,6 +19,14 @@ def test_build_soql_for_report():
     assert api_to_st_map.get("Project_Reference__c") == "Project Reference"
 
 
+def test_build_soql_for_report_with_target_object():
+    soql, obj_name, api_to_st_map = build_soql_for_report("Apollo 10G", target_object="Project")
+    assert "FROM" in soql
+    assert "Id" in soql
+    # Should only contain Project fields, not BT Project fields
+    assert "WES_PSID__c" in soql
+
+
 def test_fetch_sitetracker_data_success(tmp_path):
     mock_records = [
         {

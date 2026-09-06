@@ -37,3 +37,13 @@ class TestMappingLoader:
         assert field_map[0] == ("Site Reference", "Site_Ref__c", "Site_Ref__c", "text")
         # Date mapping item
         assert field_map[2] == ("Target Date", "Target_Date__c", "Target_Date__c", "date")
+
+    def test_objects_and_all_primary_keys(self, test_mapping_file):
+        loader = MappingLoader(test_mapping_file, "Test Report")
+        pks = loader.all_primary_keys()
+        assert len(pks) >= 1
+        assert pks[0]["source"] == "Site Reference"
+        assert pks[0]["sitetracker"] == "Site_Ref__c"
+
+        objs = loader.objects()
+        assert isinstance(objs, list)

@@ -66,6 +66,44 @@ class MappingLoader:
 
         return str(src_pk).strip(), str(st_pk).strip()
 
+    def all_primary_keys(self) -> list[dict[str, str]]:
+        """Return all primary key definitions for this report (supporting multiple or per-object PKs)."""
+        if self.mapping_df is None:
+            self.load()
+
+        if "Primary Key?" not in self.mapping_df.columns:
+            return []
+
+        pk_rows = self.mapping_df[
+            self.mapping_df["Primary Key?"].astype(str).str.strip().str.upper().isin(["YES", "Y", "TRUE"])
+        ]
+
+        results = []
+        for _, r in pk_rows.iterrows():
+            src_pk = str(r.get("Source File Column Name", "")).strip()
+            st_pk = str(r.get("Sitetracker Field Name", "")).strip()
+            obj = str(r.get("Object Name", "")).strip()
+            api = str(r.get("API Name", "")).strip()
+            if src_pk and st_pk:
+                results.append({
+                    "source": src_pk,
+                    "sitetracker": st_pk,
+                    "object": obj,
+                    "api_name": api,
+                })
+        return results
+
+    def objects(self) -> list[str]:
+        """Return list of distinct Salesforce object names defined for this report."""
+        if self.mapping_df is None:
+            self.load()
+
+        if "Object Name" not in self.mapping_df.columns:
+            return []
+
+        raw_objs = self.mapping_df["Object Name"].dropna().unique().tolist()
+        return [str(o).strip() for o in raw_objs if str(o).strip() and str(o).strip().lower() != "nan"]
+
     def field_mapping(self) -> list[tuple[str, str, str, str]]:
         """Return list of (Source Col, Sitetracker Col, API Name, Data Type)."""
         if self.mapping_df is None:

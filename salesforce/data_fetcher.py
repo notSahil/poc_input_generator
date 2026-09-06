@@ -15,9 +15,13 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 logger = logging.getLogger(__name__)
 
 
-def build_soql_for_report(report_name: str) -> tuple[str, str, dict[str, str]]:
+def build_soql_for_report(report_name: str, target_object: str | None = None) -> tuple[str, str, dict[str, str]]:
     """
     Build a SOQL query for the given report based on its field mapping.
+
+    Args:
+        report_name: Name of the report.
+        target_object: Optional specific object name from the mapping file to query.
 
     Returns:
         tuple of (soql_query, object_name, api_to_st_col_map)
@@ -33,24 +37,40 @@ def build_soql_for_report(report_name: str) -> tuple[str, str, dict[str, str]]:
     mapping_df = mapping.load()
 
     # Determine object name
-    if configured_obj:
-        object_name = str(configured_obj).strip()
+    if target_object:
+        chosen_obj = str(target_object).strip()
+    elif configured_obj:
+        chosen_obj = str(configured_obj).strip()
     else:
-        raw_obj = mapping_df["Object Name"].dropna().iloc[0] if "Object Name" in mapping_df.columns else "Site"
-        object_name = str(raw_obj).strip()
+        # Check if an object has the primary key
+        pk_rows = mapping_df[mapping_df["Primary Key?"].astype(str).str.strip().str.upper().isin(["YES", "Y", "TRUE"])]
+        if not pk_rows.empty and "Object Name" in pk_rows.columns and pd.notna(pk_rows.iloc[0]["Object Name"]):
+            chosen_obj = str(pk_rows.iloc[0]["Object Name"]).strip()
+        elif "Object Name" in mapping_df.columns and not mapping_df["Object Name"].dropna().empty:
+            chosen_obj = str(mapping_df["Object Name"].dropna().iloc[0]).strip()
+        else:
+            chosen_obj = "Site"
 
-    # If object name is Site, map to the real Sitetracker managed package object
-    if object_name.lower() in ("site", "site__c"):
+    # Normalize object name to Salesforce API name
+    if chosen_obj.lower() in ("site", "site__c"):
         object_name = "sitetracker__Site__c"
-    elif " " in object_name and not object_name.endswith("__c"):
-        # e.g. "BT Project" -> "BT_Project__c" or fallback
-        object_name = f"{object_name.replace(' ', '_')}__c"
+    elif " " in chosen_obj and not chosen_obj.endswith("__c"):
+        object_name = f"{chosen_obj.replace(' ', '_')}__c"
+    else:
+        object_name = chosen_obj
+
+    # Filter mapping rows for this object ONLY IF target_object was explicitly specified
+    if target_object and "Object Name" in mapping_df.columns:
+        filtered_df = mapping_df[mapping_df["Object Name"].astype(str).str.strip().str.lower() == chosen_obj.lower()]
+        query_df = filtered_df if not filtered_df.empty else mapping_df
+    else:
+        query_df = mapping_df
 
     # 3. Collect unique API fields strictly as defined in mapping
     api_fields: list[str] = [sf_id_col] if sf_id_col else ["Id"]
     api_to_st_map: dict[str, str] = {}
 
-    for _, row in mapping_df.iterrows():
+    for _, row in query_df.iterrows():
         api_name = str(row.get("API Name", "")).strip()
         st_field = str(row.get("Sitetracker Field Name", "")).strip()
 
@@ -64,18 +84,23 @@ def build_soql_for_report(report_name: str) -> tuple[str, str, dict[str, str]]:
     fields_clause = ", ".join(api_fields)
     soql_query = f"SELECT {fields_clause} FROM {object_name}"
 
-    logger.info("Generated SOQL for '%s': %s", report_name, soql_query)
+    logger.info("Generated SOQL for '%s' (object: %s): %s", report_name, object_name, soql_query)
     return soql_query, object_name, api_to_st_map
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
-def fetch_sitetracker_data(report_name: str, output_dir: Path | None = None) -> Path:
+def fetch_sitetracker_data(
+    report_name: str,
+    output_dir: Path | None = None,
+    target_object: str | None = None
+) -> Path:
     """
     Fetch current live Sitetracker records for a report and write to CSV.
 
     Args:
         report_name: Configured report name (e.g. 'Apollo 10G').
         output_dir: Destination folder. Defaults to the report's input/sitetracker directory.
+        target_object: Optional specific object name to query.
 
     Returns:
         Path to the saved CSV file.
@@ -89,7 +114,7 @@ def fetch_sitetracker_data(report_name: str, output_dir: Path | None = None) -> 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Build query
-    soql_query, object_name, api_to_st_map = build_soql_for_report(report_name)
+    soql_query, object_name, api_to_st_map = build_soql_for_report(report_name, target_object=target_object)
 
     # 2. Execute via simple-salesforce with friendly error handling
     sf = get_sf_connection()

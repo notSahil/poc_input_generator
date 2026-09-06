@@ -129,6 +129,28 @@ def _render_step_source(reports: list) -> bool:
     st_files = [f.name for f in st_dir.iterdir() if f.is_file() and not f.name.startswith(".")] if st_dir.exists() else []
 
     st.markdown("<div style='margin-top: 14px;'></div>", unsafe_allow_html=True)
+
+    # Dynamically discover objects and primary keys
+    try:
+        loader = MappingLoader(settings.MAPPING_FILE, selected_report)
+        report_objects = loader.objects()
+        report_pks = loader.all_primary_keys()
+    except Exception:
+        report_objects = []
+        report_pks = []
+
+    if report_objects:
+        obj_pills = " ".join(render_pill(o, "blue") for o in report_objects)
+        st.markdown(
+            f"""
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between;">
+                <div style="font-size:0.85rem; font-weight:600; color:#475569;">Registered Salesforce Objects:</div>
+                <div>{obj_pills}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
     col_src_card, col_st_card = st.columns(2)
 
     with col_src_card:
@@ -178,11 +200,23 @@ def _render_step_source(reports: list) -> bool:
             st.caption(f"Place file in: `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
 
         if is_auth:
-            if st.button("🔄 Fetch Live Data from Sitetracker (SOQL)", key="btn_fetch_live_st", type="primary"):
+            if len(report_objects) > 1:
+                fetch_obj = st.selectbox(
+                    "Target Object for SOQL Query",
+                    report_objects,
+                    key="sel_fetch_soql_obj",
+                    help="Select which Salesforce object to query records from."
+                )
+                btn_fetch_label = f"🔄 Fetch Live {fetch_obj} Records (SOQL)"
+            else:
+                fetch_obj = report_objects[0] if report_objects else None
+                btn_fetch_label = "🔄 Fetch Live Data from Sitetracker (SOQL)"
+
+            if st.button(btn_fetch_label, key="btn_fetch_live_st", type="primary"):
                 with st.spinner(f"Executing SOQL query against {env_label}..."):
                     try:
                         from salesforce.data_fetcher import fetch_sitetracker_data
-                        saved_csv = fetch_sitetracker_data(selected_report, st_dir)
+                        saved_csv = fetch_sitetracker_data(selected_report, st_dir, target_object=fetch_obj)
                         st.success(f"✅ Fetched live records to `{saved_csv.name}`!")
                         st.rerun()
                     except MappingError as e:
@@ -207,9 +241,13 @@ def _render_step_mapping(selected_report: str):
     try:
         mapping_loader = MappingLoader(settings.MAPPING_FILE, selected_report)
         mapping_df = mapping_loader.load()
+        report_objects = mapping_loader.objects()
+        pks = mapping_loader.all_primary_keys()
     except Exception as e:
         st.warning(f"Could not load mapping for '{selected_report}': {e}")
         mapping_df = pd.DataFrame()
+        report_objects = []
+        pks = []
 
     if mapping_df.empty:
         st.info("No field mappings defined yet for this report. You can configure them in the Mapping Editor.")
@@ -217,19 +255,59 @@ def _render_step_mapping(selected_report: str):
 
     # High level mapping health metrics
     total_fields = len(mapping_df)
-    yaml_cfg = YamlConfigLoader.load(selected_report)
-    pk_name = yaml_cfg.get("primary_key", {}).get("source_column", "Site ID")
-    target_obj = yaml_cfg.get("report", {}).get("salesforce_object") or "sitetracker__Site__c"
 
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:
-        st.markdown(render_kpi_card("Mapped Fields", f"{total_fields}", "100% Configured", "success"), unsafe_allow_html=True)
+        st.markdown(
+            render_kpi_card(
+                "Mapped Fields",
+                f"{total_fields}",
+                f"{len(report_objects)} Target Object{'s' if len(report_objects) != 1 else ''}",
+                "success"
+            ),
+            unsafe_allow_html=True
+        )
     with col_m2:
-        st.markdown(render_kpi_card("Primary Key", pk_name, "Deduplication Anchor", "default"), unsafe_allow_html=True)
+        if len(pks) == 1:
+            pk_title = pks[0]["source"]
+            pk_sub = f"Object: {pks[0]['object']}" if pks[0]["object"] else "Primary Deduplication Key"
+        elif len(pks) > 1:
+            pk_title = f"{len(pks)} Primary Keys"
+            pk_sub = " • ".join(f"{p['source']} ({p['object']})" for p in pks)
+        else:
+            pk_title = "None Detected"
+            pk_sub = "⚠️ Check Primary Key? column"
+        st.markdown(render_kpi_card("Primary Key(s)", pk_title, pk_sub, "default"), unsafe_allow_html=True)
+
     with col_m3:
-        st.markdown(render_kpi_card("Target Object", target_obj, "Sitetracker Object", "default"), unsafe_allow_html=True)
+        obj_display = ", ".join(report_objects) if report_objects else "Default"
+        st.markdown(
+            render_kpi_card(
+                "Salesforce Object(s)",
+                obj_display,
+                f"{len(report_objects)} Registered Object{'s' if len(report_objects) != 1 else ''}",
+                "default"
+            ),
+            unsafe_allow_html=True
+        )
 
     st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
+
+    # Object Filter (if multiple objects exist)
+    filtered_df = mapping_df
+    if len(report_objects) > 1:
+        f_col1, f_col2 = st.columns([3, 1])
+        with f_col1:
+            selected_filter = st.radio(
+                "Filter Fields by Salesforce Object:",
+                ["All Objects"] + report_objects,
+                horizontal=True,
+                key="radio_filter_obj"
+            )
+        with f_col2:
+            if selected_filter != "All Objects":
+                filtered_df = mapping_df[mapping_df["Object Name"].astype(str).str.strip().str.lower() == selected_filter.strip().lower()]
+            st.markdown(f"<div style='margin-top:28px; font-size:0.85rem; color:#64748B;'>Showing <b>{len(filtered_df)}</b> of <b>{len(mapping_df)}</b> fields</div>", unsafe_allow_html=True)
 
     # Dataloader-style Visual Mapping List
     st.markdown(
@@ -237,30 +315,35 @@ def _render_step_mapping(selected_report: str):
         <div class="mapping-header">
             <div>Source Column (Spreadsheet)</div>
             <div style="text-align: center;">Mapping & Rule</div>
-            <div style="text-align: right;">Sitetracker Target Field</div>
+            <div style="text-align: right;">Sitetracker Target Field & Object</div>
         </div>
         <div class="mapping-list">
         """,
         unsafe_allow_html=True
     )
 
-    src_col_name = "Source Field Name" if "Source Field Name" in mapping_df.columns else mapping_df.columns[0]
+    src_col_name = "Source File Column Name" if "Source File Column Name" in mapping_df.columns else mapping_df.columns[0]
     st_col_name = "Sitetracker Field Name" if "Sitetracker Field Name" in mapping_df.columns else (mapping_df.columns[1] if len(mapping_df.columns) > 1 else src_col_name)
     type_col_name = "Data Type" if "Data Type" in mapping_df.columns else None
 
-    for _, row in mapping_df.iterrows():
+    for _, row in filtered_df.iterrows():
         src_val = str(row.get(src_col_name, ""))
         tgt_val = str(row.get(st_col_name, ""))
+        row_obj = str(row.get("Object Name", "")).strip() if "Object Name" in row and pd.notna(row["Object Name"]) else ""
+        is_pk = str(row.get("Primary Key?", "")).strip().upper() in ("YES", "Y", "TRUE")
         dtype = str(row.get(type_col_name, "TEXT")).upper() if type_col_name else "TEXT"
 
         badge_color = "green" if "DATE" in dtype else ("blue" if "ID" in dtype or "KEY" in dtype else "purple")
         rule_pill = render_pill(dtype, badge_color)
 
+        pk_badge = f'<span style="margin-right:6px;">{render_pill("🔑 PRIMARY KEY", "amber")}</span>' if is_pk else ""
+        obj_badge = f'<span style="margin-left:6px;">{render_pill(row_obj, "blue")}</span>' if row_obj else ""
+
         st.markdown(
             f"""
             <div class="mapping-item">
                 <div>
-                    <div class="mapping-source-col">{src_val}</div>
+                    <div class="mapping-source-col">{pk_badge}{src_val}</div>
                     <div class="mapping-source-sample">Source Input Header</div>
                 </div>
                 <div class="mapping-arrow-col">
@@ -268,8 +351,8 @@ def _render_step_mapping(selected_report: str):
                     <div style="font-size:0.75rem; color:#94A3B8;">➔</div>
                 </div>
                 <div class="mapping-target-col">
-                    <div class="mapping-target-field">{tgt_val}</div>
-                    <div style="font-size:0.75rem; color:#64748B;">API Field Target</div>
+                    <div class="mapping-target-field">{tgt_val}{obj_badge}</div>
+                    <div style="font-size:0.75rem; color:#64748B;">API Target Field</div>
                 </div>
             </div>
             """,
@@ -490,6 +573,28 @@ def _render_step_ingest(selected_report: str):
         with st.expander(f"📥 Preview Payload ({len(final_push_df)} Records to be Ingested)", expanded=False):
             st.dataframe(final_push_df, use_container_width=True)
 
+    # Allow selecting target object if report has multiple objects
+    try:
+        loader_ingest = MappingLoader(settings.MAPPING_FILE, selected_report)
+        ingest_objects = loader_ingest.objects()
+    except Exception:
+        ingest_objects = []
+
+    yaml_cfg = YamlConfigLoader.load(selected_report)
+    default_obj = yaml_cfg.get("report", {}).get("salesforce_object")
+    if not default_obj and ingest_objects:
+        default_obj = ingest_objects[0]
+
+    if len(ingest_objects) > 1:
+        target_obj_push = st.selectbox(
+            "Target Salesforce Object for Bulk API Ingest",
+            ingest_objects,
+            key="sel_ingest_object_target",
+            help="Select which Salesforce object to update with the delta payload."
+        )
+    else:
+        target_obj_push = default_obj or "Site__c"
+
     col_c1, col_c2 = st.columns([2, 1])
     with col_c1:
         confirm_phrase = st.text_input(
@@ -503,15 +608,12 @@ def _render_step_ingest(selected_report: str):
         st.write("")
         push_enabled = (confirm_phrase.strip() == "CONFIRM")
         if st.button("🚀 Ingest Deltas to Sitetracker", type="primary", disabled=not push_enabled, key="btn_execute_bulk_push_v2"):
-            with st.spinner("Submitting Bulk API 2.0 ingest job to Salesforce..."):
+            with st.spinner(f"Submitting Bulk API 2.0 ingest job to Salesforce for {target_obj_push}..."):
                 try:
                     from salesforce.bulk_uploader import push_delta_to_sitetracker
-                    yaml_cfg = YamlConfigLoader.load(selected_report)
-                    obj_name = yaml_cfg.get("report", {}).get("salesforce_object") or "Site__c"
-
                     bulk_res = push_delta_to_sitetracker(
                         csv_path=final_file,
-                        object_name=obj_name,
+                        object_name=target_obj_push,
                         report_name=selected_report,
                         operation="update"
                     )
