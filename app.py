@@ -1,5 +1,13 @@
 """Main Streamlit Application Router with Salesforce Lightning Design System styling."""
 
+import sys
+from pathlib import Path
+
+# Ensure project root is always in sys.path (needed for Windows streamlit.exe execution)
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import streamlit as st
 from config.logging_config import setup_logging
 from ui.styles import apply_slds_theme, render_pill
