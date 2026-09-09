@@ -640,15 +640,20 @@ def _render_step_ingest(selected_report: str):
     if not default_obj and ingest_objects:
         default_obj = ingest_objects[0]
 
+    ALL_OBJECTS_OPTION = f"⚡ All Objects (Sequential Ingest: {', '.join(ingest_objects)})"
     if len(ingest_objects) > 1:
+        target_options = [ALL_OBJECTS_OPTION] + ingest_objects
         target_obj_push = st.selectbox(
             "Target Salesforce Object for Bulk API Ingest",
-            ingest_objects,
+            target_options,
+            index=0,
             key="sel_ingest_object_target",
-            help="Select which Salesforce object to update with the delta payload."
+            help="Choose 'All Objects' to upload deltas to both objects automatically without clicking twice, or choose a specific object."
         )
     else:
         target_obj_push = default_obj or "Site__c"
+
+    is_multi_obj_push = (target_obj_push == ALL_OBJECTS_OPTION)
 
     # Select appropriate payload file for target object
     clean_target = target_obj_push.strip().replace(" ", "_")
@@ -659,7 +664,20 @@ def _render_step_ingest(selected_report: str):
     active_rb_file = obj_specific_rb if obj_specific_rb.exists() else rb_file
 
     # Preview before upload
-    if active_push_file.exists():
+    if is_multi_obj_push:
+        with st.expander(f"📥 Preview Multi-Object Payloads ({len(ingest_objects)} Objects)", expanded=False):
+            tab_list = st.tabs([f"📦 {obj}" for obj in ingest_objects])
+            for obj, tab in zip(ingest_objects, tab_list):
+                with tab:
+                    c_target = obj.strip().replace(" ", "_")
+                    obj_file = result.run_dir / f"final_input_file_{c_target}.csv"
+                    if obj_file.exists():
+                        df_obj = pd.read_csv(obj_file, dtype=str, keep_default_na=False)
+                        st.caption(f"**{len(df_obj):,}** records ready for **{obj}**")
+                        st.dataframe(df_obj, use_container_width=True)
+                    else:
+                        st.info(f"No dedicated payload file generated for {obj}.")
+    elif active_push_file.exists():
         final_push_df = pd.read_csv(active_push_file, dtype=str, keep_default_na=False)
         with st.expander(f"📥 Preview Payload for {target_obj_push} ({len(final_push_df)} Records to be Ingested)", expanded=False):
             st.dataframe(final_push_df, use_container_width=True)
@@ -676,35 +694,74 @@ def _render_step_ingest(selected_report: str):
         st.write("")
         st.write("")
         push_enabled = (confirm_phrase.strip() == "CONFIRM")
-        if st.button("🚀 Ingest Deltas to Sitetracker", type="primary", disabled=not push_enabled, key="btn_execute_bulk_push_v2"):
-            with st.spinner(f"Submitting Bulk API 2.0 ingest job to Salesforce for {target_obj_push}..."):
-                try:
-                    from salesforce.bulk_uploader import push_delta_to_sitetracker
-                    bulk_res = push_delta_to_sitetracker(
-                        csv_path=active_push_file,
-                        object_name=target_obj_push,
-                        report_name=selected_report,
-                        operation="update",
-                        profile=active_prof,
-                    )
+        btn_label = "🚀 Ingest All Deltas to Sitetracker" if is_multi_obj_push else f"🚀 Ingest Deltas to {target_obj_push}"
+        if st.button(btn_label, type="primary", disabled=not push_enabled, key="btn_execute_bulk_push_v2"):
+            if is_multi_obj_push:
+                from salesforce.bulk_uploader import push_multi_object_deltas_to_sitetracker
+                with st.spinner("Submitting Bulk API 2.0 jobs to Salesforce for all objects..."):
+                    try:
+                        multi_res = push_multi_object_deltas_to_sitetracker(
+                            run_dir=result.run_dir,
+                            report_name=selected_report,
+                            operation="update",
+                            profile=active_prof,
+                        )
+                        if not multi_res:
+                            st.info("No records to ingest across any objects.")
+                        for obj_name, bulk_res in multi_res.items():
+                            if bulk_res.all_succeeded:
+                                st.success(f"🎉 **{obj_name}**: Successfully updated all {bulk_res.successful_records:,} records in Sitetracker! (Job ID: `{bulk_res.job_id}`)")
+                            else:
+                                st.warning(f"⚠️ **{obj_name}**: Processed {bulk_res.total_records:,} records: {bulk_res.successful_records:,} succeeded, {bulk_res.failed_records:,} failed. (Job ID: `{bulk_res.job_id}`)")
+                                if bulk_res.failures_csv_path and bulk_res.failures_csv_path.exists():
+                                    st.error(f"[{obj_name}] Failure details saved to: `{bulk_res.failures_csv_path.name}`")
+                                    fail_df = pd.DataFrame(bulk_res.failures)
+                                    st.dataframe(fail_df, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Bulk API upload failed: {e}")
+            else:
+                with st.spinner(f"Submitting Bulk API 2.0 ingest job to Salesforce for {target_obj_push}..."):
+                    try:
+                        from salesforce.bulk_uploader import push_delta_to_sitetracker
+                        bulk_res = push_delta_to_sitetracker(
+                            csv_path=active_push_file,
+                            object_name=target_obj_push,
+                            report_name=selected_report,
+                            operation="update",
+                            profile=active_prof,
+                        )
 
-                    if bulk_res.all_succeeded:
-                        st.success(f"🎉 Successfully updated all {bulk_res.successful_records} records in Sitetracker! (Job ID: `{bulk_res.job_id}`)")
-                    else:
-                        st.warning(f"⚠️ Processed {bulk_res.total_records} records: {bulk_res.successful_records} succeeded, {bulk_res.failed_records} failed. (Job ID: `{bulk_res.job_id}`)")
-                        if bulk_res.failures_csv_path and bulk_res.failures_csv_path.exists():
-                            st.error(f"Failure details saved to: `{bulk_res.failures_csv_path.name}`")
-                            fail_df = pd.DataFrame(bulk_res.failures)
-                            st.dataframe(fail_df, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Bulk API upload failed: {e}")
+                        if bulk_res.all_succeeded:
+                            st.success(f"🎉 Successfully updated all {bulk_res.successful_records:,} records in Sitetracker! (Job ID: `{bulk_res.job_id}`)")
+                        else:
+                            st.warning(f"⚠️ Processed {bulk_res.total_records:,} records: {bulk_res.successful_records:,} succeeded, {bulk_res.failed_records:,} failed. (Job ID: `{bulk_res.job_id}`)")
+                            if bulk_res.failures_csv_path and bulk_res.failures_csv_path.exists():
+                                st.error(f"Failure details saved to: `{bulk_res.failures_csv_path.name}`")
+                                fail_df = pd.DataFrame(bulk_res.failures)
+                                st.dataframe(fail_df, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Bulk API upload failed: {e}")
 
     # Emergency Rollback / Revert Safety Net
-    if active_rb_file.exists():
+    has_rb = is_multi_obj_push or active_rb_file.exists()
+    if has_rb:
         with st.expander("⏪ Emergency Rollback Safety Net", expanded=False):
             st.warning("⚠️ **Safety Net**: Revert pre-change values back into Sitetracker to restore records to how they were prior to this run.")
-            rb_df = pd.read_csv(active_rb_file, dtype=str)
-            st.dataframe(rb_df, use_container_width=True)
+            if is_multi_obj_push:
+                rb_tab_list = st.tabs([f"⏪ {obj}" for obj in ingest_objects])
+                for obj, tab in zip(ingest_objects, rb_tab_list):
+                    with tab:
+                        c_target = obj.strip().replace(" ", "_")
+                        rb_file_obj = result.run_dir / f"rollback_file_{c_target}.csv"
+                        if rb_file_obj.exists():
+                            df_rb = pd.read_csv(rb_file_obj, dtype=str)
+                            st.caption(f"**{len(df_rb):,}** rollback records ready for **{obj}**")
+                            st.dataframe(df_rb, use_container_width=True)
+                        else:
+                            st.info(f"No rollback records for {obj}.")
+            elif active_rb_file.exists():
+                rb_df = pd.read_csv(active_rb_file, dtype=str)
+                st.dataframe(rb_df, use_container_width=True)
 
             col_rb1, col_rb2 = st.columns([2, 1])
             with col_rb1:
@@ -717,24 +774,44 @@ def _render_step_ingest(selected_report: str):
                 st.write("")
                 st.write("")
                 revert_enabled = (confirm_revert.strip() == "REVERT")
-                if st.button("⏪ Execute Rollback in Sitetracker", type="secondary", disabled=not revert_enabled, key="btn_execute_bulk_revert_v2"):
-                    with st.spinner("Submitting Rollback job to Salesforce Bulk API 2.0..."):
-                        try:
-                            from salesforce.bulk_uploader import push_delta_to_sitetracker
-                            rb_res = push_delta_to_sitetracker(
-                                csv_path=active_rb_file,
-                                object_name=target_obj_push,
-                                report_name=selected_report,
-                                operation="update",
-                                is_rollback=True,
-                                profile=active_prof,
-                            )
-                            if rb_res.all_succeeded:
-                                st.success(f"⏪ Rollback successful! All {rb_res.successful_records} records reverted to previous state. (Job ID: `{rb_res.job_id}`)")
-                            else:
-                                st.warning(f"⚠️ Revert processed with {rb_res.failed_records} errors.")
-                        except Exception as e:
-                            st.error(f"Rollback failed: {e}")
+                rb_btn_label = "⏪ Execute Rollback for All Objects" if is_multi_obj_push else f"⏪ Execute Rollback for {target_obj_push}"
+                if st.button(rb_btn_label, type="secondary", disabled=not revert_enabled, key="btn_execute_bulk_revert_v2"):
+                    if is_multi_obj_push:
+                        from salesforce.bulk_uploader import push_multi_object_deltas_to_sitetracker
+                        with st.spinner("Submitting Rollback jobs for all objects to Salesforce Bulk API 2.0..."):
+                            try:
+                                multi_rb = push_multi_object_deltas_to_sitetracker(
+                                    run_dir=result.run_dir,
+                                    report_name=selected_report,
+                                    operation="update",
+                                    is_rollback=True,
+                                    profile=active_prof,
+                                )
+                                for obj_name, rb_res in multi_rb.items():
+                                    if rb_res.all_succeeded:
+                                        st.success(f"⏪ **{obj_name}**: Rollback successful! All {rb_res.successful_records:,} records reverted to previous state. (Job ID: `{rb_res.job_id}`)")
+                                    else:
+                                        st.warning(f"⚠️ **{obj_name}**: Revert processed with {rb_res.failed_records:,} errors.")
+                            except Exception as e:
+                                st.error(f"Rollback failed: {e}")
+                    else:
+                        with st.spinner(f"Submitting Rollback job for {target_obj_push} to Salesforce Bulk API 2.0..."):
+                            try:
+                                from salesforce.bulk_uploader import push_delta_to_sitetracker
+                                rb_res = push_delta_to_sitetracker(
+                                    csv_path=active_rb_file,
+                                    object_name=target_obj_push,
+                                    report_name=selected_report,
+                                    operation="update",
+                                    is_rollback=True,
+                                    profile=active_prof,
+                                )
+                                if rb_res.all_succeeded:
+                                    st.success(f"⏪ Rollback successful! All {rb_res.successful_records:,} records reverted to previous state. (Job ID: `{rb_res.job_id}`)")
+                                else:
+                                    st.warning(f"⚠️ Revert processed with {rb_res.failed_records:,} errors.")
+                            except Exception as e:
+                                st.error(f"Rollback failed: {e}")
 
 
 # =========================================================

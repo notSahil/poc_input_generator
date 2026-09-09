@@ -126,3 +126,77 @@ def test_apollo_multi_object_files_generated():
     assert "Ran_Priority__c" not in df_proj.columns
     # Ensure ID starts with a0i
     assert df_proj["Id"].dropna().iloc[0].startswith("a0i")
+
+
+def test_bulk_uploader_object_name_normalization(monkeypatch):
+    """Verify push_delta_to_sitetracker resolves Project to sitetracker__Project__c."""
+    from salesforce.bulk_uploader import push_delta_to_sitetracker
+
+    called_objects = []
+
+    class MockBulk2:
+        def __getattr__(self, name):
+            called_objects.append(name)
+            class MockEndpoint:
+                def update(self, records):
+                    return [{"numberRecordsTotal": len(records), "numberRecordsFailed": 0, "numberRecordsProcessed": len(records), "job_id": "MOCK_JOB_1"}]
+            return MockEndpoint()
+
+    class MockSF:
+        bulk2 = MockBulk2()
+
+    monkeypatch.setattr("salesforce.bulk_uploader.get_sf_connection", lambda **kwargs: MockSF())
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        csv_file = Path(tmp_dir) / "test.csv"
+        csv_file.write_text("Id,HE_MEAS_Status__c\na0i000000000001,Done\n")
+
+        # Call with friendly name 'Project'
+        res = push_delta_to_sitetracker(csv_file, object_name="Project", report_name="Apollo 10G")
+        assert res.all_succeeded is True
+        assert "sitetracker__Project__c" in called_objects
+        assert "Project__c" not in called_objects
+
+        # Call with 'BT Project'
+        res_bt = push_delta_to_sitetracker(csv_file, object_name="BT Project", report_name="Apollo 10G")
+        assert "BT_Project__c" in called_objects
+
+
+def test_push_multi_object_deltas_to_sitetracker(monkeypatch, tmp_path):
+    """Verify push_multi_object_deltas_to_sitetracker sequentially uploads for all objects."""
+    from salesforce.bulk_uploader import push_multi_object_deltas_to_sitetracker
+
+    uploaded_objects = []
+
+    def mock_push(csv_path, object_name, **kwargs):
+        from salesforce.bulk_uploader import BulkUploadResult
+        uploaded_objects.append(object_name)
+        return BulkUploadResult(
+            total_records=10,
+            successful_records=10,
+            failed_records=0,
+            job_id=f"JOB_{object_name}",
+            all_succeeded=True
+        )
+
+    monkeypatch.setattr("salesforce.bulk_uploader.push_delta_to_sitetracker", mock_push)
+
+    # Create dummy run directory with both files
+    bt_csv = tmp_path / "final_input_file_BT_Project.csv"
+    bt_csv.write_text("Id,Order_Placed__c\na1e1,2024-01-01\n")
+
+    proj_csv = tmp_path / "final_input_file_Project.csv"
+    proj_csv.write_text("Id,HE_MEAS_Status__c\na0i1,Done\n")
+
+    results = push_multi_object_deltas_to_sitetracker(
+        run_dir=tmp_path,
+        report_name="Apollo 10G"
+    )
+
+    assert "BT Project" in results
+    assert "Project" in results
+    assert results["BT Project"].all_succeeded is True
+    assert results["Project"].all_succeeded is True
+    assert uploaded_objects == ["BT Project", "Project"]
+

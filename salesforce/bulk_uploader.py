@@ -173,11 +173,10 @@ def push_delta_to_sitetracker(
     # 2. Connect to Salesforce with environment profile awareness
     sf = get_sf_connection(profile=profile)
 
-    # Ensure object name formatting
-    clean_obj = object_name.strip().replace(" ", "_")
-    if clean_obj.lower() == "site":
-        clean_obj = "sitetracker__Site__c"
-    elif not clean_obj.endswith("__c") and clean_obj not in ("Account", "Contact", "Opportunity", "Lead", "Case"):
+    # Ensure canonical Salesforce object name formatting (e.g. Project -> sitetracker__Project__c)
+    from salesforce.data_fetcher import normalize_salesforce_object_name
+    clean_obj = normalize_salesforce_object_name(object_name)
+    if not clean_obj.endswith("__c") and clean_obj not in ("Account", "Contact", "Opportunity", "Lead", "Case"):
         clean_obj = f"{clean_obj}__c"
 
     bulk_type = getattr(sf.bulk2, clean_obj)
@@ -252,3 +251,91 @@ def push_delta_to_sitetracker(
         failures_csv_path=failures_csv_path,
         failures=failures_list
     )
+
+
+def push_multi_object_deltas_to_sitetracker(
+    run_dir: Path,
+    report_name: str,
+    operation: str = "update",
+    is_rollback: bool = False,
+    profile: str | None = None,
+) -> dict[str, BulkUploadResult]:
+    """
+    Push dedicated delta files for all objects in a multi-object report sequentially.
+
+    Args:
+        run_dir: Directory containing run artifacts (e.g. final_input_file_*.csv).
+        report_name: Report name (e.g. 'Apollo 10G').
+        operation: Bulk operation ('update', 'upsert', 'insert'). Default is 'update'.
+        is_rollback: Whether this upload is a rollback operation.
+        profile: Optional Salesforce profile ('sandbox', 'partial', 'prod').
+
+    Returns:
+        dict mapping object_name -> BulkUploadResult.
+    """
+    mapping = MappingLoader(settings.MAPPING_FILE, report_name)
+    objects = mapping.objects()
+    results: dict[str, BulkUploadResult] = {}
+
+    run_path = Path(run_dir)
+    file_prefix = "rollback_file" if is_rollback else "final_input_file"
+
+    for obj in objects:
+        clean_obj = obj.strip().replace(" ", "_")
+        target_file = run_path / f"{file_prefix}_{clean_obj}.csv"
+
+        # Fallback / self-healing: if dedicated file doesn't exist, extract from main file
+        if not target_file.exists():
+            main_file = run_path / f"{file_prefix}.csv"
+            if main_file.exists():
+                try:
+                    df_main = pd.read_csv(main_file, dtype=str, keep_default_na=False)
+                    from salesforce.data_fetcher import normalize_salesforce_object_name
+                    norm_target = normalize_salesforce_object_name(obj).lower()
+                    m_df = mapping.load()
+                    obj_fields = set(
+                        m_df[
+                            m_df["Object Name"].astype(str).str.strip().apply(
+                                lambda o: normalize_salesforce_object_name(o).lower() == norm_target
+                            )
+                        ]["API Name"].dropna().astype(str).str.strip().tolist()
+                    )
+                    cols = [c for c in df_main.columns if c in ("Id", "Project Ref", "Project Reference") or c in obj_fields]
+                    field_cols = [c for c in cols if c not in ("Id", "Project Ref", "Project Reference")]
+                    if field_cols:
+                        has_changes = df_main[field_cols].apply(
+                            lambda row: any(str(v).strip() and str(v).strip().lower() != "nan" for v in row if pd.notna(v)),
+                            axis=1
+                        )
+                        filtered_df = df_main.loc[has_changes, cols]
+                        if not filtered_df.empty:
+                            filtered_df.to_csv(target_file, index=False)
+                except Exception as e:
+                    logger.warning("Could not dynamically extract %s: %s", target_file.name, e)
+
+        if not target_file.exists():
+            logger.info("No payload file found for object '%s', skipping.", obj)
+            continue
+
+        try:
+            df_check = pd.read_csv(target_file, dtype=str, keep_default_na=False)
+        except Exception:
+            df_check = pd.DataFrame()
+
+        if df_check.empty:
+            logger.info("Payload for object '%s' has 0 records, skipping.", obj)
+            continue
+
+        # Execute push for this object
+        res = push_delta_to_sitetracker(
+            csv_path=target_file,
+            object_name=obj,
+            report_name=report_name,
+            operation=operation,
+            is_rollback=is_rollback,
+            profile=profile,
+        )
+        results[obj] = res
+
+    return results
+

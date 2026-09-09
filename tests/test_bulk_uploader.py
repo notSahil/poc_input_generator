@@ -97,6 +97,7 @@ def test_push_delta_success(tmp_path):
         "numberRecordsFailed": 0,
         "job_id": "75000000001fake"
     }]
+    setattr(mock_sf.bulk2, "sitetracker__Site__c", mock_bulk_obj)
     setattr(mock_sf.bulk2, "Site__c", mock_bulk_obj)
 
     with patch("salesforce.bulk_uploader.get_sf_connection", return_value=mock_sf):
@@ -126,6 +127,7 @@ def test_push_delta_with_failures(tmp_path):
         "job_id": "75000000002fake"
     }]
     mock_bulk_obj.get_failed_records.return_value = "sf__Id,sf__Error,Status__c\na12345678901234567,INVALID_OR_NULL_FIELD,BadValue\n"
+    setattr(mock_sf.bulk2, "sitetracker__Site__c", mock_bulk_obj)
     setattr(mock_sf.bulk2, "Site__c", mock_bulk_obj)
 
     with patch("salesforce.bulk_uploader.get_sf_connection", return_value=mock_sf):
