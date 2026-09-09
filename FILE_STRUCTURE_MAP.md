@@ -6,6 +6,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 
 ### `/core` (Backend Logic & Data Processing)
 - `engine.py`: The master execution script. Orchestrates loading data, validating, normalizing, and writing the 5 standard output files.
+- `manual_engine.py`: Standalone, headless ad-hoc engine for Manual Dataloader mode. Computes deltas, validates data types, handles duplicates, and generates the standard 5 output files + rollback file for arbitrary Salesforce objects.
 - `validator.py`: Handles checking for missing or duplicate primary keys.
 - `normalizer.py`: Data cleaning and transformations.
 - `mapping_loader.py`: Reads the `Mapping_file.xlsx` to determine which columns to map.
@@ -16,8 +17,9 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 ### `/ui` (Streamlit Frontend)
 - `components.py`: Shared UI components including Dataloader.io 4-stage pipeline stepper, step navigation buttons, headers, and download confirmation popovers.
 - `styles.py`: Salesforce Lightning Design System (SLDS) design tokens, CSS styling, executive KPI metric cards, and status pill badges.
-- `data_load.py`: Guided 4-step Dataloader.io pipeline (Source & Object ➔ Visual Field Mapping Canvas ➔ Delta & Validation Engine ➔ Review, Downloads & Bulk API Ingest).
-- `run_history.py`: UI page for browsing past engine runs, viewing execution metrics, re-downloading output files, and inspecting archived source inputs.
+- `data_load.py`: Guided 4-step Dataloader.io pipeline for pre-configured reports (Source & Object ➔ Visual Field Mapping Canvas ➔ Delta & Validation Engine ➔ Review, Downloads & Bulk API Ingest).
+- `manual_loader.py`: Interactive 4-step wizard for Manual Dataloader mode (1. Upload CSV/Excel ➔ 2. Select Object & Key ➔ 3. Field Mapping & Selection ➔ 4. Review, Diff & Bulk API 2.0 Upload with 1-Click Rollback).
+- `run_history.py`: UI page for browsing past engine runs, viewing execution metrics, re-downloading output files, and inspecting archived inputs.
 - `mapping_editor.py`: Interactive UI allowing the user to view and edit mapping rules directly in the browser with history/rollback capabilities.
 - `data_export.py`: Handles environment profile switching (Sandbox vs Production), Workbench session token connection, displaying authenticated user profile details, and logout.
 
@@ -26,6 +28,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `client.py`: API wrapper for making legacy REST requests to SFDC with profile awareness.
 - `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by active environment profile OAuth/session tokens with automatic expiration refresh.
 - `data_fetcher.py`: Builds dynamic SOQL queries from `Mapping_file.xlsx` and fetches live Sitetracker records via `simple-salesforce`.
+- `adhoc_fetcher.py`: Dynamic object discovery via `describeGlobal()`, field describe inspection, and parallel URL-safe SOQL querying for arbitrary Salesforce objects.
 - `bulk_uploader.py`: Uploads `final_input_file.csv` to Salesforce via Bulk API 2.0 with payload column sanitization and record-level error logging.
 - `field_discovery.py`: Discovers Salesforce object metadata via `describe()`, filters updateable fields, and maps types to text/date/number/boolean.
 - `metadata.py` & `userinfo.py`: Utilities for fetching SFDC objects.
@@ -111,7 +114,8 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
    - *Decision:* Dynamically inspect `Mapping_file.xlsx` for all distinct objects (`loader.objects()`) and all declared primary keys (`loader.all_primary_keys()`). The UI presents object pills, an interactive object filter bar (`[All Objects] [BT Project] [Project]`), individual object badges and gold `🔑 PRIMARY KEY` tags on each mapping row, and lets users dynamically target specific objects during live SOQL fetches and Bulk API 2.0 uploads.
    - *Reason:* Real-world Sitetracker reports (such as Apollo 10G) frequently span multiple related Salesforce objects (e.g. `BT Project` and `Project`) and can have composite or per-object primary keys. Hardcoding a single object (`Site__c`) or single primary key broke multi-object reports and caused SOQL query failures.
 18. **Dynamic Real-Time Salesforce Session Verification & Unified Multi-Object SOQL Fetch (`salesforce/auth.py`, `app.py`, `ui/data_load.py`)**:
-   - *Decision:* Implement dynamic real-time Salesforce session verification (`check_connection_status`) pinging `/services/oauth2/userinfo` with 30s TTL in-memory caching and a 2.5s network timeout. Discontinue legacy `.sf_auth.json` file writes/syncs to prevent stale ghost tokens. Update UI active environment indicators across `app.py` and `ui/data_load.py` to display `● Connected` only when an active, live verified session exists, and `○ Disconnected` / `● Offline` otherwise. In Step 1 of Data Load, streamline live data retrieval into a unified 1-click SOQL fetch querying all mapped fields across objects into the Sitetracker baseline CSV, while preserving object badges and filter buttons in Step 2 for inspection.
-   - *Reason:* Statically checking file existence or arithmetic timestamps caused false-positive connected statuses when tokens were invalidated, offline, or expired. Forcing users to select individual objects for SOQL fetching fragmented multi-object reports; a single 1-click fetch retrieves all mapped fields needed to compute deltas against source files while maintaining clear object reference badges.
-
-
+    - *Decision:* Implement dynamic real-time Salesforce session verification (`check_connection_status`) pinging `/services/oauth2/userinfo` with 30s TTL in-memory caching and a 2.5s network timeout. Discontinue legacy `.sf_auth.json` file writes/syncs to prevent stale ghost tokens. Update UI active environment indicators across `app.py` and `ui/data_load.py` to display `● Connected` only when an active, live verified session exists, and `○ Disconnected` / `● Offline` otherwise. In Step 1 of Data Load, streamline live data retrieval into a unified 1-click SOQL fetch querying all mapped fields across objects into the Sitetracker baseline CSV, while preserving object badges and filter buttons in Step 2 for inspection.
+    - *Reason:* Statically checking file existence or arithmetic timestamps caused false-positive connected statuses when tokens were invalidated, offline, or expired. Forcing users to select individual objects for SOQL fetching fragmented multi-object reports; a single 1-click fetch retrieves all mapped fields needed to compute deltas against source files while maintaining clear object reference badges.
+19. **Ad-Hoc / Manual Dataloader Architecture (Dataloader.io Mode) (`core/manual_engine.py`, `salesforce/adhoc_fetcher.py`, `ui/manual_loader.py`)**:
+    - *Decision:* Deliver ad-hoc manual data loading as a dedicated, architecturally quarantined module rather than adding branching logic into the existing report pipeline. Provide live describeGlobal object discovery, dynamic field describe, an intelligent auto-matcher comparing CSV headers to Salesforce fields, an interactive row-by-row selection table with field upload checkboxes, and a headless comparison engine (`ManualLoadEngine`) that validates dates, numbers, duplicate keys, and missing keys while generating the exact 5 standard output files + `rollback_file.csv` with `#N/A` clearance.
+    - *Reason:* Gives users complete freedom to update any custom or standard Salesforce object without modifying the static Excel mapping file or YAML configurations, while guaranteeing 100% zero blast radius and backwards compatibility for existing production reports (`Apollo 10G`, `Master Site Listing`).

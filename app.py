@@ -80,16 +80,17 @@ def render_home():
     st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
     st.subheader("Select Operation Module")
 
-    col1, col2, col3, col4 = st.columns(4)
+    # Primary Operation Modes
+    col_primary1, col_primary2 = st.columns(2)
 
-    with col1:
+    with col_primary1:
         st.markdown(
             """
-            <div class="slds-card" style="min-height: 220px; display: flex; flex-direction: column; justify-content: space-between;">
+            <div class="slds-card" style="min-height: 200px; display: flex; flex-direction: column; justify-content: space-between;">
                 <div>
-                    <div class="slds-card-title">📥 Data Ingestion Pipeline</div>
+                    <div class="slds-card-title">📥 Guided Report Pipeline</div>
                     <div class="slds-card-subtitle" style="margin-top: 8px;">
-                        Guided 4-step wizard comparing spreadsheets against Sitetracker exports, validating schemas, and producing validated upload files.
+                        Standardized 4-step wizard comparing pre-configured reports (e.g. Apollo 10G, Master Site Listing) against Sitetracker exports with schema validations.
                     </div>
                 </div>
             </div>
@@ -97,7 +98,7 @@ def render_home():
             unsafe_allow_html=True
         )
         st.button(
-            "Launch Data Load ➔",
+            "Launch Guided Pipeline ➔",
             use_container_width=True,
             type="primary",
             on_click=go,
@@ -105,10 +106,38 @@ def render_home():
             key="btn_nav_dataload"
         )
 
-    with col2:
+    with col_primary2:
         st.markdown(
             """
-            <div class="slds-card" style="min-height: 220px; display: flex; flex-direction: column; justify-content: space-between;">
+            <div class="slds-card" style="min-height: 200px; display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div class="slds-card-title">⚡ Ad-Hoc Manual Data Loader</div>
+                    <div class="slds-card-subtitle" style="margin-top: 8px;">
+                        Dataloader.io mode • Upload any CSV/Excel file, select any Salesforce/Sitetracker object, auto-match fields, validate live deltas, and upload with 1-click rollback.
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        st.button(
+            "Launch Ad-Hoc Loader ➔",
+            use_container_width=True,
+            type="primary",
+            on_click=go,
+            args=("manual_load",),
+            key="btn_nav_adhoc_loader"
+        )
+
+    st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
+    st.caption("Administrative & Management Utilities")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown(
+            """
+            <div class="slds-card" style="min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
                 <div>
                     <div class="slds-card-title">📜 Run History & Audit</div>
                     <div class="slds-card-subtitle" style="margin-top: 8px;">
@@ -127,10 +156,10 @@ def render_home():
             key="btn_nav_history"
         )
 
-    with col3:
+    with col2:
         st.markdown(
             """
-            <div class="slds-card" style="min-height: 220px; display: flex; flex-direction: column; justify-content: space-between;">
+            <div class="slds-card" style="min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
                 <div>
                     <div class="slds-card-title">📝 Schema & Mapping Editor</div>
                     <div class="slds-card-subtitle" style="margin-top: 8px;">
@@ -149,10 +178,10 @@ def render_home():
             key="btn_nav_mapping"
         )
 
-    with col4:
+    with col3:
         st.markdown(
             """
-            <div class="slds-card" style="min-height: 220px; display: flex; flex-direction: column; justify-content: space-between;">
+            <div class="slds-card" style="min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
                 <div>
                     <div class="slds-card-title">📤 Salesforce Data Export</div>
                     <div class="slds-card-subtitle" style="margin-top: 8px;">
@@ -187,6 +216,10 @@ if page == "home":
 
 elif page == "data_load":
     from ui.data_load import render
+    render(go)
+
+elif page == "manual_load":
+    from ui.manual_loader import render
     render(go)
 
 elif page == "run_history":

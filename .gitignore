@@ -15,6 +15,7 @@ runs/
 archive/
 backup/
 */backup/
+data/backup_original/
 *.numbers
 data/**/runs/
 data/**/archive/
@@ -28,10 +29,13 @@ data/common/mapping_history/
 .vscode/
 .idea/
 
-# Environment variables
+# Environment variables & credentials
 .env
 .sf_auth.json
 .sf_auth*.json
 .sf_profile*.json
 .sf_pkce*.json
+.sf_creds*.json
+data/manual_runs/
 *.zip
+*.pdf
