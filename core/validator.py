@@ -52,8 +52,7 @@ class InputValidator:
 
         # 4. Validate source file columns
         try:
-            src_df = pd.read_excel(src_file, dtype=str, nrows=10)
-            src_df = DataNormalizer.normalize_columns(src_df)
+            src_df = DataNormalizer.read_spreadsheet(src_file, nrows=10)
 
             if pk_src not in src_df.columns:
                 errors.append(f"Source file missing primary key column: '{pk_src}'")
@@ -71,12 +70,11 @@ class InputValidator:
                 if empty_pk > 0:
                     warnings.append(f"{empty_pk} sample rows in source file have empty primary key '{pk_src}'")
         except Exception as e:
-            errors.append(f"Failed to read source Excel file: {e}")
+            errors.append(f"Failed to read source file: {e}")
 
         # 5. Validate sitetracker file columns
         try:
-            st_df = pd.read_csv(st_file, dtype=str, nrows=10, encoding="latin1", engine="python", on_bad_lines="skip")
-            st_df = DataNormalizer.normalize_columns(st_df)
+            st_df = DataNormalizer.read_spreadsheet(st_file, nrows=10)
 
             if self.sf_id_column not in st_df.columns:
                 # Check regex fallback
@@ -97,7 +95,7 @@ class InputValidator:
                         f"Available: {list(st_df.columns)}"
                     )
         except Exception as e:
-            errors.append(f"Failed to read Sitetracker CSV file: {e}")
+            errors.append(f"Failed to read Sitetracker baseline file: {e}")
 
         # 6. Check date format parseability (sample)
         if "src_df" in locals():

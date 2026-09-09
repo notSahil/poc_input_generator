@@ -33,11 +33,13 @@ def clean_payload_for_salesforce(
     df: pd.DataFrame,
     report_name: str | None = None,
     is_rollback: bool = False,
+    target_object: str | None = None,
 ) -> list[dict]:
     """
     Ensure only valid Salesforce API field names and 'Id' are sent to Bulk API.
     Removes human-readable source column headers (e.g. 'Project Ref').
     Converts date fields to ISO 'YYYY-MM-DD' as required by Salesforce xsd:date.
+    When target_object is specified, ensures ONLY API fields belonging to that object are included.
     """
     valid_api_fields: set[str] = {"Id"}
     date_api_fields: set[str] = set()
@@ -46,6 +48,17 @@ def clean_payload_for_salesforce(
         try:
             mapping = MappingLoader(settings.MAPPING_FILE, report_name)
             m_df = mapping.load()
+            if target_object and "Object Name" in m_df.columns:
+                from salesforce.data_fetcher import normalize_salesforce_object_name
+                norm_target = normalize_salesforce_object_name(target_object).lower()
+                filtered = m_df[
+                    m_df["Object Name"].astype(str).str.strip().apply(
+                        lambda o: normalize_salesforce_object_name(o).lower() == norm_target
+                    )
+                ]
+                if not filtered.empty:
+                    m_df = filtered
+
             for _, row in m_df.iterrows():
                 api_name = str(row.get("API Name", "")).strip()
                 dtype = str(row.get("Data Type", "")).strip()
@@ -60,7 +73,7 @@ def clean_payload_for_salesforce(
     cols_to_keep = []
     for col in df.columns:
         c_strip = str(col).strip()
-        if c_strip == "Id" or c_strip in valid_api_fields or c_strip.endswith("__c"):
+        if c_strip == "Id" or (c_strip in valid_api_fields if report_name else c_strip.endswith("__c")):
             cols_to_keep.append(col)
 
     if not cols_to_keep or "Id" not in cols_to_keep:
@@ -109,6 +122,7 @@ def push_delta_to_sitetracker(
     report_name: str | None = None,
     operation: str = "update",
     is_rollback: bool = False,
+    profile: str | None = None,
 ) -> BulkUploadResult:
     """
     Push a generated delta CSV to Sitetracker/Salesforce via Bulk API 2.0.
@@ -119,6 +133,7 @@ def push_delta_to_sitetracker(
         report_name: Optional report name for column filtering against mapping.
         operation: Bulk operation ('update', 'upsert', 'insert'). Default is 'update'.
         is_rollback: Whether this upload is a rollback operation (clears fields with #N/A).
+        profile: Optional Salesforce profile name ('sandbox', 'partial', 'prod').
 
     Returns:
         BulkUploadResult with job metrics and failure logs.
@@ -144,8 +159,8 @@ def push_delta_to_sitetracker(
             all_succeeded=True
         )
 
-    # 1. Clean payload
-    records = clean_payload_for_salesforce(df, report_name, is_rollback=is_rb)
+    # 1. Clean payload with object-level field isolation
+    records = clean_payload_for_salesforce(df, report_name, is_rollback=is_rb, target_object=object_name)
     if not records:
         return BulkUploadResult(
             total_records=0,
@@ -155,8 +170,8 @@ def push_delta_to_sitetracker(
             all_succeeded=True
         )
 
-    # 2. Connect to Salesforce
-    sf = get_sf_connection()
+    # 2. Connect to Salesforce with environment profile awareness
+    sf = get_sf_connection(profile=profile)
 
     # Ensure object name formatting
     clean_obj = object_name.strip().replace(" ", "_")

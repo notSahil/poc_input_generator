@@ -193,6 +193,36 @@ def _query_sf(sf, soql: str, api_to_st_map: dict[str, str], report_name: str) ->
         if isinstance(content, list) and len(content) > 0 and isinstance(content[0], dict):
             err_text = content[0].get("message", err_text)
 
+        # Check if error is due to an unconfigured relationship prefix or lookup field
+        if "." in soql or "__r" in soql:
+            rel_match = re.search(r"Didn't understand relationship '([^']+)'", err_text)
+            col_match = re.search(r"No such column '([^']+)' on entity '([^']+)'", err_text)
+            failing_token = None
+            if rel_match:
+                failing_token = rel_match.group(1)
+            elif col_match and (col_match.group(1).endswith("__r") or col_match.group(1).endswith("__c")):
+                failing_token = col_match.group(1)
+
+            if failing_token:
+                logger.warning(
+                    "SOQL query failed on relationship/field '%s' (%s). Retrying with direct fields only...",
+                    failing_token, err_text,
+                )
+                select_match = re.match(r"SELECT\s+(.*?)\s+FROM\s+(\w+)(.*)", soql, re.IGNORECASE | re.DOTALL)
+                if select_match:
+                    all_fields = [f.strip() for f in select_match.group(1).split(",")]
+                    direct_fields = [
+                        f for f in all_fields
+                        if not f.startswith(f"{failing_token}.") and f != failing_token and ("." not in f if rel_match else True)
+                    ]
+                    clean_soql = f"SELECT {', '.join(direct_fields)} FROM {select_match.group(2)}{select_match.group(3)}"
+                    logger.info("Executing resilient fallback SOQL query: %s", clean_soql)
+                    try:
+                        res = sf.query_all(clean_soql)
+                        return res.get("records", [])
+                    except Exception as fallback_err:
+                        logger.warning("Fallback SOQL query also failed: %s", fallback_err)
+
         match = re.search(r"No such column '([^']+)' on entity '([^']+)'", err_text)
         if match:
             missing_col, entity = match.group(1), match.group(2)

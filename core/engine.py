@@ -40,7 +40,7 @@ class InputFileEngine:
         if not folder.exists():
             raise EngineSkipError(f"{label} folder does not exist: {folder}")
 
-        files = [f for f in folder.iterdir() if not f.name.startswith(".")]
+        files = [f for f in folder.iterdir() if not f.name.startswith(".") and f.is_file()]
 
         if len(files) == 0:
             raise EngineSkipError(f"No files found in {label} folder: {folder}")
@@ -50,7 +50,13 @@ class InputFileEngine:
                 live_files = [f for f in files if f.name.endswith("_sitetracker_live.csv")]
                 if live_files:
                     return sorted(live_files, key=lambda x: x.stat().st_mtime, reverse=True)[0]
-            raise ValueError(f"{label} folder must contain exactly ONE file, found {len(files)}: {[f.name for f in files]}")
+            # Prioritize the most recently modified file and log a warning
+            sorted_files = sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)
+            self.logger.warning(
+                "Multiple files found in %s folder: %s. Selecting most recent: '%s'",
+                label, [f.name for f in files], sorted_files[0].name
+            )
+            return sorted_files[0]
 
         return files[0]
 
@@ -87,24 +93,14 @@ class InputFileEngine:
         field_map = mapping.field_mapping()
 
         # 5. Load & normalize source data
-        src_df = DataNormalizer.normalize_columns(
-            pd.read_excel(source_file, dtype=str)
-        )
+        src_df = DataNormalizer.read_spreadsheet(source_file)
 
         for col in self.text_case_columns:
             if col in src_df.columns:
                 src_df[col] = src_df[col].apply(DataNormalizer.normalize_text_case)
 
         # 6. Load & normalize Sitetracker data
-        st_df = DataNormalizer.normalize_columns(
-            pd.read_csv(
-                st_file,
-                dtype=str,
-                encoding="latin1",
-                engine="python",
-                on_bad_lines="skip"
-            )
-        )
+        st_df = DataNormalizer.read_spreadsheet(st_file)
 
         # Locate Salesforce ID column
         if self.sf_id_column in st_df.columns:
@@ -399,6 +395,85 @@ class InputFileEngine:
             columns=["Id", pk_src]
         )
         rollback_df.to_csv(out("rollback_file.csv"), index=False)
+
+        # Multi-Object Dedicated Payloads (for multi-object reports like Apollo 10G)
+        report_objects = mapping.objects()
+        if len(report_objects) > 1 and mapping.mapping_df is not None:
+            for obj in report_objects:
+                clean_obj = obj.strip().replace(" ", "_")
+                obj_rows = mapping.mapping_df[
+                    mapping.mapping_df["Object Name"].astype(str).str.strip().str.lower() == obj.lower()
+                ]
+                obj_api_fields = set(obj_rows["API Name"].dropna().astype(str).str.strip().tolist())
+                if not obj_api_fields:
+                    continue
+
+                # Locate Salesforce Record ID column for this object in st_df
+                id_cols = [c for c in st_df.columns if st_df[c].astype(str).str.match(r"^a[0-9A-Za-z]{17}$").any()]
+                obj_id_col = None
+                clean_name = obj.replace(" ", "_").lower()
+
+                if "bt" in obj.lower():
+                    for c in id_cols:
+                        if "project_id_id" in c.lower().replace(" ", "_") or (st_df[c].astype(str).str.startswith("a1e").any() if len(st_df) else False):
+                            obj_id_col = c
+                            break
+                elif obj.lower() == "project":
+                    for c in id_cols:
+                        if "id_project" in c.lower().replace(" ", "_") or (st_df[c].astype(str).str.startswith("a0i").any() if len(st_df) else False):
+                            obj_id_col = c
+                            break
+
+                if not obj_id_col:
+                    # Prioritize valid 18-char ID columns matching object name
+                    for c in id_cols:
+                        c_norm = c.lower().replace(" ", "_")
+                        if clean_name in c_norm or c_norm in (clean_name, f"{clean_name}_id", f"id_{clean_name}"):
+                            obj_id_col = c
+                            break
+
+                if not obj_id_col:
+                    obj_id_col = id_cols[0] if (id_cols and obj == report_objects[0]) else (id_cols[-1] if id_cols else sf_id_col)
+
+                obj_updates = []
+                obj_rollbacks = []
+                for u, rb_u in zip(updates, rollback_updates):
+                    pr_val = u.get(pk_src, "")
+                    # Check if this row has changes in this object's fields
+                    has_obj_change = any(
+                        c.get("Project Reference") == pr_val and c.get("API Field") in obj_api_fields
+                        for c in changes
+                    )
+                    if not has_obj_change:
+                        continue
+
+                    # Get specific ID for this object
+                    rec_id = u.get("Id", "")
+                    if pr_val in st_index.index:
+                        st_rec = st_index.loc[pr_val]
+                        if isinstance(st_rec, pd.DataFrame):
+                            st_rec = st_rec.iloc[0]
+                        if obj_id_col and obj_id_col in st_rec and pd.notna(st_rec[obj_id_col]):
+                            rec_id = str(st_rec[obj_id_col]).strip()
+
+                    row_u = {"Id": rec_id, pk_src: pr_val}
+                    row_rb = {"Id": rec_id, pk_src: pr_val}
+                    for f in obj_api_fields:
+                        if f in u:
+                            row_u[f] = u[f]
+                        if f in rb_u:
+                            row_rb[f] = rb_u[f]
+
+                    obj_updates.append(row_u)
+                    obj_rollbacks.append(row_rb)
+
+                # Write per-object files
+                pd.DataFrame(obj_updates).to_csv(out(f"final_input_file_{clean_obj}.csv"), index=False)
+                pd.DataFrame(obj_rollbacks).to_csv(out(f"rollback_file_{clean_obj}.csv"), index=False)
+                self.logger.info(
+                    "Generated dedicated payload for '%s': %d records to %s",
+                    obj, len(obj_updates), f"final_input_file_{clean_obj}.csv"
+                )
 
         # 3. field_level_changes.csv — per-field old vs new
         changes_df = pd.DataFrame(changes) if changes else pd.DataFrame(

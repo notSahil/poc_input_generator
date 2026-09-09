@@ -119,3 +119,37 @@ class DataNormalizer:
         if len(v_str) > max_len:
             return v_str, False
         return v_str, True
+
+    @staticmethod
+    def read_spreadsheet(file_path, nrows: int | None = None) -> pd.DataFrame:
+        """
+        Universally read Excel (.xlsx, .xls) or CSV files into a DataFrame.
+        All columns are converted to str and stripped of special characters.
+        Handles both UTF-8 and Windows latin-1 / ANSI encodings gracefully.
+        """
+        from pathlib import Path
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+
+        ext = path.suffix.lower()
+        if ext in (".xlsx", ".xls"):
+            try:
+                df = pd.read_excel(path, dtype=str, nrows=nrows)
+            except Exception:
+                df = pd.read_excel(path, nrows=nrows)
+        else:
+            try:
+                df = pd.read_csv(path, dtype=str, nrows=nrows, encoding="utf-8")
+            except UnicodeDecodeError:
+                df = pd.read_csv(
+                    path,
+                    dtype=str,
+                    nrows=nrows,
+                    encoding="latin1",
+                    engine="python",
+                    on_bad_lines="skip"
+                )
+
+        df = DataNormalizer.normalize_columns(df)
+        return df.fillna("").astype(str)

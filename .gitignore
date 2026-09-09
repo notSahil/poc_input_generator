@@ -39,3 +39,4 @@ data/common/mapping_history/
 data/manual_runs/
 *.zip
 *.pdf
+data/**/input/sitetracker/*_live.csv

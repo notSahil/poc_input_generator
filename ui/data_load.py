@@ -1,7 +1,9 @@
 """Streamlit UI page for Data Load / Input File Generation with Dataloader.io guided pipeline."""
 
+from datetime import datetime
 import logging
 from pathlib import Path
+import shutil
 import streamlit as st
 import pandas as pd
 
@@ -10,6 +12,7 @@ from core.config_loader import YamlConfigLoader
 from core.engine import InputFileEngine
 from core.exceptions import EngineSkipError, InputGeneratorError, MappingError, ValidationError
 from core.mapping_loader import MappingLoader
+from core.normalizer import DataNormalizer
 from core.validator import InputValidator
 from ui.components import (
     render_back_button,
@@ -176,19 +179,42 @@ def _render_step_source(reports: list) -> bool:
             """,
             unsafe_allow_html=True
         )
+
+        uploaded_src = st.file_uploader(
+            "Upload Source Spreadsheet (CSV or Excel)",
+            type=["csv", "xlsx", "xls"],
+            key=f"uploader_src_{selected_report}",
+            help="Upload an updated data file (.csv, .xlsx, .xls) containing records to process."
+        )
+        if uploaded_src is not None:
+            src_dir.mkdir(parents=True, exist_ok=True)
+            save_dest = src_dir / uploaded_src.name
+            archive_src = src_dir / "archive"
+            archive_src.mkdir(parents=True, exist_ok=True)
+            for old_f in src_dir.iterdir():
+                if old_f.is_file() and not old_f.name.startswith(".") and old_f.name != uploaded_src.name:
+                    try:
+                        shutil.move(str(old_f), str(archive_src / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{old_f.name}"))
+                    except Exception:
+                        pass
+            with open(save_dest, "wb") as f_out:
+                f_out.write(uploaded_src.getbuffer())
+            src_files = [uploaded_src.name]
+            st.success(f"✅ Loaded **{uploaded_src.name}** successfully!")
+
         if src_files:
-            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Found: {src_files[0]}', 'green')}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Active Source: {src_files[0]}', 'green')}</div>", unsafe_allow_html=True)
             with st.expander(f"👁️ Preview Source Data ({src_files[0]})", expanded=False):
                 try:
                     sf_path = src_dir / src_files[0]
-                    src_view_df = _read_excel_preview(sf_path) if sf_path.suffix.lower() == ".xlsx" else _read_csv_preview(sf_path)
-                    st.caption(f"📁 {len(src_view_df):,} rows • {len(src_view_df.columns)} columns")
-                    st.dataframe(src_view_df.head(100), use_container_width=True)
+                    src_view_df = DataNormalizer.read_spreadsheet(sf_path, nrows=100)
+                    st.caption(f"📁 Previewing top {len(src_view_df):,} rows • {len(src_view_df.columns)} columns")
+                    st.dataframe(src_view_df, use_container_width=True)
                 except Exception as e:
                     st.error(f"Could not load source file: {e}")
         else:
             st.markdown(f"<div style='margin-bottom:8px;'>{render_pill('Missing source file', 'amber')}</div>", unsafe_allow_html=True)
-            st.caption(f"Place input file in: `{src_dir.relative_to(settings.PROJECT_ROOT)}`")
+            st.caption(f"Upload above or place input file in: `{src_dir.relative_to(settings.PROJECT_ROOT)}`")
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_st_card:
@@ -200,18 +226,41 @@ def _render_step_source(reports: list) -> bool:
             """,
             unsafe_allow_html=True
         )
+
+        uploaded_st = st.file_uploader(
+            "Upload Sitetracker Baseline (CSV or Excel)",
+            type=["csv", "xlsx", "xls"],
+            key=f"uploader_st_{selected_report}",
+            help="Optional: Upload an offline baseline export file if not fetching live via SOQL."
+        )
+        if uploaded_st is not None:
+            st_dir.mkdir(parents=True, exist_ok=True)
+            save_dest = st_dir / uploaded_st.name
+            archive_st = st_dir / "archive"
+            archive_st.mkdir(parents=True, exist_ok=True)
+            for old_f in st_dir.iterdir():
+                if old_f.is_file() and not old_f.name.startswith(".") and old_f.name != uploaded_st.name:
+                    try:
+                        shutil.move(str(old_f), str(archive_st / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{old_f.name}"))
+                    except Exception:
+                        pass
+            with open(save_dest, "wb") as f_out:
+                f_out.write(uploaded_st.getbuffer())
+            st_files = [uploaded_st.name]
+            st.success(f"✅ Loaded **{uploaded_st.name}** successfully!")
+
         if st_files:
-            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Found: {st_files[0]}', 'green')}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Active Baseline: {st_files[0]}', 'green')}</div>", unsafe_allow_html=True)
             with st.expander(f"👁️ Preview Sitetracker Data ({st_files[0]})", expanded=False):
                 try:
-                    st_view_df = _read_csv_preview(st_dir / st_files[0])
-                    st.caption(f"📁 {len(st_view_df):,} rows • {len(st_view_df.columns)} columns")
-                    st.dataframe(st_view_df.head(100), use_container_width=True)
+                    st_view_df = DataNormalizer.read_spreadsheet(st_dir / st_files[0], nrows=100)
+                    st.caption(f"📁 Previewing top {len(st_view_df):,} rows • {len(st_view_df.columns)} columns")
+                    st.dataframe(st_view_df, use_container_width=True)
                 except Exception as e:
                     st.error(f"Could not load Sitetracker baseline: {e}")
         else:
             st.markdown(f"<div style='margin-bottom:8px;'>{render_pill('Missing baseline file', 'amber')}</div>", unsafe_allow_html=True)
-            st.caption(f"Place file in: `{st_dir.relative_to(settings.PROJECT_ROOT)}`")
+            st.caption(f"Upload above, place file in: `{st_dir.relative_to(settings.PROJECT_ROOT)}`, or fetch live.")
 
         if is_auth:
             if report_objects:
@@ -579,12 +628,6 @@ def _render_step_ingest(selected_report: str):
 
     st.info(f"Target Salesforce Org: **{env_badge}**")
 
-    # Preview before upload
-    if final_file.exists():
-        final_push_df = pd.read_csv(final_file, dtype=str, keep_default_na=False)
-        with st.expander(f"📥 Preview Payload ({len(final_push_df)} Records to be Ingested)", expanded=False):
-            st.dataframe(final_push_df, use_container_width=True)
-
     # Allow selecting target object if report has multiple objects
     try:
         loader_ingest = MappingLoader(settings.MAPPING_FILE, selected_report)
@@ -607,6 +650,20 @@ def _render_step_ingest(selected_report: str):
     else:
         target_obj_push = default_obj or "Site__c"
 
+    # Select appropriate payload file for target object
+    clean_target = target_obj_push.strip().replace(" ", "_")
+    obj_specific_file = result.run_dir / f"final_input_file_{clean_target}.csv"
+    active_push_file = obj_specific_file if obj_specific_file.exists() else final_file
+
+    obj_specific_rb = result.run_dir / f"rollback_file_{clean_target}.csv"
+    active_rb_file = obj_specific_rb if obj_specific_rb.exists() else rb_file
+
+    # Preview before upload
+    if active_push_file.exists():
+        final_push_df = pd.read_csv(active_push_file, dtype=str, keep_default_na=False)
+        with st.expander(f"📥 Preview Payload for {target_obj_push} ({len(final_push_df)} Records to be Ingested)", expanded=False):
+            st.dataframe(final_push_df, use_container_width=True)
+
     col_c1, col_c2 = st.columns([2, 1])
     with col_c1:
         confirm_phrase = st.text_input(
@@ -624,10 +681,11 @@ def _render_step_ingest(selected_report: str):
                 try:
                     from salesforce.bulk_uploader import push_delta_to_sitetracker
                     bulk_res = push_delta_to_sitetracker(
-                        csv_path=final_file,
+                        csv_path=active_push_file,
                         object_name=target_obj_push,
                         report_name=selected_report,
-                        operation="update"
+                        operation="update",
+                        profile=active_prof,
                     )
 
                     if bulk_res.all_succeeded:
@@ -642,10 +700,10 @@ def _render_step_ingest(selected_report: str):
                     st.error(f"Bulk API upload failed: {e}")
 
     # Emergency Rollback / Revert Safety Net
-    if rb_file.exists():
+    if active_rb_file.exists():
         with st.expander("⏪ Emergency Rollback Safety Net", expanded=False):
             st.warning("⚠️ **Safety Net**: Revert pre-change values back into Sitetracker to restore records to how they were prior to this run.")
-            rb_df = pd.read_csv(rb_file, dtype=str)
+            rb_df = pd.read_csv(active_rb_file, dtype=str)
             st.dataframe(rb_df, use_container_width=True)
 
             col_rb1, col_rb2 = st.columns([2, 1])
@@ -663,15 +721,13 @@ def _render_step_ingest(selected_report: str):
                     with st.spinner("Submitting Rollback job to Salesforce Bulk API 2.0..."):
                         try:
                             from salesforce.bulk_uploader import push_delta_to_sitetracker
-                            yaml_cfg = YamlConfigLoader.load(selected_report)
-                            obj_name = yaml_cfg.get("report", {}).get("salesforce_object") or "Site__c"
-
                             rb_res = push_delta_to_sitetracker(
-                                csv_path=rb_file,
-                                object_name=obj_name,
+                                csv_path=active_rb_file,
+                                object_name=target_obj_push,
                                 report_name=selected_report,
                                 operation="update",
                                 is_rollback=True,
+                                profile=active_prof,
                             )
                             if rb_res.all_succeeded:
                                 st.success(f"⏪ Rollback successful! All {rb_res.successful_records} records reverted to previous state. (Job ID: `{rb_res.job_id}`)")
