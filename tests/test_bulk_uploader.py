@@ -51,6 +51,25 @@ def test_clean_payload_preserves_hash_na_for_null_wipe():
     assert rec["Empty_Field__c"] is None
 
 
+def test_clean_payload_rollback_converts_empty_to_hash_na():
+    """Verify that rollback payload automatically converts empty fields to #N/A for Bulk API 2.0 field clearing."""
+    raw_df = pd.DataFrame([
+        {
+            "Id": "a12345678901234567",
+            "Status__c": "Approved",
+            "Date_Field__c": "",
+            "Empty_Field__c": None,
+        }
+    ])
+
+    records = clean_payload_for_salesforce(raw_df, is_rollback=True)
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["Status__c"] == "Approved"
+    assert rec["Date_Field__c"] == "#N/A"
+    assert rec["Empty_Field__c"] == "#N/A"
+
+
 
 def test_push_delta_empty_csv(tmp_path):
     empty_csv = tmp_path / "empty_input.csv"

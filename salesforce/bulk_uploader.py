@@ -29,7 +29,11 @@ class BulkUploadResult:
     failures: list[dict] = field(default_factory=list)
 
 
-def clean_payload_for_salesforce(df: pd.DataFrame, report_name: str | None = None) -> list[dict]:
+def clean_payload_for_salesforce(
+    df: pd.DataFrame,
+    report_name: str | None = None,
+    is_rollback: bool = False,
+) -> list[dict]:
     """
     Ensure only valid Salesforce API field names and 'Id' are sent to Bulk API.
     Removes human-readable source column headers (e.g. 'Project Ref').
@@ -82,8 +86,18 @@ def clean_payload_for_salesforce(df: pd.DataFrame, report_name: str | None = Non
 
             clean_df[col] = clean_df[col].apply(_format_date)
 
-    # Convert empty strings to None while preserving explicit '#N/A' null-wipes
-    clean_df = clean_df.replace({"": None})
+    # For rollback payloads, convert any empty/null/None/NaN values to '#N/A'
+    # so Salesforce Bulk API 2.0 explicitly clears the fields back to null instead of ignoring them.
+    if is_rollback:
+        for c in clean_df.columns:
+            if c != "Id":
+                clean_df[c] = clean_df[c].apply(
+                    lambda v: "#N/A" if (pd.isna(v) or not str(v).strip() or str(v).lower() in ("none", "nan")) else v
+                )
+    else:
+        # Convert empty strings to None while preserving explicit '#N/A' null-wipes
+        clean_df = clean_df.replace({"": None})
+
     records = clean_df.where(pd.notnull(clean_df), None).to_dict("records")
     return records
 
@@ -93,16 +107,18 @@ def push_delta_to_sitetracker(
     csv_path: Path,
     object_name: str,
     report_name: str | None = None,
-    operation: str = "update"
+    operation: str = "update",
+    is_rollback: bool = False,
 ) -> BulkUploadResult:
     """
     Push a generated delta CSV to Sitetracker/Salesforce via Bulk API 2.0.
 
     Args:
-        csv_path: Path to final_input_file.csv.
+        csv_path: Path to final_input_file.csv or rollback_file.csv.
         object_name: Target Salesforce SObject API name (e.g. 'Site__c', 'Project__c').
         report_name: Optional report name for column filtering against mapping.
         operation: Bulk operation ('update', 'upsert', 'insert'). Default is 'update'.
+        is_rollback: Whether this upload is a rollback operation (clears fields with #N/A).
 
     Returns:
         BulkUploadResult with job metrics and failure logs.
@@ -110,6 +126,8 @@ def push_delta_to_sitetracker(
     csv_file = Path(csv_path)
     if not csv_file.exists():
         raise FileNotFoundError(f"Input file not found at: {csv_file}")
+
+    is_rb = is_rollback or ("rollback" in csv_file.name.lower())
 
     try:
         df = pd.read_csv(csv_file, dtype=str, keep_default_na=False)
@@ -127,7 +145,7 @@ def push_delta_to_sitetracker(
         )
 
     # 1. Clean payload
-    records = clean_payload_for_salesforce(df, report_name)
+    records = clean_payload_for_salesforce(df, report_name, is_rollback=is_rb)
     if not records:
         return BulkUploadResult(
             total_records=0,

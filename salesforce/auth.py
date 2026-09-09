@@ -107,6 +107,45 @@ def save_env_credentials(
     logger.info("Saved Salesforce credentials to .env")
 
 
+def get_credentials_file(profile: str | None = None) -> Path:
+    """Get the credentials file path for a given profile."""
+    prof = profile or get_active_profile()
+    return settings.PROJECT_ROOT / f".sf_creds_{prof}.json"
+
+
+def save_profile_credentials(
+    profile: str,
+    client_id: str,
+    client_secret: str,
+    login_url: str = "https://test.salesforce.com"
+) -> None:
+    """Save credentials specifically for an environment profile."""
+    creds_file = get_credentials_file(profile)
+    data = {
+        "client_id": client_id.strip(),
+        "client_secret": client_secret.strip(),
+        "login_url": login_url.strip(),
+    }
+    try:
+        with open(creds_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        logger.info("Saved credentials for profile: %s", profile)
+    except Exception as e:
+        logger.error("Failed to save credentials for %s: %s", profile, e)
+
+
+def load_profile_credentials(profile: str | None = None) -> dict:
+    """Load credentials specifically for an environment profile."""
+    creds_file = get_credentials_file(profile)
+    if creds_file.exists():
+        try:
+            with open(creds_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning("Could not read credentials file %s: %s", creds_file, e)
+    return {}
+
+
 PKCE_FILE = settings.PROJECT_ROOT / ".sf_pkce.json"
 
 
@@ -225,7 +264,7 @@ def get_login_url(
     """Generate the OAuth 2.0 authorization URL with PKCE and state tracking (RFC 7636)."""
     prof = profile or get_active_profile()
     base_url = (login_url or settings.SF_LOGIN_URL).strip().rstrip("/")
-    if prof == "sandbox" and "login.salesforce.com" in base_url:
+    if prof in ("sandbox", "partial") and "login.salesforce.com" in base_url:
         base_url = "https://test.salesforce.com"
     elif prof == "prod" and "test.salesforce.com" in base_url:
         base_url = "https://login.salesforce.com"
@@ -513,7 +552,7 @@ def exchange_code_for_token(
 
     prof = profile or get_active_profile()
     base_url = (login_url or settings.SF_LOGIN_URL).strip().rstrip("/")
-    if prof == "sandbox" and "login.salesforce.com" in base_url:
+    if prof in ("sandbox", "partial") and "login.salesforce.com" in base_url:
         base_url = "https://test.salesforce.com"
     elif prof == "prod" and "test.salesforce.com" in base_url:
         base_url = "https://login.salesforce.com"
@@ -552,7 +591,7 @@ def refresh_access_token(refresh_token_str: str, profile: str | None = None) -> 
 
     prof = profile or get_active_profile()
     base_url = settings.SF_LOGIN_URL
-    if prof == "sandbox" and "login.salesforce.com" in base_url:
+    if prof in ("sandbox", "partial") and "login.salesforce.com" in base_url:
         base_url = "https://test.salesforce.com"
     elif prof == "prod" and "test.salesforce.com" in base_url:
         base_url = "https://login.salesforce.com"

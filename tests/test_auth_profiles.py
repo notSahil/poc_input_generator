@@ -38,6 +38,10 @@ def test_profile_switching(tmp_path, monkeypatch):
     # Defaults to sandbox
     assert get_active_profile() == "sandbox"
 
+    # Switch to partial
+    set_active_profile("partial")
+    assert get_active_profile() == "partial"
+
     # Switch to prod
     set_active_profile("prod")
     assert get_active_profile() == "prod"
@@ -60,6 +64,9 @@ def test_profile_token_isolation(tmp_path, monkeypatch):
     set_active_profile("sandbox")
     save_manual_token("tok_sandbox_123", "https://sandbox.my.salesforce.com", profile="sandbox")
 
+    set_active_profile("partial")
+    save_manual_token("tok_partial_789", "https://partial.my.salesforce.com", profile="partial")
+
     set_active_profile("prod")
     save_manual_token("tok_prod_456", "https://prod.my.salesforce.com", profile="prod")
 
@@ -68,14 +75,30 @@ def test_profile_token_isolation(tmp_path, monkeypatch):
     assert sb_token["access_token"] == "tok_sandbox_123"
     assert sb_token["instance_url"] == "https://sandbox.my.salesforce.com"
 
+    part_token = load_token(profile="partial")
+    assert part_token["access_token"] == "tok_partial_789"
+    assert part_token["instance_url"] == "https://partial.my.salesforce.com"
+
     prod_token = load_token(profile="prod")
     assert prod_token["access_token"] == "tok_prod_456"
     assert prod_token["instance_url"] == "https://prod.my.salesforce.com"
 
-    # Clear sandbox only
-    clear_token(profile="sandbox")
-    assert load_token(profile="sandbox") is None
+    # Clear partial only
+    clear_token(profile="partial")
+    assert load_token(profile="partial") is None
+    assert load_token(profile="sandbox") is not None
     assert load_token(profile="prod") is not None
+
+
+def test_profile_credentials_saving(tmp_path, monkeypatch):
+    from salesforce.auth import save_profile_credentials, load_profile_credentials
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+
+    save_profile_credentials("partial", "cid_partial", "csec_partial", "https://partial.my.salesforce.com")
+    creds = load_profile_credentials("partial")
+    assert creds["client_id"] == "cid_partial"
+    assert creds["client_secret"] == "csec_partial"
+    assert creds["login_url"] == "https://partial.my.salesforce.com"
 
 
 def test_oauth_login_url(monkeypatch):
@@ -86,6 +109,9 @@ def test_oauth_login_url(monkeypatch):
     sb_url = get_login_url(profile="sandbox")
     assert "test.salesforce.com" in sb_url
     assert "client_id=test_client_id" in sb_url
+
+    part_url = get_login_url(profile="partial")
+    assert "test.salesforce.com" in part_url
 
     prod_url = get_login_url(profile="prod")
     assert "login.salesforce.com" in prod_url

@@ -40,7 +40,8 @@ OAUTH_CALLBACK_PORT = int(os.getenv("OAUTH_CALLBACK_PORT", "1717"))
 PROFILE_FILE = PROJECT_ROOT / ".sf_profile.json"
 DEFAULT_PROFILE = "sandbox"
 PROFILES = {
-    "sandbox": "Sitetracker Developer Sandbox (Test)",
-    "prod": "Sitetracker Production (Live)"
+    "sandbox": "🧪 Sitetracker Developer Sandbox",
+    "partial": "🔬 Sitetracker Partial Copy Sandbox",
+    "prod": "🏢 Sitetracker Production (Live)"
 }
 TOKEN_FILE = PROJECT_ROOT / ".sf_auth.json"

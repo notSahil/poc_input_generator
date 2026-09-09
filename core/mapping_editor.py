@@ -139,11 +139,14 @@ class MappingEditor:
             try:
                 mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
                 size_kb = round(f.stat().st_size / 1024, 1)
+                size_mb_val = f.stat().st_size / (1024 * 1024)
+                size_mb = round(size_mb_val, 4) if size_mb_val < 0.01 and f.stat().st_size > 0 else round(size_mb_val, 2)
                 versions.append({
                     "filename": f.name,
                     "path": str(f),
                     "modified": mtime,
-                    "size_kb": size_kb
+                    "size_kb": size_kb,
+                    "size_mb": size_mb,
                 })
             except Exception as e:
                 logger.warning("Error reading backup file %s: %s", f, e)

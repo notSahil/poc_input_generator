@@ -56,3 +56,52 @@ def test_get_sf_connection_missing_instance_url():
          patch("salesforce.sf_client.load_token", return_value={"access_token": "token123"}):
         with pytest.raises(SalesforceAuthError, match="No instance URL found"):
             get_sf_connection()
+
+
+def test_get_sf_connection_with_profile():
+    mock_token = {
+        "access_token": "partial_token_abc",
+        "instance_url": "https://partial.sandbox.my.salesforce.com"
+    }
+
+    with patch("salesforce.sf_client.is_token_valid", return_value=True) as mock_valid, \
+         patch("salesforce.sf_client.load_token", return_value=mock_token) as mock_load, \
+         patch("salesforce.sf_client.Salesforce") as mock_sf_cls:
+
+        mock_instance = MagicMock()
+        mock_sf_cls.return_value = mock_instance
+
+        sf = get_sf_connection(profile="partial")
+
+        mock_load.assert_called_once_with(profile="partial")
+        mock_valid.assert_called_once_with(profile="partial")
+        mock_sf_cls.assert_called_once_with(
+            instance_url="https://partial.sandbox.my.salesforce.com",
+            session_id="partial_token_abc"
+        )
+        assert sf == mock_instance
+
+
+def test_get_sf_connection_auto_refresh_with_profile():
+    mock_expired_token = {
+        "access_token": "expired_abc",
+        "refresh_token": "refresh_xyz",
+        "instance_url": "https://partial.sandbox.my.salesforce.com"
+    }
+    mock_refreshed_token = {
+        "access_token": "new_refreshed_token",
+        "instance_url": "https://partial.sandbox.my.salesforce.com"
+    }
+
+    with patch("salesforce.sf_client.load_token", return_value=mock_expired_token), \
+         patch("salesforce.sf_client.is_token_valid", return_value=False), \
+         patch("salesforce.sf_client.refresh_access_token", return_value=mock_refreshed_token) as mock_refresh, \
+         patch("salesforce.sf_client.Salesforce") as mock_sf_cls:
+
+        sf = get_sf_connection(profile="partial")
+
+        mock_refresh.assert_called_once_with("refresh_xyz", profile="partial")
+        mock_sf_cls.assert_called_once_with(
+            instance_url="https://partial.sandbox.my.salesforce.com",
+            session_id="new_refreshed_token"
+        )

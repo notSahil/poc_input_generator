@@ -95,8 +95,15 @@ def _render_step_source(reports: list) -> bool:
     from salesforce.auth import check_connection_status, get_active_profile
     active_prof = get_active_profile()
     is_auth, status_label = check_connection_status(profile=active_prof)
-    env_label = "Developer Sandbox" if active_prof == "sandbox" else "Production Org"
-    env_color = "amber" if active_prof == "sandbox" else "blue"
+    if active_prof == "partial":
+        env_label = "Partial Copy Sandbox"
+        env_color = "purple"
+    elif active_prof == "sandbox":
+        env_label = "Developer Sandbox"
+        env_color = "amber"
+    else:
+        env_label = "Production Org"
+        env_color = "blue"
 
     if is_auth:
         status_dot = '<span style="color:#04844B; font-size:0.8rem; font-weight:600;">● Connected</span>'
@@ -215,7 +222,13 @@ def _render_step_source(reports: list) -> bool:
                 with st.spinner(f"Executing SOQL query against {env_label}..."):
                     try:
                         from salesforce.data_fetcher import fetch_sitetracker_data
-                        saved_csv = fetch_sitetracker_data(selected_report, st_dir)
+                        src_path = (src_dir / src_files[0]) if src_files else None
+                        saved_csv = fetch_sitetracker_data(
+                            selected_report,
+                            st_dir,
+                            source_file=src_path,
+                            profile=active_prof,
+                        )
                         st.success(f"✅ Fetched live records to `{saved_csv.name}`!")
                         st.rerun()
                     except MappingError as e:
@@ -558,7 +571,7 @@ def _render_step_ingest(selected_report: str):
 
     from salesforce.auth import get_active_profile, is_token_valid
     active_prof = get_active_profile()
-    env_badge = "🧪 Developer Sandbox" if active_prof == "sandbox" else "🏢 Production"
+    env_badge = settings.PROFILES.get(active_prof, active_prof)
 
     if not is_token_valid(profile=active_prof):
         st.warning(f"🔒 You must log in to **{env_badge}** via the **Data Export** page before pushing records to Salesforce.")
@@ -657,7 +670,8 @@ def _render_step_ingest(selected_report: str):
                                 csv_path=rb_file,
                                 object_name=obj_name,
                                 report_name=selected_report,
-                                operation="update"
+                                operation="update",
+                                is_rollback=True,
                             )
                             if rb_res.all_succeeded:
                                 st.success(f"⏪ Rollback successful! All {rb_res.successful_records} records reverted to previous state. (Job ID: `{rb_res.job_id}`)")

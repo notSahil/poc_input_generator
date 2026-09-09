@@ -46,6 +46,10 @@ class InputFileEngine:
             raise EngineSkipError(f"No files found in {label} folder: {folder}")
 
         if len(files) > 1:
+            if label == "Sitetracker":
+                live_files = [f for f in files if f.name.endswith("_sitetracker_live.csv")]
+                if live_files:
+                    return sorted(live_files, key=lambda x: x.stat().st_mtime, reverse=True)[0]
             raise ValueError(f"{label} folder must contain exactly ONE file, found {len(files)}: {[f.name for f in files]}")
 
         return files[0]
@@ -287,7 +291,7 @@ class InputFileEngine:
                 # ── If source is blank but sitetracker has value → clear ──
                 # (src_fmt is "" here, st_fmt has a value — intentional wipe)
                 update[api_col] = src_fmt
-                row_rollback[api_col] = st_fmt
+                row_rollback[api_col] = st_fmt if (st_fmt and str(st_fmt).strip()) else "#N/A"
 
                 if DataNormalizer.comparable_text(src_fmt) != DataNormalizer.comparable_text(st_fmt):
                     changed = True

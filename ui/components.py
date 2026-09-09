@@ -119,8 +119,15 @@ def render_download_with_confirmation(
 
     with container.popover(button_label, use_container_width=True, help=help_text):
         st.markdown("##### 📥 Confirm Download")
-        st.write(f"Do you want to download **`{dl_name}`**?")
-        st.caption(f"📁 File size: `{p.stat().st_size:,} bytes`")
+        size_bytes = p.stat().st_size
+        size_mb = size_bytes / (1024 * 1024)
+        if size_bytes == 0:
+            size_str = "0.00 MB"
+        elif size_mb < 0.01:
+            size_str = f"{size_mb:.4f} MB"
+        else:
+            size_str = f"{size_mb:.2f} MB"
+        st.caption(f"📁 File size: `{size_str}`")
         with open(p, "rb") as f:
             file_bytes = f.read()
         st.download_button(

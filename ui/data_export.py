@@ -16,9 +16,11 @@ from salesforce.auth import (
     is_oauth_configured,
     is_token_valid,
     load_token,
+    load_profile_credentials,
     pop_pkce_session,
     sanitize_consumer_key,
     save_env_credentials,
+    save_profile_credentials,
     save_manual_token,
     set_active_profile,
     start_oauth_server,
@@ -40,23 +42,43 @@ def render(go):
         st.session_state.oauth_server_started = False
 
     # ==================================================
-    # ENVIRONMENT (LOCKED TO DEVELOPER SANDBOX)
+    # ENVIRONMENT PROFILE SELECTOR
     # ==================================================
-    active_profile = "sandbox"
-    set_active_profile("sandbox")
-    env_label = "🧪 Sitetracker Developer Sandbox (developer)"
+    curr_active = get_active_profile()
+    if curr_active not in settings.PROFILES:
+        curr_active = settings.DEFAULT_PROFILE
 
+    profile_options = list(settings.PROFILES.keys())
+
+    st.markdown("### 🌐 Active Salesforce Environment")
+    col_env_sel, col_env_stat = st.columns([3, 2])
+    with col_env_sel:
+        selected_prof = st.radio(
+            "Target Environment",
+            options=profile_options,
+            index=profile_options.index(curr_active),
+            format_func=lambda p: settings.PROFILES.get(p, p),
+            horizontal=True,
+            key="radio_active_env_profile",
+            label_visibility="collapsed"
+        )
+
+    if selected_prof != curr_active:
+        set_active_profile(selected_prof)
+        active_profile = selected_prof
+        st.rerun()
+    else:
+        active_profile = curr_active
+
+    env_label = settings.PROFILES.get(active_profile, active_profile)
     curr_tok = load_token(profile=active_profile)
     is_conn = curr_tok is not None and is_token_valid(profile=active_profile)
 
-    col_env, col_badge = st.columns([3, 1])
-    with col_env:
-        st.markdown(f"**Target Environment:** `{env_label}`")
-    with col_badge:
+    with col_env_stat:
         if is_conn:
-            st.success("🟢 Connected")
+            st.success(f"🟢 Connected: {env_label}")
         else:
-            st.warning("⚪ Not Connected")
+            st.warning(f"⚪ Not Connected: {env_label}")
 
     # ==================================================
     # AUTH CHECK
@@ -65,7 +87,7 @@ def render(go):
     logged_in = token is not None and is_token_valid(profile=active_profile)
 
     if not logged_in:
-        st.info("🔐 Please connect your **Sitetracker Developer Sandbox** to continue.")
+        st.info(f"🔐 Please connect your **{env_label}** to continue.")
 
         tab_oauth, tab_token = st.tabs(["🔑 1-Click OAuth (Connected App)", "⚡ Session Token (Workbench)"])
 
@@ -73,19 +95,32 @@ def render(go):
         # TAB 1: EXTERNAL CLIENT APP OAUTH 2.0
         # --------------------------------------------------
         with tab_oauth:
-            st.markdown("Enter your **External Client App** credentials to authenticate with your Sitetracker Sandbox.")
+            st.markdown(f"Enter your **External Client App** credentials to authenticate with **{env_label}**.")
 
-            # Keep blank by default unless user explicitly chose to remember
-            saved_remember = st.session_state.get("ui_inp_remember", False)
-            default_cid = settings.SF_CLIENT_ID if saved_remember else ""
-            default_csec = settings.SF_CLIENT_SECRET if saved_remember else ""
-            default_url = "https://test.salesforce.com"
+            # Load profile-specific credentials if available
+            prof_creds = load_profile_credentials(active_profile)
+            saved_remember = st.session_state.get(f"ui_inp_remember_{active_profile}", bool(prof_creds))
+            
+            default_cid = prof_creds.get("client_id", "")
+            if not default_cid and active_profile == "sandbox" and saved_remember:
+                default_cid = settings.SF_CLIENT_ID
+
+            default_csec = prof_creds.get("client_secret", "")
+            if not default_csec and active_profile == "sandbox" and saved_remember:
+                default_csec = settings.SF_CLIENT_SECRET
+
+            if active_profile == "partial":
+                default_url = prof_creds.get("login_url", "https://sitetracker-bt--partial.sandbox.my.salesforce.com")
+            elif active_profile == "sandbox":
+                default_url = prof_creds.get("login_url", "https://test.salesforce.com")
+            else:
+                default_url = prof_creds.get("login_url", "https://login.salesforce.com")
 
             inp_cid = st.text_input(
                 "Consumer Key (Client ID)",
                 value=default_cid,
                 placeholder="Paste Consumer Key (e.g. 3MVG93Bty...)",
-                key="ui_inp_cid",
+                key=f"ui_inp_cid_{active_profile}",
                 help="Found in Salesforce Setup > External Client App Manager > OAuth Settings"
             )
             inp_csec = st.text_input(
@@ -93,20 +128,24 @@ def render(go):
                 value=default_csec,
                 type="password",
                 placeholder="Paste Consumer Secret",
-                key="ui_inp_csec",
+                key=f"ui_inp_csec_{active_profile}",
                 help="Found in Salesforce Setup > Manage Consumer Details"
             )
             inp_url = st.text_input(
                 "Salesforce Login URL",
                 value=default_url,
-                key="ui_inp_url",
+                key=f"ui_inp_url_{active_profile}",
                 help="https://test.salesforce.com for Sandboxes or your MyDomain URL"
             )
-            remember = st.checkbox("💾 Remember credentials on this machine", value=saved_remember, key="ui_inp_remember")
+            remember = st.checkbox(
+                "💾 Remember credentials for this environment on this machine",
+                value=saved_remember or bool(prof_creds),
+                key=f"ui_inp_remember_{active_profile}"
+            )
 
             clean_cid = sanitize_consumer_key(inp_cid)
             clean_csec = (inp_csec or "").strip().strip("'\"")
-            clean_url = (inp_url or "").strip() or "https://test.salesforce.com"
+            clean_url = (inp_url or "").strip() or default_url
 
             if inp_cid.strip() and clean_cid != inp_cid.strip():
                 st.caption("ℹ️ Auto-corrected Consumer Key format (e.g. leading '3').")
@@ -115,9 +154,9 @@ def render(go):
 
             if has_creds:
                 if remember:
-                    save_env_credentials(clean_cid, clean_csec, login_url=clean_url)
-                else:
-                    clear_saved_credentials()
+                    save_profile_credentials(active_profile, clean_cid, clean_csec, login_url=clean_url)
+                    if active_profile == "sandbox":
+                        save_env_credentials(clean_cid, clean_csec, login_url=clean_url)
 
                 # Start local callback server in background thread if not already running
                 if not st.session_state.oauth_server_started:
@@ -216,20 +255,26 @@ def render(go):
         # TAB 2: WORKBENCH SESSION TOKEN
         # --------------------------------------------------
         with tab_token:
-            st.markdown("Connect using a temporary session token generated from Salesforce Workbench.")
-            with st.form("sandbox_token_form"):
-                default_url = "https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+            st.markdown(f"Connect using a temporary session token generated from Salesforce Workbench for **{env_label}**.")
+            with st.form(f"env_token_form_{active_profile}"):
+                if active_profile == "partial":
+                    default_instance_url = "https://sitetracker-bt--partial.sandbox.my.salesforce.com"
+                elif active_profile == "sandbox":
+                    default_instance_url = "https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+                else:
+                    default_instance_url = "https://login.salesforce.com"
+
                 inp_instance = st.text_input(
                     "Salesforce Instance URL",
-                    value=token.get("instance_url", default_url) if token else default_url,
-                    placeholder="https://sitetracker-bt--developer.sandbox.my.salesforce.com"
+                    value=token.get("instance_url", default_instance_url) if token else default_instance_url,
+                    placeholder=default_instance_url
                 )
                 inp_token = st.text_input(
                     "Session Token",
                     type="password",
                     placeholder="Paste Session ID here"
                 )
-                sub = st.form_submit_button("🔌 Connect to Sandbox", type="primary")
+                sub = st.form_submit_button(f"🔌 Connect to {env_label.split()[1] if len(env_label.split()) > 1 else env_label}", type="primary")
 
                 if sub:
                     if not inp_instance or not inp_token:
@@ -249,46 +294,42 @@ def render(go):
         return
 
     # ==================================================
-    # USER & ORG INFO (CONNECTED STATE)
+    # CONNECTED STATE VIEW
     # ==================================================
-    try:
-        user_info = get_user_info(profile=active_profile)
-    except Exception as e:
-        if "Bad_OAuth_Token" in str(e) or "403" in str(e) or "expired" in str(e).lower() or "not authenticated" in str(e).lower():
-            clear_token(profile=active_profile)
-            st.error("Session expired or token invalid. Please log in again.")
-            st.rerun()
-            return
-        else:
-            st.error(f"Failed to fetch user information from Salesforce: {e}")
-            render_back_button(go)
-            render_footer()
-            return
-
-    # Fetch live sandbox details to verify connection
-    user_record = {}
+    user_info = get_user_info(profile=active_profile)
     org_data = {}
-    site_cnt = "N/A"
-    proj_cnt = "N/A"
+    user_record = {}
+    site_cnt = 0
+    proj_cnt = 0
+
     try:
         from salesforce.sf_client import get_sf_connection
-        sf = get_sf_connection()
-
-        org_res = sf.query("SELECT Id, Name, OrganizationType, IsSandbox, InstanceName, PrimaryContact FROM Organization LIMIT 1")
+        sf = get_sf_connection(profile=active_profile)
+        org_res = sf.query("SELECT Id, Name, OrganizationType, IsSandbox, InstanceName FROM Organization LIMIT 1")
         if org_res.get("records"):
             org_data = org_res["records"][0]
 
-        uname = user_info.get("preferred_username", "")
-        user_res = sf.query(f"SELECT Id, Name, Email, Username, Profile.Name, UserRole.Name, TimeZoneSidKey, LastLoginDate FROM User WHERE Username = '{uname}' LIMIT 1")
-        if user_res.get("records"):
-            user_record = user_res["records"][0]
+        uname = user_info.get("preferred_username", "").replace("'", "\\'")
+        if uname:
+            user_res = sf.query(f"SELECT Id, Name, Email, Username, Profile.Name, UserRole.Name, TimeZoneSidKey, LastLoginDate FROM User WHERE Username = '{uname}' LIMIT 1")
+            if user_res.get("records"):
+                user_record = user_res["records"][0]
 
-        site_cnt = sf.query("SELECT COUNT() FROM sitetracker__Site__c")["totalSize"]
-        proj_cnt = sf.query("SELECT COUNT() FROM BT_Project__c")["totalSize"]
+        try:
+            site_cnt = sf.query("SELECT COUNT() FROM sitetracker__Site__c")["totalSize"]
+        except Exception as e_site:
+            logger.debug("Could not query sitetracker__Site__c count: %s", e_site)
+            site_cnt = 0
+
+        try:
+            proj_cnt = sf.query("SELECT COUNT() FROM BT_Project__c")["totalSize"]
+        except Exception as e_proj:
+            logger.debug("Could not query BT_Project__c count: %s", e_proj)
+            proj_cnt = 0
     except Exception as ex:
         logger.warning("Could not query extended sandbox info: %s", ex)
 
-    st.success(f"🟢 Connected to **Sitetracker Developer Sandbox** (`{org_data.get('InstanceName', 'developer')}`)")
+    st.success(f"🟢 Connected to **{env_label}** (`{org_data.get('InstanceName', active_profile)}`)")
 
     col_u, col_o = st.columns(2)
 
@@ -304,10 +345,10 @@ def render(go):
         st.markdown(f"**Timezone:** `{user_record.get('TimeZoneSidKey', 'Europe/London')}`")
 
     with col_o:
-        st.markdown("#### 🏢 Developer Sandbox Details")
+        st.markdown(f"#### 🏢 {env_label.split()[1] if len(env_label.split()) > 1 else env_label} Details")
         st.markdown(f"**Organization:** **{org_data.get('Name', 'Sitetracker BT')}** ({org_data.get('OrganizationType', 'Unlimited Edition')})")
-        st.markdown(f"**Is Sandbox:** `{'Yes (Developer Sandbox)' if org_data.get('IsSandbox') else 'No'}`")
-        st.markdown(f"**Salesforce Pod / Instance:** `{org_data.get('InstanceName', 'SWE128S')}`")
+        st.markdown(f"**Is Sandbox:** `{'Yes (Sandbox)' if org_data.get('IsSandbox') else 'No'}`")
+        st.markdown(f"**Salesforce Pod / Instance:** `{org_data.get('InstanceName', 'N/A')}`")
         st.markdown(f"**Organization ID:** `{user_info.get('organization_id', 'N/A')}`")
         st.markdown(f"**Instance URL:** `{token.get('instance_url', 'N/A')}`")
         auth_type = "OAuth 2.0 (Auto-Refresh Active 🔄)" if token.get("refresh_token") else "Session Token (Workbench)"
@@ -316,19 +357,10 @@ def render(go):
         st.markdown(f"**Live BT Projects in Org:** `{proj_cnt}` record(s)")
 
     st.write("")
-    if st.button("🚪 Logout from Salesforce", type="secondary", key="export_logout"):
+    if st.button(f"🚪 Logout from {env_label.split()[1] if len(env_label.split()) > 1 else env_label}", type="secondary", key=f"export_logout_{active_profile}"):
         clear_token(profile=active_profile)
-        if not st.session_state.get("ui_inp_remember", False):
-            clear_saved_credentials()
-            st.session_state.pop("ui_inp_cid", None)
-            st.session_state.pop("ui_inp_csec", None)
-            st.session_state.pop("inp_manual_auth_code", None)
-            st.session_state.pop("ui_inp_remember", None)
-            st.session_state.pop("inp_client_id", None)
-            st.session_state.pop("inp_client_secret", None)
-            st.session_state.pop("oauth_url", None)
         st.session_state.oauth_server_started = False
-        st.success("Logged out successfully.")
+        st.success(f"Logged out from {env_label} successfully.")
         st.rerun()
 
     st.divider()

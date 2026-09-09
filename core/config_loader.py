@@ -68,14 +68,17 @@ class YamlConfigLoader:
                 src_files = [f for f in source_dir.glob("*") if not f.name.startswith(".")] if source_dir.exists() else []
                 st_files = [f for f in st_dir.glob("*") if not f.name.startswith(".")] if st_dir.exists() else []
 
+                live_st = [f for f in st_files if f.name.endswith("_sitetracker_live.csv")]
+                chosen_st = live_st[0] if live_st else (st_files[0] if st_files else None)
+
                 reports.append(ReportInfo(
                     name=name,
                     config_path=yml_path,
                     work_dir=work_dir,
-                    has_source=len(src_files) == 1,
-                    has_sitetracker=len(st_files) == 1,
-                    source_file=src_files[0].name if len(src_files) == 1 else None,
-                    sitetracker_file=st_files[0].name if len(st_files) == 1 else None,
+                    has_source=len(src_files) >= 1,
+                    has_sitetracker=len(st_files) >= 1,
+                    source_file=src_files[0].name if src_files else None,
+                    sitetracker_file=chosen_st.name if chosen_st else None,
                 ))
             except Exception as e:
                 logger.warning("Failed to parse config %s: %s", yml_path, e)

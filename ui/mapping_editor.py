@@ -344,7 +344,8 @@ def render(go):
             for v in versions:
                 col1, col2, col3 = st.columns([3, 2, 1])
                 with col1:
-                    st.write(f"📄 **{v['filename']}** ({v['size_kb']} KB)")
+                    size_disp = v.get("size_mb", round(v.get("size_kb", 0) / 1024, 2))
+                    st.write(f"📄 **{v['filename']}** ({size_disp} MB)")
                 with col2:
                     st.write(f"🕒 {v['modified']}")
                 with col3:

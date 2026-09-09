@@ -1,13 +1,5 @@
 """Main Streamlit Application Router with Salesforce Lightning Design System styling."""
 
-import sys
-from pathlib import Path
-
-# Ensure project root is always in sys.path (needed for Windows streamlit.exe execution)
-PROJECT_ROOT = Path(__file__).resolve().parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 import streamlit as st
 from config.logging_config import setup_logging
 from ui.styles import apply_slds_theme, render_pill
@@ -49,8 +41,15 @@ def go(page_name: str):
 def render_home():
     active_prof = get_active_profile()
     is_auth, status_label = check_connection_status(profile=active_prof)
-    env_label = "Developer Sandbox" if active_prof == "sandbox" else "Production Org"
-    env_color = "amber" if active_prof == "sandbox" else "blue"
+    if active_prof == "partial":
+        env_label = "Partial Copy Sandbox"
+        env_color = "purple"
+    elif active_prof == "sandbox":
+        env_label = "Developer Sandbox"
+        env_color = "amber"
+    else:
+        env_label = "Production Org"
+        env_color = "blue"
 
     if is_auth:
         status_dot = '<span style="color:#04844B; font-size:0.8rem; font-weight:600;">● Connected</span>'

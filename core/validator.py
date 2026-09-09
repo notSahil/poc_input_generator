@@ -140,6 +140,10 @@ class InputValidator:
             errors.append(f"No files found in {label} directory: {folder}")
             return None
         if len(files) > 1:
+            if label == "Sitetracker":
+                live_files = [f for f in files if f.name.endswith("_sitetracker_live.csv")]
+                if live_files:
+                    return sorted(live_files, key=lambda x: x.stat().st_mtime, reverse=True)[0]
             errors.append(
                 f"{label} directory must contain exactly 1 file, found {len(files)}: "
                 f"{[f.name for f in files]}"
