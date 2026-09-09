@@ -665,6 +665,25 @@ def _render_step_ingest(selected_report: str):
                 except Exception:
                     m_col4.metric("Elapsed Time", "N/A")
 
+            # Show in-flight chunk evaluation detail if available
+            stage = job_info.get("stage", "completed_chunk")
+            c_chunk = job_info.get("current_chunk", 0)
+            t_chunk = job_info.get("total_chunks", 0)
+            r_start = job_info.get("chunk_start", 0)
+            r_end = job_info.get("chunk_end", 0)
+
+            if stage == "in_flight" and t_chunk > 0:
+                st.markdown(
+                    f"""
+                    <div style="background:#F0FDF4; border:1px solid #86EFAC; border-radius:6px; padding:10px 14px; margin: 12px 0; font-size:0.9rem; color:#166534; display:flex; align-items:center; gap:8px;">
+                        <span>⏳</span>
+                        <div><b>Active In-Flight Request:</b> Evaluating Chunk <b>{c_chunk} of {t_chunk}</b> (Records {r_start} to {r_end} on <b>{curr_obj}</b>)<br>
+                        <span style="font-size:0.8rem; color:#15803D;">Salesforce Apex triggers & Sitetracker validation rules are evaluating in cloud (~20–40s per chunk)...</span></div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
             # Show per-object status badges
             st.markdown("##### 📦 Object Breakdown")
             for obj_name, o_meta in job_info.get("objects", {}).items():
@@ -672,8 +691,15 @@ def _render_step_ingest(selected_report: str):
                 status_icon = "⏳" if obj_status == "RUNNING" else ("✅" if "COMPLETED" in obj_status else "○")
                 st.caption(f"{status_icon} **{obj_name}**: {obj_status} ({o_meta.get('processed_records', 0)}/{o_meta.get('total_records', 0)} records)")
 
+            col_ref_btn, col_ref_txt = st.columns([1, 3])
+            with col_ref_btn:
+                if st.button("🔄 Refresh Status", key="btn_manual_refresh_running", type="secondary"):
+                    st.rerun()
+            with col_ref_txt:
+                st.caption("ℹ️ Progress updates automatically every few seconds. Tap Refresh anytime to force a live sync.")
+
             import time
-            time.sleep(2)
+            time.sleep(3)
             st.rerun()
             return
 
@@ -776,12 +802,12 @@ def _render_step_ingest(selected_report: str):
     with col_batch:
         bulk_batch_size = st.select_slider(
             "⚡ Apex Batch Size (Records per chunk)",
-            options=[10, 25, 50, 100],
-            value=50,
+            options=[5, 10, 15, 25, 50],
+            value=15,
             key="sel_bulk_batch_size",
-            help="Micro-batching prevents exceeding the Salesforce Apex limit of 150 DML statements. 50 is recommended for Sitetracker triggers."
+            help="Micro-batching prevents Apex 151 DML limit. Smaller batches (10-15) update progress every 20-30s. Larger batches (50) take ~2 mins per chunk."
         )
-        st.caption("ℹ️ **Safety**: 50 records/batch stays safely below 150 DMLs.")
+        st.caption("ℹ️ **Recommended**: 15 records/chunk provides smooth progress updates every ~30s.")
 
     col_c1, col_c2 = st.columns([2, 1])
     with col_c1:

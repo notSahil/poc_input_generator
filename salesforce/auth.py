@@ -586,11 +586,15 @@ def exchange_code_for_token(
 
 def refresh_access_token(refresh_token_str: str, profile: str | None = None) -> dict:
     """Exchange a stored refresh token for a fresh access token."""
-    if not settings.SF_CLIENT_ID or not settings.SF_CLIENT_SECRET:
-        raise RuntimeError("Missing Salesforce Client ID or Secret in settings or .env")
-
     prof = profile or get_active_profile()
-    base_url = settings.SF_LOGIN_URL
+    creds = load_profile_credentials(prof)
+    client_id = creds.get("client_id") or settings.SF_CLIENT_ID
+    client_secret = creds.get("client_secret") or settings.SF_CLIENT_SECRET
+
+    if not client_id or not client_secret:
+        raise RuntimeError("Missing Salesforce Client ID or Secret in settings, .env, or profile credentials")
+
+    base_url = creds.get("login_url") or settings.SF_LOGIN_URL
     if prof in ("sandbox", "partial") and "login.salesforce.com" in base_url:
         base_url = "https://test.salesforce.com"
     elif prof == "prod" and "test.salesforce.com" in base_url:
@@ -599,8 +603,8 @@ def refresh_access_token(refresh_token_str: str, profile: str | None = None) -> 
     token_url = f"{base_url}/services/oauth2/token"
     payload = {
         "grant_type": "refresh_token",
-        "client_id": settings.SF_CLIENT_ID,
-        "client_secret": settings.SF_CLIENT_SECRET,
+        "client_id": client_id,
+        "client_secret": client_secret,
         "refresh_token": refresh_token_str.strip(),
     }
 

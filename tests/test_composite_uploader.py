@@ -17,7 +17,7 @@ def test_push_delta_via_composite_success(tmp_path):
 
     mock_sf = MagicMock()
     # REST composite returns one response item per record in payload
-    mock_sf.restful.side_effect = lambda path, method, json: [
+    mock_sf.restful.side_effect = lambda path, method, json, **kwargs: [
         {"id": r["Id"], "success": True, "errors": []} for r in json["records"]
     ]
 
@@ -38,7 +38,14 @@ def test_push_delta_via_composite_success(tmp_path):
         assert res.successful_records == 10
         assert res.failed_records == 0
         assert res.all_succeeded is True
-        assert len(progress_events) == 2  # 10 records / 5 batch_size = 2 events
+        # 2 chunks * 2 events per chunk (in_flight + completed_chunk) = 4 events
+        assert len(progress_events) == 4
+        assert progress_events[0]["stage"] == "in_flight"
+        assert progress_events[0]["chunk_start"] == 1
+        assert progress_events[0]["chunk_end"] == 5
+        assert progress_events[1]["stage"] == "completed_chunk"
+        assert progress_events[2]["stage"] == "in_flight"
+        assert progress_events[3]["stage"] == "completed_chunk"
         assert mock_sf.restful.call_count == 2
 
 

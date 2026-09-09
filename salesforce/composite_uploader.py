@@ -28,7 +28,7 @@ def push_delta_via_composite(
     report_name: str | None = None,
     is_rollback: bool = False,
     profile: str | None = None,
-    batch_size: int = 50,
+    batch_size: int = 15,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> BulkUploadResult:
     """Push a delta or rollback CSV to Salesforce using REST Composite SObject Collections.
@@ -125,10 +125,32 @@ def push_delta_via_composite(
 
     for chunk_idx, chunk in enumerate(chunks, 1):
         payload = {"allOrNone": False, "records": chunk}
+        chunk_start = (chunk_idx - 1) * batch_size + 1
+        chunk_end = min(chunk_idx * batch_size, total_records)
+
+        # Notify before executing request so UI immediately reflects active work
+        if progress_callback:
+            try:
+                progress_callback({
+                    "stage": "in_flight",
+                    "object_name": object_name,
+                    "clean_object": clean_obj,
+                    "current_chunk": chunk_idx,
+                    "total_chunks": total_chunks,
+                    "chunk_size": len(chunk),
+                    "chunk_start": chunk_start,
+                    "chunk_end": chunk_end,
+                    "processed_records": successful_records + failed_records,
+                    "total_records": total_records,
+                    "successful_records": successful_records,
+                    "failed_records": failed_records,
+                })
+            except Exception as cb_err:
+                logger.warning("Error in composite progress_callback (in_flight): %s", cb_err)
 
         try:
-            # PATCH /services/data/vXX.X/composite/sobjects
-            response = sf.restful("composite/sobjects", method="PATCH", json=payload)
+            # PATCH /services/data/vXX.X/composite/sobjects with explicit timeout
+            response = sf.restful("composite/sobjects", method="PATCH", json=payload, timeout=180)
             if not response or not isinstance(response, list):
                 raise ValueError(f"Unexpected response format from composite/sobjects: {response}")
 
@@ -164,22 +186,25 @@ def push_delta_via_composite(
                     "sf__Fields": "",
                 })
 
-        # Progress reporting callback
+        # Progress reporting callback: chunk completed
         if progress_callback:
             try:
                 progress_callback({
+                    "stage": "completed_chunk",
                     "object_name": object_name,
                     "clean_object": clean_obj,
                     "current_chunk": chunk_idx,
                     "total_chunks": total_chunks,
                     "chunk_size": len(chunk),
+                    "chunk_start": chunk_start,
+                    "chunk_end": chunk_end,
                     "processed_records": successful_records + failed_records,
                     "total_records": total_records,
                     "successful_records": successful_records,
                     "failed_records": failed_records,
                 })
             except Exception as cb_err:
-                logger.warning("Error in composite progress_callback: %s", cb_err)
+                logger.warning("Error in composite progress_callback (completed): %s", cb_err)
 
     # 5. Save failures CSV if any failed
     failures_csv_path = None

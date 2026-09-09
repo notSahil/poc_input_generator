@@ -95,7 +95,7 @@ def start_background_ingest(
     report_name: str,
     is_rollback: bool = False,
     profile: str | None = None,
-    batch_size: int = 50,
+    batch_size: int = 15,
     target_object: str | None = None,
     engine: str = "composite",
 ) -> None:
@@ -230,13 +230,24 @@ def _ingest_worker(
                     c_proc = info.get("processed_records", 0)
                     c_succ = info.get("successful_records", 0)
                     c_fail = info.get("failed_records", 0)
+                    stage = info.get("stage", "completed_chunk")
 
                     object_meta[o_name]["processed_records"] = c_proc
                     object_meta[o_name]["successful_records"] = c_succ
                     object_meta[o_name]["failed_records"] = c_fail
                     object_meta[o_name]["current_chunk"] = info.get("current_chunk", 0)
                     object_meta[o_name]["total_chunks"] = info.get("total_chunks", 0)
+                    object_meta[o_name]["chunk_start"] = info.get("chunk_start", 0)
+                    object_meta[o_name]["chunk_end"] = info.get("chunk_end", 0)
+                    object_meta[o_name]["chunk_size"] = info.get("chunk_size", 0)
+                    object_meta[o_name]["stage"] = stage
 
+                    progress_state["stage"] = stage
+                    progress_state["current_chunk"] = info.get("current_chunk", 0)
+                    progress_state["total_chunks"] = info.get("total_chunks", 0)
+                    progress_state["chunk_start"] = info.get("chunk_start", 0)
+                    progress_state["chunk_end"] = info.get("chunk_end", 0)
+                    progress_state["chunk_size"] = info.get("chunk_size", 0)
                     progress_state["processed_records_overall"] = base_proc + c_proc
                     progress_state["successful_records_overall"] = base_succ + c_succ
                     progress_state["failed_records_overall"] = base_fail + c_fail

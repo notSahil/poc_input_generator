@@ -203,3 +203,33 @@ def test_check_connection_status(tmp_path, monkeypatch):
     assert status == "Disconnected"
 
 
+def test_refresh_access_token_uses_profile_credentials(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock, patch
+    from salesforce.auth import refresh_access_token, save_profile_credentials
+
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "PROFILE_FILE", tmp_path / ".sf_profile.json")
+    monkeypatch.setattr(settings, "SF_CLIENT_ID", "")
+    monkeypatch.setattr(settings, "SF_CLIENT_SECRET", "")
+
+    # Save credentials into profile credentials file
+    save_profile_credentials("partial", "client_123", "secret_456", "https://test.salesforce.com")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "access_token": "fresh_access_token_999",
+        "instance_url": "https://custom.my.salesforce.com",
+    }
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        tok = refresh_access_token("refresh_tok_abc", profile="partial")
+        assert tok["access_token"] == "fresh_access_token_999"
+        assert mock_post.call_count == 1
+        call_payload = mock_post.call_args[1]["data"]
+        assert call_payload["client_id"] == "client_123"
+        assert call_payload["client_secret"] == "secret_456"
+        assert call_payload["refresh_token"] == "refresh_tok_abc"
+
+
+
