@@ -33,6 +33,11 @@ class MappingLoader:
 
         report_df = df[df["Report Name"] == self.report_name]
 
+        if report_df.empty and self.report_name:
+            # Fallback: support both space and underscore variations (e.g. 'Apollo 10G' vs 'Apollo_10G')
+            alt_name = self.report_name.replace("_", " ") if "_" in self.report_name else self.report_name.replace(" ", "_")
+            report_df = df[df["Report Name"].astype(str).str.strip().str.lower() == alt_name.strip().lower()]
+
         if report_df.empty:
             available = sorted(df["Report Name"].dropna().unique().tolist())
             raise MappingError(

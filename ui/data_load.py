@@ -682,6 +682,18 @@ def _render_step_ingest(selected_report: str):
         with st.expander(f"📥 Preview Payload for {target_obj_push} ({len(final_push_df)} Records to be Ingested)", expanded=False):
             st.dataframe(final_push_df, use_container_width=True)
 
+    col_batch1, col_batch2 = st.columns([2, 1])
+    with col_batch1:
+        bulk_batch_size = st.select_slider(
+            "⚡ Apex Batch Size (Records per chunk)",
+            options=[10, 25, 50, 100],
+            value=25,
+            key="sel_bulk_batch_size",
+            help="Sitetracker triggers execute cascades on each project update. Micro-batching (default: 25) prevents exceeding the Salesforce Apex limit of 150 DML statements."
+        )
+    with col_batch2:
+        st.caption("ℹ️ **Governor Limit Safety**: 25 records/batch stays safely below the Salesforce 150 DML limit during trigger execution.")
+
     col_c1, col_c2 = st.columns([2, 1])
     with col_c1:
         confirm_phrase = st.text_input(
@@ -705,6 +717,7 @@ def _render_step_ingest(selected_report: str):
                             report_name=selected_report,
                             operation="update",
                             profile=active_prof,
+                            batch_size=bulk_batch_size,
                         )
                         if not multi_res:
                             st.info("No records to ingest across any objects.")
@@ -729,6 +742,7 @@ def _render_step_ingest(selected_report: str):
                             report_name=selected_report,
                             operation="update",
                             profile=active_prof,
+                            batch_size=bulk_batch_size,
                         )
 
                         if bulk_res.all_succeeded:
@@ -786,12 +800,17 @@ def _render_step_ingest(selected_report: str):
                                     operation="update",
                                     is_rollback=True,
                                     profile=active_prof,
+                                    batch_size=bulk_batch_size,
                                 )
                                 for obj_name, rb_res in multi_rb.items():
                                     if rb_res.all_succeeded:
                                         st.success(f"⏪ **{obj_name}**: Rollback successful! All {rb_res.successful_records:,} records reverted to previous state. (Job ID: `{rb_res.job_id}`)")
                                     else:
-                                        st.warning(f"⚠️ **{obj_name}**: Revert processed with {rb_res.failed_records:,} errors.")
+                                        st.warning(f"⚠️ **{obj_name}**: Revert processed with {rb_res.failed_records:,} errors. (Job ID: `{rb_res.job_id}`)")
+                                        if rb_res.failures_csv_path and rb_res.failures_csv_path.exists():
+                                            st.error(f"[{obj_name}] Rollback failure details saved to: `{rb_res.failures_csv_path.name}`")
+                                            fail_df = pd.DataFrame(rb_res.failures)
+                                            st.dataframe(fail_df, use_container_width=True)
                             except Exception as e:
                                 st.error(f"Rollback failed: {e}")
                     else:
@@ -805,11 +824,16 @@ def _render_step_ingest(selected_report: str):
                                     operation="update",
                                     is_rollback=True,
                                     profile=active_prof,
+                                    batch_size=bulk_batch_size,
                                 )
                                 if rb_res.all_succeeded:
                                     st.success(f"⏪ Rollback successful! All {rb_res.successful_records:,} records reverted to previous state. (Job ID: `{rb_res.job_id}`)")
                                 else:
-                                    st.warning(f"⚠️ Revert processed with {rb_res.failed_records:,} errors.")
+                                    st.warning(f"⚠️ Revert processed with {rb_res.failed_records:,} errors. (Job ID: `{rb_res.job_id}`)")
+                                    if rb_res.failures_csv_path and rb_res.failures_csv_path.exists():
+                                        st.error(f"Rollback failure details saved to: `{rb_res.failures_csv_path.name}`")
+                                        fail_df = pd.DataFrame(rb_res.failures)
+                                        st.dataframe(fail_df, use_container_width=True)
                             except Exception as e:
                                 st.error(f"Rollback failed: {e}")
 

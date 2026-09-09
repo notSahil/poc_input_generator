@@ -138,7 +138,7 @@ def test_bulk_uploader_object_name_normalization(monkeypatch):
         def __getattr__(self, name):
             called_objects.append(name)
             class MockEndpoint:
-                def update(self, records):
+                def update(self, records, **kwargs):
                     return [{"numberRecordsTotal": len(records), "numberRecordsFailed": 0, "numberRecordsProcessed": len(records), "job_id": "MOCK_JOB_1"}]
             return MockEndpoint()
 

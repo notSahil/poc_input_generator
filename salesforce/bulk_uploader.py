@@ -70,10 +70,11 @@ def clean_payload_for_salesforce(
             logger.warning("Could not load mapping for API filtering: %s", e)
 
     # Filter columns
+    has_specific_fields = len(valid_api_fields.difference({"Id"})) > 0
     cols_to_keep = []
     for col in df.columns:
         c_strip = str(col).strip()
-        if c_strip == "Id" or (c_strip in valid_api_fields if report_name else c_strip.endswith("__c")):
+        if c_strip == "Id" or (c_strip in valid_api_fields if has_specific_fields else c_strip.endswith("__c")):
             cols_to_keep.append(col)
 
     if not cols_to_keep or "Id" not in cols_to_keep:
@@ -123,6 +124,7 @@ def push_delta_to_sitetracker(
     operation: str = "update",
     is_rollback: bool = False,
     profile: str | None = None,
+    batch_size: int = 25,
 ) -> BulkUploadResult:
     """
     Push a generated delta CSV to Sitetracker/Salesforce via Bulk API 2.0.
@@ -134,6 +136,7 @@ def push_delta_to_sitetracker(
         operation: Bulk operation ('update', 'upsert', 'insert'). Default is 'update'.
         is_rollback: Whether this upload is a rollback operation (clears fields with #N/A).
         profile: Optional Salesforce profile name ('sandbox', 'partial', 'prod').
+        batch_size: Number of records per Apex transaction context (default 25 to stay within 150 DML limit).
 
     Returns:
         BulkUploadResult with job metrics and failure logs.
@@ -181,46 +184,72 @@ def push_delta_to_sitetracker(
 
     bulk_type = getattr(sf.bulk2, clean_obj)
     logger.info(
-        "Submitting %d records to Bulk API 2.0 (%s on %s)",
-        len(records), operation, clean_obj
+        "Submitting %d records to Bulk API 2.0 (%s on %s, batch_size=%d)",
+        len(records), operation, clean_obj, batch_size
     )
 
-    # 3. Execute Bulk Operation
-    if operation == "update":
-        job_results = bulk_type.update(records=records)
-    elif operation == "upsert":
-        job_results = bulk_type.upsert(records=records, external_id_field="Id")
-    elif operation == "insert":
-        job_results = bulk_type.insert(records=records)
-    else:
-        raise ValueError(f"Unsupported Bulk 2.0 operation: {operation}")
+    # 3. Execute Bulk Operation with safe micro-batch chunking
+    try:
+        if operation == "update":
+            job_results = bulk_type.update(records=records, batch_size=batch_size)
+        elif operation == "upsert":
+            job_results = bulk_type.upsert(records=records, external_id_field="Id", batch_size=batch_size)
+        elif operation == "insert":
+            job_results = bulk_type.insert(records=records, batch_size=batch_size)
+        else:
+            raise ValueError(f"Unsupported Bulk 2.0 operation: {operation}")
+    except Exception as e:
+        logger.error("Bulk API 2.0 job submission failed for %s: %s", clean_obj, e)
+        return BulkUploadResult(
+            total_records=len(records),
+            successful_records=0,
+            failed_records=len(records),
+            job_id="JOB_SUBMISSION_FAILED",
+            all_succeeded=False,
+            error_summary=str(e),
+        )
 
-    # Aggregate batch results
+    # Aggregate batch results across all chunks
     total_recs = sum(r.get("numberRecordsTotal", 0) for r in job_results)
     failed_recs = sum(r.get("numberRecordsFailed", 0) for r in job_results)
     processed_recs = sum(r.get("numberRecordsProcessed", 0) for r in job_results)
     job_ids = [r.get("job_id", "") for r in job_results if r.get("job_id")]
-    primary_job_id = job_ids[0] if job_ids else "UNKNOWN_JOB"
+    primary_job_id = ", ".join(job_ids) if job_ids else "UNKNOWN_JOB"
     success_recs = max(0, processed_recs - failed_recs)
 
-    # 4. Handle record-level failures
+    # 4. Handle record-level failures across all chunk jobs
     failures_csv_path = None
     failures_list = []
-    if failed_recs > 0 and primary_job_id != "UNKNOWN_JOB":
-        try:
-            failed_csv_content = bulk_type.get_failed_records(primary_job_id)
-            if failed_csv_content:
-                failures_csv_path = csv_file.parent / "bulk_upload_failures.csv"
-                failures_csv_path.write_text(failed_csv_content, encoding="utf-8")
+    if failed_recs > 0:
+        failures_csv_path = csv_file.parent / "bulk_upload_failures.csv"
+        aggregated_fail_content = []
+        for j_id in job_ids:
+            if not j_id:
+                continue
+            try:
+                failed_csv_content = bulk_type.get_failed_records(j_id)
+                if failed_csv_content:
+                    aggregated_fail_content.append(failed_csv_content.strip())
+                    # Parse failures into list of dicts for UI preview safely (using python engine to handle commas in error strings)
+                    fail_df = pd.read_csv(
+                        io.StringIO(failed_csv_content),
+                        dtype=str,
+                        on_bad_lines="skip",
+                        engine="python"
+                    )
+                    failures_list.extend(fail_df.to_dict("records"))
+            except Exception as e:
+                logger.warning("Could not retrieve Bulk API 2.0 failure details for job %s: %s", j_id, e)
+
+        if aggregated_fail_content:
+            try:
+                failures_csv_path.write_text("\n".join(aggregated_fail_content), encoding="utf-8")
                 logger.warning(
                     "%d records failed in Bulk API 2.0 upload. Saved failure details to %s",
                     failed_recs, failures_csv_path
                 )
-                # Parse failures into list of dicts for UI preview
-                fail_df = pd.read_csv(io.StringIO(failed_csv_content), dtype=str)
-                failures_list = fail_df.to_dict("records")
-        except Exception as e:
-            logger.error("Failed to retrieve Bulk API 2.0 failure details: %s", e)
+            except Exception as e:
+                logger.error("Failed to write failures CSV: %s", e)
 
     # 5. Write execution audit log (bulk_upload_audit.json)
     audit_data = {
@@ -229,6 +258,7 @@ def push_delta_to_sitetracker(
         "object_name": clean_obj,
         "operation": operation,
         "job_id": primary_job_id,
+        "batch_size": batch_size,
         "total_records": total_recs if total_recs > 0 else len(records),
         "successful_records": success_recs,
         "failed_records": failed_recs,
@@ -259,6 +289,7 @@ def push_multi_object_deltas_to_sitetracker(
     operation: str = "update",
     is_rollback: bool = False,
     profile: str | None = None,
+    batch_size: int = 25,
 ) -> dict[str, BulkUploadResult]:
     """
     Push dedicated delta files for all objects in a multi-object report sequentially.
@@ -269,6 +300,7 @@ def push_multi_object_deltas_to_sitetracker(
         operation: Bulk operation ('update', 'upsert', 'insert'). Default is 'update'.
         is_rollback: Whether this upload is a rollback operation.
         profile: Optional Salesforce profile ('sandbox', 'partial', 'prod').
+        batch_size: Number of records per batch chunk (default 25).
 
     Returns:
         dict mapping object_name -> BulkUploadResult.
@@ -326,16 +358,28 @@ def push_multi_object_deltas_to_sitetracker(
             logger.info("Payload for object '%s' has 0 records, skipping.", obj)
             continue
 
-        # Execute push for this object
-        res = push_delta_to_sitetracker(
-            csv_path=target_file,
-            object_name=obj,
-            report_name=report_name,
-            operation=operation,
-            is_rollback=is_rollback,
-            profile=profile,
-        )
-        results[obj] = res
+        # Execute push for this object with error shielding
+        try:
+            res = push_delta_to_sitetracker(
+                csv_path=target_file,
+                object_name=obj,
+                report_name=report_name,
+                operation=operation,
+                is_rollback=is_rollback,
+                profile=profile,
+                batch_size=batch_size,
+            )
+            results[obj] = res
+        except Exception as e:
+            logger.error("Failed during bulk push for object %s: %s", obj, e)
+            results[obj] = BulkUploadResult(
+                total_records=len(df_check),
+                successful_records=0,
+                failed_records=len(df_check),
+                job_id="ERROR_BATCH",
+                all_succeeded=False,
+                error_summary=str(e),
+            )
 
     return results
 

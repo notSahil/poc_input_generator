@@ -141,3 +141,66 @@ def test_push_delta_with_failures(tmp_path):
         assert res.failures_csv_path is not None
         assert res.failures_csv_path.exists()
         assert len(res.failures) == 1
+
+
+def test_push_delta_batch_size_and_multi_chunk_aggregation(tmp_path):
+    """Verify batch_size is passed to Bulk API and multiple chunk jobs are aggregated correctly."""
+    test_csv = tmp_path / "final_input_file.csv"
+    df = pd.DataFrame([
+        {"Id": f"a1e{i:05d}", "Status__c": "Active"} for i in range(50)
+    ])
+    df.to_csv(test_csv, index=False)
+
+    mock_sf = MagicMock()
+    mock_bulk_obj = MagicMock()
+    # Simulate two 25-record chunks
+    mock_bulk_obj.update.return_value = [
+        {"numberRecordsTotal": 25, "numberRecordsProcessed": 25, "numberRecordsFailed": 0, "job_id": "JOB_CHUNK_1"},
+        {"numberRecordsTotal": 25, "numberRecordsProcessed": 25, "numberRecordsFailed": 0, "job_id": "JOB_CHUNK_2"},
+    ]
+    setattr(mock_sf.bulk2, "Site__c", mock_bulk_obj)
+    setattr(mock_sf.bulk2, "sitetracker__Site__c", mock_bulk_obj)
+
+    with patch("salesforce.bulk_uploader.get_sf_connection", return_value=mock_sf):
+        res = push_delta_to_sitetracker(test_csv, object_name="Site__c", operation="update", batch_size=25)
+
+        assert res.total_records == 50
+        assert res.successful_records == 50
+        assert res.failed_records == 0
+        assert res.all_succeeded is True
+        assert "JOB_CHUNK_1" in res.job_id
+        assert "JOB_CHUNK_2" in res.job_id
+        # Verify batch_size=25 was forwarded
+        mock_bulk_obj.update.assert_called_once()
+        _, kwargs = mock_bulk_obj.update.call_args
+        assert kwargs.get("batch_size") == 25
+
+
+def test_push_delta_resilient_error_parsing_with_commas(tmp_path):
+    """Verify that unquoted commas in Salesforce trigger error messages do not crash CSV parsing."""
+    test_csv = tmp_path / "final_input_file.csv"
+    df = pd.DataFrame([{"Id": "a123", "Status__c": "Val"}])
+    df.to_csv(test_csv, index=False)
+
+    mock_sf = MagicMock()
+    mock_bulk_obj = MagicMock()
+    mock_bulk_obj.update.return_value = [
+        {"numberRecordsTotal": 1, "numberRecordsProcessed": 1, "numberRecordsFailed": 1, "job_id": "JOB_FAIL_1"}
+    ]
+    # Simulate a raw CSV from Salesforce with multiline/unquoted commas in error message
+    mock_bulk_obj.get_failed_records.return_value = (
+        "sf__Id,sf__Error\n"
+        "a123,CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY:BTProjectTrigger: System.LimitException: sitetracker:Too many DML statements: 151:--\n"
+    )
+    setattr(mock_sf.bulk2, "Site__c", mock_bulk_obj)
+    setattr(mock_sf.bulk2, "sitetracker__Site__c", mock_bulk_obj)
+
+    with patch("salesforce.bulk_uploader.get_sf_connection", return_value=mock_sf):
+        res = push_delta_to_sitetracker(test_csv, object_name="Site__c", operation="update", batch_size=25)
+
+        assert res.total_records == 1
+        assert res.failed_records == 1
+        assert res.all_succeeded is False
+        assert len(res.failures) == 1
+        assert "Too many DML statements" in res.failures[0]["sf__Error"]
+
