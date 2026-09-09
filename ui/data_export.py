@@ -296,7 +296,14 @@ def render(go):
     # ==================================================
     # CONNECTED STATE VIEW
     # ==================================================
-    user_info = get_user_info(profile=active_profile)
+    try:
+        user_info = get_user_info(profile=active_profile)
+    except Exception as e_auth:
+        logger.warning("Salesforce session expired or invalid token (%s). Auto-clearing token...", e_auth)
+        clear_token(profile=active_profile)
+        st.warning("⚠️ Salesforce session has expired or the token is invalid. Please connect again.")
+        st.rerun()
+
     org_data = {}
     user_record = {}
     site_cnt = 0

@@ -25,7 +25,7 @@ class SalesforceClient:
         url = f"{self.instance_url}{path}"
         response = requests.get(url, headers=self.headers, params=params)
 
-        if response.status_code == 401:
+        if response.status_code in (401, 403):
             raise SalesforceAuthError("Salesforce session expired or invalid. Please login again.")
 
         if response.status_code >= 400:
