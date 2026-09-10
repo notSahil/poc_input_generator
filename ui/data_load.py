@@ -250,10 +250,50 @@ def _render_step_source(reports: list) -> bool:
             st.success(f"✅ Loaded **{uploaded_st.name}** successfully!")
 
         if st_files:
-            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Active Baseline: {st_files[0]}', 'green')}</div>", unsafe_allow_html=True)
-            with st.expander(f"👁️ Preview Sitetracker Data ({st_files[0]})", expanded=False):
+            active_st_file = st_files[0]
+            st_path = st_dir / active_st_file
+            is_live_soql = active_st_file.endswith("_sitetracker_live.csv")
+            try:
+                st_mtime = datetime.fromtimestamp(st_path.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                st_mtime = "N/A"
+
+            if is_live_soql:
+                st.markdown(
+                    f"""
+                    <div style="background:#F0FDF4; border:1px solid #86EFAC; border-radius:8px; padding:10px 12px; margin-bottom:10px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <span style="font-size:0.85rem; font-weight:700; color:#166534;">🌐 LIVE SITETRACKER (SOQL QUERY)</span>
+                            <span style="background:#DCFCE7; color:#166534; font-size:0.75rem; font-weight:600; padding:2px 8px; border-radius:10px;">● Live Cloud Data</span>
+                        </div>
+                        <div style="font-size:0.8rem; color:#15803D; margin-top:4px;">
+                            Direct query from <b>{env_label}</b> ({st_mtime})<br>
+                            File: <code>{active_st_file}</code>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div style="background:#F8FAFC; border:1px solid #CBD5E1; border-radius:8px; padding:10px 12px; margin-bottom:10px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <span style="font-size:0.85rem; font-weight:700; color:#334155;">📁 OFFLINE SPREADSHEET FILE</span>
+                            <span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:600; padding:2px 8px; border-radius:10px;">📁 Disk File</span>
+                        </div>
+                        <div style="font-size:0.8rem; color:#475569; margin-top:4px;">
+                            Offline file loaded from <code>input/sitetracker/</code> (Modified: {st_mtime})<br>
+                            File: <code>{active_st_file}</code>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            with st.expander(f"👁️ Preview Sitetracker Data ({active_st_file})", expanded=False):
                 try:
-                    st_view_df = DataNormalizer.read_spreadsheet(st_dir / st_files[0], nrows=100)
+                    st_view_df = DataNormalizer.read_spreadsheet(st_path, nrows=100)
                     st.caption(f"📁 Previewing top {len(st_view_df):,} rows • {len(st_view_df.columns)} columns")
                     st.dataframe(st_view_df, use_container_width=True)
                 except Exception as e:
@@ -461,6 +501,51 @@ def _render_step_mapping(selected_report: str):
 def _render_step_delta(selected_report: str) -> bool:
     st.markdown("### 3️⃣ Delta Engine & Validation Audit")
     st.caption("Execute row-by-row comparison against baseline Sitetracker data to compute strict updates.")
+
+    # Determine baseline source details for clear visibility
+    yaml_cfg = YamlConfigLoader.load(selected_report)
+    work_dir = settings.DATA_DIR / yaml_cfg["folders"]["work_dir"]
+    st_dir = work_dir / yaml_cfg["folders"]["sitetracker_dir"]
+    src_dir = work_dir / yaml_cfg["folders"]["source_dir"]
+
+    st_files = [f.name for f in st_dir.iterdir() if f.is_file() and not f.name.startswith(".")] if st_dir.exists() else []
+    src_files = [f.name for f in src_dir.iterdir() if f.is_file() and not f.name.startswith(".")] if src_dir.exists() else []
+
+    if st_files:
+        active_st_file = st_files[0]
+        st_path = st_dir / active_st_file
+        is_live_soql = active_st_file.endswith("_sitetracker_live.csv")
+        try:
+            st_mtime = datetime.fromtimestamp(st_path.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            st_mtime = "N/A"
+        src_label = src_files[0] if src_files else "uploaded spreadsheet"
+
+        if is_live_soql:
+            badge_html = f"""
+            <div style="background:#F0FDF4; border:1px solid #86EFAC; border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <div style="font-size:0.88rem; font-weight:700; color:#166534;">🌐 BASELINE COMPARISON: LIVE SITETRACKER (SOQL QUERY)</div>
+                    <div style="font-size:0.8rem; color:#15803D; margin-top:2px;">
+                        Comparing <code>{src_label}</code> against live Salesforce data queried at {st_mtime} (<code>{active_st_file}</code>).
+                    </div>
+                </div>
+                <div><span style="background:#DCFCE7; color:#166534; font-size:0.75rem; font-weight:700; padding:3px 10px; border-radius:12px; border:1px solid #BBF7D0;">● Live Cloud Baseline</span></div>
+            </div>
+            """
+        else:
+            badge_html = f"""
+            <div style="background:#F8FAFC; border:1px solid #CBD5E1; border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <div style="font-size:0.88rem; font-weight:700; color:#334155;">📁 BASELINE COMPARISON: OFFLINE SPREADSHEET FILE</div>
+                    <div style="font-size:0.8rem; color:#475569; margin-top:2px;">
+                        Comparing <code>{src_label}</code> against offline baseline file <code>{active_st_file}</code> (Modified on {st_mtime}).
+                    </div>
+                </div>
+                <div><span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:700; padding:3px 10px; border-radius:12px; border:1px solid #CBD5E1;">📁 Offline Disk Baseline</span></div>
+            </div>
+            """
+        st.markdown(badge_html, unsafe_allow_html=True)
 
     with st.expander("⚙️ Dataloader Execution Settings", expanded=False):
         st.session_state.insert_nulls_toggle = st.checkbox(
@@ -742,6 +827,14 @@ def _render_step_ingest(selected_report: str):
     default_obj = yaml_cfg.get("report", {}).get("salesforce_object")
     if not default_obj and ingest_objects:
         default_obj = ingest_objects[0]
+
+    # Baseline source indicator
+    st_dir_step4 = settings.DATA_DIR / yaml_cfg["folders"]["work_dir"] / yaml_cfg["folders"]["sitetracker_dir"]
+    st_files_step4 = [f.name for f in st_dir_step4.iterdir() if f.is_file() and not f.name.startswith(".")] if st_dir_step4.exists() else []
+    if st_files_step4:
+        is_live_soql_s4 = st_files_step4[0].endswith("_sitetracker_live.csv")
+        lbl_s4 = "🌐 Live Sitetracker SOQL" if is_live_soql_s4 else f"📁 Offline Disk File ({st_files_step4[0]})"
+        st.caption(f"ℹ️ **Baseline Source Used for Deltas**: `{lbl_s4}`")
 
     ALL_OBJECTS_OPTION = f"⚡ All Objects (Sequential Ingest: {', '.join(ingest_objects)})"
     if len(ingest_objects) > 1:

@@ -133,7 +133,7 @@ class InputValidator:
     def _get_single_file(folder: Path, label: str, errors: list) -> Path | None:
         if not folder.exists():
             return None
-        files = [f for f in folder.iterdir() if not f.name.startswith(".")]
+        files = [f for f in folder.iterdir() if f.is_file() and not f.name.startswith(".")]
         if len(files) == 0:
             errors.append(f"No files found in {label} directory: {folder}")
             return None

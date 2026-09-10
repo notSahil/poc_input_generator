@@ -31,3 +31,15 @@ class TestInputValidator:
         result = validator.validate_all()
         assert result.is_valid is False
         assert any("must contain exactly 1 file" in e for e in result.errors)
+
+    def test_subdirectories_ignored(self, mock_environment):
+        source_dir = mock_environment["data_dir"] / "Test_Report" / "input" / "source"
+        archive_dir = source_dir / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        (archive_dir / "old_archived_file.xlsx").write_text("dummy")
+
+        validator = InputValidator("Test Report")
+        result = validator.validate_all()
+        assert result.is_valid is True
+        assert len(result.errors) == 0
+
