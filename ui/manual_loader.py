@@ -94,8 +94,8 @@ def render(go_fn):
     col_nav, col_env = st.columns([3, 1])
     with col_nav:
         st.button("⬅ Back to Home", on_click=go_fn, args=("home",), key="adhoc_btn_home")
-        st.title("⚡ Ad-Hoc Data Loader")
-        st.caption("Dataloader.io Mode • Upload custom CSV/Excel, map any Salesforce object dynamically, validate deltas, and upload.")
+        st.title("⚡ Ad-Hoc Object Ingestion & Mapping")
+        st.caption("Dynamic Schema Synchronization • Upload custom CSV/Excel, dynamically map Sitetracker object schemas, validate field deltas, and synchronize updates safely.")
 
     active_prof = get_active_profile()
     is_auth, status_label = check_connection_status(profile=active_prof)

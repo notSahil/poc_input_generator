@@ -547,7 +547,7 @@ def _render_step_delta(selected_report: str) -> bool:
             """
         st.markdown(badge_html, unsafe_allow_html=True)
 
-    with st.expander("⚙️ Dataloader Execution Settings", expanded=False):
+    with st.expander("⚙️ Ingestion & Blank Overwrite Settings", expanded=False):
         st.session_state.insert_nulls_toggle = st.checkbox(
             "⚠️ Overwrite with Blanks (Insert Nulls)",
             value=st.session_state.insert_nulls_toggle,
@@ -725,21 +725,29 @@ def _render_step_ingest(selected_report: str):
     if job_info:
         status = job_info.get("status")
         if status == "RUNNING":
-            st.markdown("### ⏳ Ingestion in Progress on Server")
-            st.info(
-                "📱 **Phone Disconnect Safe**: The upload is executing in a detached background worker on the Oracle server. "
-                "You can safely close this browser tab, switch apps, or lock your phone. The upload will continue uninterrupted."
-            )
+            is_rb = job_info.get("is_rollback", False)
+            if is_rb:
+                st.markdown("### ⏪ Revert / Rollback in Progress on Server")
+            else:
+                st.markdown("### ⏳ Ingestion in Progress on Server")
+
             proc_overall = job_info.get("processed_records_overall", 0)
             total_overall = max(1, job_info.get("total_records_overall", 1))
             pct = min(1.0, proc_overall / total_overall)
             curr_obj = job_info.get("current_object", "Salesforce Objects")
             eng_lbl = "⚡ Lightning REST" if job_info.get("engine") == "composite" else "📦 Bulk API 2.0"
-            st.progress(pct, text=f"{eng_lbl}: Ingesting {curr_obj} — {proc_overall}/{total_overall} records ({int(pct * 100)}%)")
+            if is_rb:
+                st.progress(pct, text=f"{eng_lbl}: Reverting {curr_obj} — {proc_overall}/{total_overall} records restored ({int(pct * 100)}%)")
+            else:
+                st.progress(pct, text=f"{eng_lbl}: Ingesting {curr_obj} — {proc_overall}/{total_overall} records ({int(pct * 100)}%)")
 
             m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-            m_col1.metric("Processed Records", f"{proc_overall:,} / {total_overall:,}")
-            m_col2.metric("Succeeded", f"{job_info.get('successful_records_overall', 0):,}")
+            if is_rb:
+                m_col1.metric("Reverted Records", f"{proc_overall:,} / {total_overall:,}")
+                m_col2.metric("Restored", f"{job_info.get('successful_records_overall', 0):,}")
+            else:
+                m_col1.metric("Processed Records", f"{proc_overall:,} / {total_overall:,}")
+                m_col2.metric("Succeeded", f"{job_info.get('successful_records_overall', 0):,}")
             m_col3.metric("Failed", f"{job_info.get('failed_records_overall', 0):,}")
             start_str = job_info.get("start_time")
             if start_str:
@@ -758,23 +766,36 @@ def _render_step_ingest(selected_report: str):
             r_end = job_info.get("chunk_end", 0)
 
             if stage == "in_flight" and t_chunk > 0:
-                st.markdown(
-                    f"""
-                    <div style="background:#F0FDF4; border:1px solid #86EFAC; border-radius:6px; padding:10px 14px; margin: 12px 0; font-size:0.9rem; color:#166534; display:flex; align-items:center; gap:8px;">
-                        <span>⏳</span>
-                        <div><b>Active In-Flight Request:</b> Evaluating Chunk <b>{c_chunk} of {t_chunk}</b> (Records {r_start} to {r_end} on <b>{curr_obj}</b>)<br>
-                        <span style="font-size:0.8rem; color:#15803D;">Salesforce Apex triggers & Sitetracker validation rules are evaluating in cloud (~20–40s per chunk)...</span></div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+                if is_rb:
+                    st.markdown(
+                        f"""
+                        <div style="background:#EFF6FF; border:1px solid #93C5FD; border-radius:6px; padding:10px 14px; margin: 12px 0; font-size:0.9rem; color:#1E40AF; display:flex; align-items:center; gap:8px;">
+                            <span>⏪</span>
+                            <div><b>Active In-Flight Revert:</b> Restoring Chunk <b>{c_chunk} of {t_chunk}</b> (Records {r_start} to {r_end} on <b>{curr_obj}</b>)<br>
+                            <span style="font-size:0.8rem; color:#1D4ED8;">Restoring original baseline field values to Sitetracker in cloud...</span></div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        f"""
+                        <div style="background:#F0FDF4; border:1px solid #86EFAC; border-radius:6px; padding:10px 14px; margin: 12px 0; font-size:0.9rem; color:#166534; display:flex; align-items:center; gap:8px;">
+                            <span>⏳</span>
+                            <div><b>Active In-Flight Request:</b> Evaluating Chunk <b>{c_chunk} of {t_chunk}</b> (Records {r_start} to {r_end} on <b>{curr_obj}</b>)<br>
+                            <span style="font-size:0.8rem; color:#15803D;">Salesforce Apex triggers & Sitetracker validation rules are evaluating in cloud (~20–40s per chunk)...</span></div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
 
             # Show per-object status badges
             st.markdown("##### 📦 Object Breakdown")
             for obj_name, o_meta in job_info.get("objects", {}).items():
                 obj_status = o_meta.get("status", "PENDING")
                 status_icon = "⏳" if obj_status == "RUNNING" else ("✅" if "COMPLETED" in obj_status else "○")
-                st.caption(f"{status_icon} **{obj_name}**: {obj_status} ({o_meta.get('processed_records', 0)}/{o_meta.get('total_records', 0)} records)")
+                rec_label = "restored" if is_rb else "records"
+                st.caption(f"{status_icon} **{obj_name}**: {obj_status} ({o_meta.get('processed_records', 0)}/{o_meta.get('total_records', 0)} {rec_label})")
 
             col_ref_btn, col_ref_txt = st.columns([1, 3])
             with col_ref_btn:
@@ -981,7 +1002,7 @@ def render(go):
     apply_slds_theme()
     _init_wizard_state()
 
-    render_header("⚡ Sitetracker Data Ingestion Pipeline", "Dataloader-style guided workflow for field mapping, validation, and Bulk updates")
+    render_header("⚡ Sitetracker Data Ingestion Pipeline", "Automated delta comparison, schema validation, and intelligent Sitetracker synchronization")
 
     reports = YamlConfigLoader.list_reports()
     if not reports:

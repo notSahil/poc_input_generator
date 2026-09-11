@@ -90,7 +90,7 @@ def render_home():
                 <div>
                     <div class="slds-card-title">📥 Guided Report Pipeline</div>
                     <div class="slds-card-subtitle" style="margin-top: 8px;">
-                        Standardized 4-step wizard comparing pre-configured reports (e.g. Apollo 10G, Master Site Listing) against Sitetracker exports with schema validations.
+                        End-to-end automated pipeline for pre-configured templates (e.g. Apollo 10G, Master Site Listing). Performs smart delta comparison, schema normalization, and validated Sitetracker updates.
                     </div>
                 </div>
             </div>
@@ -111,9 +111,9 @@ def render_home():
             """
             <div class="slds-card" style="min-height: 200px; display: flex; flex-direction: column; justify-content: space-between;">
                 <div>
-                    <div class="slds-card-title">⚡ Ad-Hoc Manual Data Loader</div>
+                    <div class="slds-card-title">⚡ Ad-Hoc Object Ingestion & Mapping</div>
                     <div class="slds-card-subtitle" style="margin-top: 8px;">
-                        Dataloader.io mode • Upload any CSV/Excel file, select any Salesforce/Sitetracker object, auto-match fields, validate live deltas, and upload with 1-click rollback.
+                        Dynamic Schema Synchronization • Upload custom CSV or Excel files, dynamically map to any Sitetracker object, validate field deltas, and synchronize updates with 1-click rollback safety.
                     </div>
                 </div>
             </div>
@@ -121,7 +121,7 @@ def render_home():
             unsafe_allow_html=True
         )
         st.button(
-            "Launch Ad-Hoc Loader ➔",
+            "Launch Ad-Hoc Ingestion ➔",
             use_container_width=True,
             type="primary",
             on_click=go,

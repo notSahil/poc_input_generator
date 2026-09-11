@@ -610,7 +610,7 @@ class ManualLoadEngine:
 
         # 9. run_summary.txt
         summary_text = (
-            f"Ad-Hoc Dataloader Execution Summary\n"
+            f"Ad-Hoc Ingestion Execution Summary\n"
             f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"Target Salesforce Object: {self.config.object_name}\n"
             f"Source Primary Key: {pk_src}\n"

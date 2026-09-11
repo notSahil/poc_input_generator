@@ -58,3 +58,47 @@ def test_job_manager_lifecycle(tmp_path):
         # Test clear
         clear_job_progress(tmp_path)
         assert get_job_progress(tmp_path) is None
+
+
+def test_job_manager_rollback_lifecycle(tmp_path):
+    rb_bt = tmp_path / "rollback_file_BT_Project.csv"
+    pd.DataFrame([{"Id": "a1e1", "Ran_Priority__c": "Old_Cisco"}]).to_csv(rb_bt, index=False)
+
+    rb_proj = tmp_path / "rollback_file_Project.csv"
+    pd.DataFrame([{"Id": "a0i1", "HE_MEAS_Status__c": "Pending"}]).to_csv(rb_proj, index=False)
+
+    def mock_push(*args, **kwargs):
+        assert kwargs.get("is_rollback") is True
+        return BulkUploadResult(
+            total_records=1,
+            successful_records=1,
+            failed_records=0,
+            job_id="MOCK_REST_RB_JOB",
+            all_succeeded=True,
+        )
+
+    with patch("salesforce.composite_uploader.push_delta_via_composite", side_effect=mock_push):
+        start_background_ingest(
+            run_dir=tmp_path,
+            report_name="Apollo 10G",
+            is_rollback=True,
+            engine="composite",
+        )
+
+        for _ in range(50):
+            prog = get_job_progress(tmp_path)
+            if prog and prog.get("status") == "COMPLETED":
+                break
+            time.sleep(0.1)
+
+        prog = get_job_progress(tmp_path)
+        assert prog is not None
+        assert prog["status"] == "COMPLETED"
+        assert prog["is_rollback"] is True
+        assert prog["processed_records_overall"] == 2
+        assert prog["successful_records_overall"] == 2
+        assert is_job_active(tmp_path) is False
+
+        clear_job_progress(tmp_path)
+        assert get_job_progress(tmp_path) is None
+
