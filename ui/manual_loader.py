@@ -475,27 +475,14 @@ def _render_step_2_object():
         st.error("No updateable objects found in this Salesforce org.")
         return
 
-    detected_obj = st.session_state.get("_adhoc_detected_obj")
-    if detected_obj:
-        st.markdown(
-            f"<div style='font-size:0.85rem; color:#15803D; margin-bottom:10px;'>✨ Auto-detected Target Object from your file headers: <b><code>{detected_obj}</code></b></div>",
-            unsafe_allow_html=True,
-        )
-
-    # Search & Category Filters
-    col_filter1, col_filter2 = st.columns([2, 1])
-    with col_filter1:
-        search_query = st.text_input(
-            "🔍 Search Objects by Name or Label:",
-            "",
-            placeholder="e.g. Site, Project, Work Order, Account...",
-            key="adhoc_obj_search",
-        )
-    with col_filter2:
+    # Object Selection (Category Filter + Searchable Dropdown)
+    col_cat, col_obj = st.columns([1, 2])
+    with col_cat:
         filter_category = st.selectbox(
             "Category Filter:",
             ["All Objects", "Sitetracker (*__c)", "Custom Objects (*__c)", "Standard Objects"],
             key="adhoc_cat_filter",
+            help="Filter objects by Salesforce classification",
         )
 
     if filter_category == "Sitetracker (*__c)":
@@ -507,13 +494,6 @@ def _render_step_2_object():
     else:
         filtered_objs = all_objs
 
-    if search_query.strip():
-        q = search_query.strip().lower()
-        filtered_objs = [
-            o for o in filtered_objs
-            if q in o["label"].lower() or q in o["name"].replace("sitetracker__", "").replace("__c", "").lower()
-        ]
-
     # Format object choices: "Site (sitetracker__Site__c)"
     obj_display_map = {
         f"{o['label']} ({o['name']})": o["name"]
@@ -521,14 +501,14 @@ def _render_step_2_object():
     }
 
     if not obj_display_map:
-        st.warning("No objects matched your search. Showing all available objects.")
+        st.warning("No objects found in this category. Showing all available objects.")
         filtered_objs = all_objs
         obj_display_map = {
             f"{o['label']} ({o['name']})": o["name"]
             for o in filtered_objs
         }
 
-    # Find default index
+    # Find default index based on current selected object
     default_idx = 0
     if st.session_state.adhoc_selected_obj:
         for idx, (k, v) in enumerate(obj_display_map.items()):
@@ -536,12 +516,13 @@ def _render_step_2_object():
                 default_idx = idx
                 break
 
-    selected_display = st.selectbox(
-        f"Select Target Object ({len(filtered_objs)} available):",
-        list(obj_display_map.keys()),
-        index=default_idx,
-        help="Select the Salesforce object you want to upload data to.",
-    )
+    with col_obj:
+        selected_display = st.selectbox(
+            f"Select Target Object ({len(filtered_objs)} available):",
+            list(obj_display_map.keys()),
+            index=default_idx,
+            help="Type to search and select the Salesforce object to update.",
+        )
     selected_obj = obj_display_map[selected_display]
     st.session_state.adhoc_selected_obj = selected_obj
 
@@ -786,8 +767,6 @@ def _render_step_3_mapping():
 
     st.markdown("<hr style='margin: 4px 0 12px 0;'>", unsafe_allow_html=True)
 
-    data_types = ["text", "date", "number", "boolean"]
-
     for idx, m in enumerate(mappings):
         cols = st.columns([1, 3, 4, 2, 2])
         is_pk = bool(m.source_column == src_pk or (sf_pk and m.target_field_api == sf_pk))
@@ -849,15 +828,22 @@ def _render_step_3_mapping():
             m.upload_enabled = False
             m.match_confidence = "None"
 
-        # 4. Data Type Selector
-        dt_idx = data_types.index(m.data_type) if m.data_type in data_types else 0
-        m.data_type = cols[3].selectbox(
-            f"Data Type for {m.source_column}",
-            data_types,
-            index=dt_idx,
-            key=f"sel_dt_{idx}_{m.source_column}",
-            label_visibility="collapsed",
-        )
+        # 4. Data Type (Read-only, fetched directly from Sitetracker schema describe)
+        if m.target_field_api:
+            actual_dtype = dtype_lookup.get(m.target_field_api, m.data_type or "text")
+            m.data_type = actual_dtype
+            dtype_upper = actual_dtype.upper()
+            if actual_dtype == "date":
+                dtype_badge = f"<span style='background:#EFF6FF; color:#1D4ED8; border:1px solid #BFDBFE; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>📅 {dtype_upper}</span>"
+            elif actual_dtype in ("number", "currency", "percent"):
+                dtype_badge = f"<span style='background:#FFFBEB; color:#B45309; border:1px solid #FDE68A; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>🔢 {dtype_upper}</span>"
+            elif actual_dtype == "boolean":
+                dtype_badge = f"<span style='background:#FAF5FF; color:#7E22CE; border:1px solid #E9D5FF; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>🔘 {dtype_upper}</span>"
+            else:
+                dtype_badge = f"<span style='background:#F1F5F9; color:#475569; border:1px solid #CBD5E1; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>🔤 {dtype_upper}</span>"
+            cols[3].markdown(f"<div style='margin-top:6px;'>{dtype_badge}</div>", unsafe_allow_html=True)
+        else:
+            cols[3].markdown("<div style='margin-top:8px; color:#94A3B8; font-weight:600;'>—</div>", unsafe_allow_html=True)
 
         # 5. Match Status Pill
         if is_pk:

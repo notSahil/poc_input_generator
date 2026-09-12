@@ -389,6 +389,8 @@ class ManualLoadEngine:
             id_matches = [c for c in st_df.columns if c.lower() == "id"]
             if id_matches:
                 sf_id_col = id_matches[0]
+            elif pk_sf.lower() == "id":
+                sf_id_col = pk_sf
             else:
                 raise MappingError(f"Salesforce ID column '{sf_id_col}' not found in Salesforce data.")
 
@@ -408,7 +410,7 @@ class ManualLoadEngine:
             pd.DataFrame(columns=src_df.columns).to_csv(self._out("invalid_primary_key.csv"), index=False)
 
         valid_src = src_df[src_df["VALID"]]
-        st_index = st_df.set_index(pk_sf)
+        st_index = st_df.set_index(pk_sf, drop=False)
 
         # 4. Duplicate PK tracking (First Occurrence Wins)
         seen_pks: dict[str, int] = {}
@@ -482,7 +484,15 @@ class ManualLoadEngine:
             if isinstance(st_row, pd.DataFrame):
                 st_row = st_row.iloc[0]
 
-            sf_id = str(st_row[sf_id_col])
+            if sf_id_col == pk_sf:
+                sf_id = str(pr)
+            elif sf_id_col in st_row:
+                sf_id = str(st_row[sf_id_col])
+            elif hasattr(st_row, "name") and st_row.name:
+                sf_id = str(st_row.name)
+            else:
+                sf_id = str(pr)
+
             update = {"Id": sf_id, pk_src: pr}
             row_rollback = {"Id": sf_id, pk_src: pr}
             row_errors: list[str] = []
@@ -614,7 +624,7 @@ class ManualLoadEngine:
         # 1. final_input_file.csv (only Id and updated fields)
         if updates:
             final_df = pd.DataFrame(updates)
-            if pk_src in final_df.columns:
+            if pk_src != "Id" and pk_src in final_df.columns:
                 final_df = final_df.drop(columns=[pk_src])
         else:
             final_df = pd.DataFrame(columns=upload_fields)
@@ -625,7 +635,7 @@ class ManualLoadEngine:
         # 2. rollback_file.csv
         if rollback_updates:
             rollback_df = pd.DataFrame(rollback_updates)
-            if pk_src in rollback_df.columns:
+            if pk_src != "Id" and pk_src in rollback_df.columns:
                 rollback_df = rollback_df.drop(columns=[pk_src])
         else:
             rollback_df = pd.DataFrame(columns=upload_fields)

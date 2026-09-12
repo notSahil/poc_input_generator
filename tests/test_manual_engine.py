@@ -280,6 +280,43 @@ class TestManualLoadEngine:
         assert len(skip_df) == 1
         assert skip_df.iloc[0]["Primary_Key"] == "SITE-999"
 
+    def test_engine_when_pk_is_salesforce_id(self, tmp_path):
+        # Arrange - source and live where PK is 'Id' (Id -> Id)
+        source_df = pd.DataFrame([
+            {"Id": "a0010000001AlphaAAA", "Site_Name": "Updated Alpha"},
+            {"Id": "a0010000002BetaBBB", "Site_Name": "Unchanged Beta"},
+        ])
+        live_sf_df = pd.DataFrame([
+            {"Id": "a0010000001AlphaAAA", "Site_Name__c": "Old Alpha"},
+            {"Id": "a0010000002BetaBBB", "Site_Name__c": "Unchanged Beta"},
+        ])
+        run_dir = tmp_path / "id_pk_run"
+
+        mappings = [
+            AdhocFieldMapping("Id", "Id", "Record ID", data_type="text", upload_enabled=False),
+            AdhocFieldMapping("Site_Name", "Site_Name__c", "Site Name", data_type="text", upload_enabled=True),
+        ]
+        config = AdhocEngineConfig(
+            object_name="sitetracker__Site__c",
+            source_pk_col="Id",
+            target_pk_field="Id",
+            sf_id_field="Id",
+            insert_nulls=True,
+            mappings=mappings,
+        )
+        engine = ManualLoadEngine(config, custom_run_dir=run_dir)
+
+        # Act
+        result = engine.run(source_df, live_sf_df)
+
+        # Assert
+        assert result.changed_records == 1
+        assert result.unchanged_records == 1
+        final_df = pd.read_csv(result.artifacts["final_input_file"], dtype=str)
+        assert len(final_df) == 1
+        assert final_df.iloc[0]["Id"] == "a0010000001AlphaAAA"
+        assert final_df.iloc[0]["Site_Name__c"] == "Updated Alpha"
+
 from unittest.mock import MagicMock, patch
 from salesforce.adhoc_fetcher import fetch_all_objects, fetch_object_fields, fetch_adhoc_live_data
 
