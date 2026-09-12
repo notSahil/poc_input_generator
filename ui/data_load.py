@@ -27,12 +27,32 @@ from ui.styles import apply_slds_theme, render_kpi_card, render_pill
 logger = logging.getLogger(__name__)
 
 
+def _safe_read_csv(path: Path | str | None, **kwargs) -> pd.DataFrame:
+    """Safely read CSV files, returning an empty DataFrame if file is missing, empty (0 bytes), or unparseable."""
+    if not path:
+        return pd.DataFrame()
+    p = Path(path)
+    if not p.exists():
+        return pd.DataFrame()
+    try:
+        if p.stat().st_size == 0:
+            return pd.DataFrame()
+    except Exception:
+        pass
+    try:
+        return pd.read_csv(p, **kwargs)
+    except (pd.errors.EmptyDataError, UnicodeDecodeError, Exception):
+        try:
+            return pd.read_csv(p, encoding="latin1", engine="python", on_bad_lines="skip", **kwargs)
+        except Exception:
+            return pd.DataFrame()
+
+
 def _read_csv_preview(path: Path) -> pd.DataFrame:
     """Safely read CSV files for UI preview handling both UTF-8 and Latin-1 encodings and casting to str."""
-    try:
-        df = pd.read_csv(path, dtype=str, encoding="utf-8")
-    except UnicodeDecodeError:
-        df = pd.read_csv(path, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
+    df = _safe_read_csv(path, dtype=str)
+    if df.empty:
+        return df
     return df.fillna("").astype(str)
 
 
@@ -614,7 +634,7 @@ def _render_step_delta(selected_report: str) -> bool:
 
         with tab_grid:
             if val_file.exists():
-                val_df = pd.read_csv(val_file, dtype=str)
+                val_df = _safe_read_csv(val_file, dtype=str)
                 badge_map = {
                     "SUCCESS": "🟢 UPDATED",
                     "ERROR": "🔴 ERROR (REJECTED)",
@@ -627,7 +647,7 @@ def _render_step_delta(selected_report: str) -> bool:
 
         with tab_changes:
             if chg_file.exists():
-                chg_df = pd.read_csv(chg_file, dtype=str)
+                chg_df = _safe_read_csv(chg_file, dtype=str)
                 if not chg_df.empty:
                     st.dataframe(chg_df, use_container_width=True)
                 else:
@@ -635,7 +655,7 @@ def _render_step_delta(selected_report: str) -> bool:
 
         with tab_errors:
             if err_file.exists():
-                err_df = pd.read_csv(err_file, dtype=str)
+                err_df = _safe_read_csv(err_file, dtype=str)
                 if not err_df.empty:
                     st.dataframe(err_df, use_container_width=True)
                 else:
@@ -841,7 +861,7 @@ def _render_step_ingest(selected_report: str):
                             fail_path = result.run_dir / o_meta["failures_file"]
                             if fail_path.exists():
                                 st.error(f"[{obj_name}] Failures saved to `{fail_path.name}`:")
-                                fail_df = pd.read_csv(fail_path, dtype=str)
+                                fail_df = _safe_read_csv(fail_path, dtype=str)
                                 st.dataframe(fail_df, use_container_width=True)
             else:
                 title = "Rollback" if is_rb else "Ingest"
@@ -863,11 +883,13 @@ def _render_step_ingest(selected_report: str):
                 if has_multi_obj:
                     for obj in completed_objects:
                         c_target = obj.strip().replace(" ", "_")
-                        if (result.run_dir / f"rollback_file_{c_target}.csv").exists():
+                        f_rb = result.run_dir / f"rollback_file_{c_target}.csv"
+                        if f_rb.exists() and len(_safe_read_csv(f_rb)) > 0:
                             has_completed_rb = True
                             break
                 if not has_completed_rb:
-                    has_completed_rb = (result.run_dir / "rollback_file.csv").exists()
+                    f_single = result.run_dir / "rollback_file.csv"
+                    has_completed_rb = f_single.exists() and len(_safe_read_csv(f_single)) > 0
 
                 if has_completed_rb:
                     st.markdown("---")
@@ -882,17 +904,23 @@ def _render_step_ingest(selected_report: str):
                                     c_target = obj.strip().replace(" ", "_")
                                     rb_file_obj = result.run_dir / f"rollback_file_{c_target}.csv"
                                     if rb_file_obj.exists():
-                                        df_rb = pd.read_csv(rb_file_obj, dtype=str)
+                                        df_rb = _safe_read_csv(rb_file_obj, dtype=str)
                                         st.caption(f"**{len(df_rb):,}** rollback records ready for **{obj}**")
-                                        st.dataframe(df_rb, use_container_width=True)
+                                        if not df_rb.empty:
+                                            st.dataframe(df_rb, use_container_width=True)
+                                        else:
+                                            st.info(f"0 rollback records for {obj}.")
                                     else:
                                         st.info(f"No rollback records for {obj}.")
                         else:
                             rb_single = result.run_dir / "rollback_file.csv"
                             if rb_single.exists():
-                                df_rb = pd.read_csv(rb_single, dtype=str)
+                                df_rb = _safe_read_csv(rb_single, dtype=str)
                                 st.caption(f"**{len(df_rb):,}** rollback records ready to restore")
-                                st.dataframe(df_rb, use_container_width=True)
+                                if not df_rb.empty:
+                                    st.dataframe(df_rb, use_container_width=True)
+                                else:
+                                    st.info("0 rollback records to restore.")
 
                     col_rb1, col_rb2 = st.columns([2, 1])
                     with col_rb1:
@@ -969,6 +997,7 @@ def _render_step_ingest(selected_report: str):
     active_rb_file = obj_specific_rb if obj_specific_rb.exists() else rb_file
 
     # Preview before upload
+    total_push_records = 0
     if is_multi_obj_push:
         with st.expander(f"📥 Preview Multi-Object Payloads ({len(ingest_objects)} Objects)", expanded=False):
             tab_list = st.tabs([f"📦 {obj}" for obj in ingest_objects])
@@ -977,15 +1006,28 @@ def _render_step_ingest(selected_report: str):
                     c_target = obj.strip().replace(" ", "_")
                     obj_file = result.run_dir / f"final_input_file_{c_target}.csv"
                     if obj_file.exists():
-                        df_obj = pd.read_csv(obj_file, dtype=str, keep_default_na=False)
+                        df_obj = _safe_read_csv(obj_file, dtype=str, keep_default_na=False)
+                        total_push_records += len(df_obj)
                         st.caption(f"**{len(df_obj):,}** records ready for **{obj}**")
-                        st.dataframe(df_obj, use_container_width=True)
+                        if not df_obj.empty:
+                            st.dataframe(df_obj, use_container_width=True)
+                        else:
+                            st.info(f"0 changed records for {obj}.")
                     else:
                         st.info(f"No dedicated payload file generated for {obj}.")
     elif active_push_file.exists():
-        final_push_df = pd.read_csv(active_push_file, dtype=str, keep_default_na=False)
-        with st.expander(f"📥 Preview Payload for {target_obj_push} ({len(final_push_df)} Records to be Ingested)", expanded=False):
-            st.dataframe(final_push_df, use_container_width=True)
+        final_push_df = _safe_read_csv(active_push_file, dtype=str, keep_default_na=False)
+        total_push_records = len(final_push_df)
+        if total_push_records > 0:
+            with st.expander(f"📥 Preview Payload for {target_obj_push} ({total_push_records:,} Records to be Ingested)", expanded=False):
+                st.dataframe(final_push_df, use_container_width=True)
+        else:
+            st.info(f"ℹ️ **No changes detected for {target_obj_push}**: All records in your source file already match Sitetracker. 0 delta records to upload.")
+    else:
+        st.info("ℹ️ No payload file found for this run.")
+
+    if total_push_records == 0:
+        st.success("✅ **Sitetracker is already up to date!** There are 0 changed records to push.")
 
     col_eng, col_batch = st.columns([1.5, 1])
     with col_eng:
@@ -1016,15 +1058,18 @@ def _render_step_ingest(selected_report: str):
         confirm_phrase = st.text_input(
             "Type CONFIRM to enable Ingest",
             placeholder="CONFIRM",
-            key="input_confirm_bulk_push_v2"
+            key="input_confirm_bulk_push_v2",
+            disabled=(total_push_records == 0)
         )
 
     with col_c2:
         st.write("")
         st.write("")
-        push_enabled = (confirm_phrase.strip() == "CONFIRM")
+        push_enabled = (confirm_phrase.strip() == "CONFIRM") and (total_push_records > 0)
         btn_label = "🚀 Ingest All Deltas to Sitetracker" if is_multi_obj_push else f"🚀 Ingest Deltas to {target_obj_push}"
-        if st.button(btn_label, type="primary", disabled=not push_enabled, key="btn_execute_bulk_push_v2"):
+        if total_push_records == 0:
+            st.button(btn_label, type="primary", disabled=True, key="btn_execute_bulk_push_v2", help="No changes to upload. All records match Sitetracker.")
+        elif st.button(btn_label, type="primary", disabled=not push_enabled, key="btn_execute_bulk_push_v2"):
             start_background_ingest(
                 run_dir=result.run_dir,
                 report_name=selected_report,
@@ -1037,7 +1082,17 @@ def _render_step_ingest(selected_report: str):
             st.rerun()
 
     # Emergency Rollback / Revert Safety Net
-    has_rb = is_multi_obj_push or active_rb_file.exists()
+    has_rb = False
+    if is_multi_obj_push:
+        for obj in ingest_objects:
+            c_target = obj.strip().replace(" ", "_")
+            f_rb = result.run_dir / f"rollback_file_{c_target}.csv"
+            if f_rb.exists() and len(_safe_read_csv(f_rb)) > 0:
+                has_rb = True
+                break
+    elif active_rb_file.exists() and len(_safe_read_csv(active_rb_file)) > 0:
+        has_rb = True
+
     if has_rb:
         with st.expander("⏪ Emergency Rollback / Revert Safety Net", expanded=False):
             st.warning("⚠️ **Safety Net**: Revert pre-change values back into Sitetracker to restore records to how they were prior to this run.")
@@ -1048,14 +1103,20 @@ def _render_step_ingest(selected_report: str):
                         c_target = obj.strip().replace(" ", "_")
                         rb_file_obj = result.run_dir / f"rollback_file_{c_target}.csv"
                         if rb_file_obj.exists():
-                            df_rb = pd.read_csv(rb_file_obj, dtype=str)
+                            df_rb = _safe_read_csv(rb_file_obj, dtype=str)
                             st.caption(f"**{len(df_rb):,}** rollback records ready for **{obj}**")
-                            st.dataframe(df_rb, use_container_width=True)
+                            if not df_rb.empty:
+                                st.dataframe(df_rb, use_container_width=True)
+                            else:
+                                st.info(f"0 rollback records for {obj}.")
                         else:
                             st.info(f"No rollback records for {obj}.")
             elif active_rb_file.exists():
-                rb_df = pd.read_csv(active_rb_file, dtype=str)
-                st.dataframe(rb_df, use_container_width=True)
+                rb_df = _safe_read_csv(active_rb_file, dtype=str)
+                if not rb_df.empty:
+                    st.dataframe(rb_df, use_container_width=True)
+                else:
+                    st.info("0 rollback records.")
 
             col_rb1, col_rb2 = st.columns([2, 1])
             with col_rb1:

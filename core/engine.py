@@ -413,11 +413,14 @@ class InputFileEngine:
         # ================================================================
 
         # 1. final_input_file.csv — records ready for Sitetracker upload
-        pd.DataFrame(updates).to_csv(out("final_input_file.csv"), index=False)
+        mapped_api_fields = [f[2] for f in field_map if len(f) > 2 and f[2]]
+        final_cols = ["Id", pk_src] + [f for f in mapped_api_fields if f not in ("Id", pk_src)]
+        final_df = pd.DataFrame(updates) if updates else pd.DataFrame(columns=final_cols)
+        final_df.to_csv(out("final_input_file.csv"), index=False)
 
         # 2. rollback_file.csv — pre-change values for 1-click rollback
         rollback_df = pd.DataFrame(rollback_updates) if rollback_updates else pd.DataFrame(
-            columns=["Id", pk_src]
+            columns=final_cols
         )
         rollback_df.to_csv(out("rollback_file.csv"), index=False)
 
@@ -493,8 +496,11 @@ class InputFileEngine:
                     obj_rollbacks.append(row_rb)
 
                 # Write per-object files
-                pd.DataFrame(obj_updates).to_csv(out(f"final_input_file_{clean_obj}.csv"), index=False)
-                pd.DataFrame(obj_rollbacks).to_csv(out(f"rollback_file_{clean_obj}.csv"), index=False)
+                obj_cols = ["Id", pk_src] + [f for f in sorted(obj_api_fields) if f not in ("Id", pk_src)]
+                df_obj_updates = pd.DataFrame(obj_updates) if obj_updates else pd.DataFrame(columns=obj_cols)
+                df_obj_rollbacks = pd.DataFrame(obj_rollbacks) if obj_rollbacks else pd.DataFrame(columns=obj_cols)
+                df_obj_updates.to_csv(out(f"final_input_file_{clean_obj}.csv"), index=False)
+                df_obj_rollbacks.to_csv(out(f"rollback_file_{clean_obj}.csv"), index=False)
                 self.logger.info(
                     "Generated dedicated payload for '%s': %d records to %s",
                     obj, len(obj_updates), f"final_input_file_{clean_obj}.csv"
