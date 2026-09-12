@@ -102,6 +102,44 @@ class TestSuggestFieldMappings:
         assert site_list_map.target_field_api == "Site_on_Master_Site_List__c"
         assert site_list_map.upload_enabled is True
 
+    def test_matched_fields_sorted_first_and_pk_at_top(self):
+        # Arrange - mix of unmapped, matched, and PK columns
+        source_cols = ["Random_Unmapped_1", "Site_on_Master_Site_List__c", "Id", "Random_Unmapped_2", "TM Cell ID"]
+        sf_fields = [
+            {"api_name": "Id", "label": "Record ID", "data_type": "text"},
+            {"api_name": "Name", "label": "TM Cell ID", "data_type": "text"},
+            {"api_name": "Site_on_Master_Site_List__c", "label": "Site on Master Site List", "data_type": "text"},
+        ]
+
+        # Act
+        mappings = suggest_field_mappings(
+            source_cols, sf_fields, source_pk_col="Id", target_pk_field="Id", object_name="sitetracker__Site__c"
+        )
+
+        # Assert:
+        # Rank 0: Id (PK)
+        # Rank 1: Site_on_Master_Site_List__c, TM Cell ID (matched)
+        # Rank 2: Random_Unmapped_1, Random_Unmapped_2 (unmapped)
+        assert mappings[0].source_column == "Id"
+        assert mappings[0].target_field_api == "Id"
+        assert mappings[0].upload_enabled is False
+
+        assert mappings[1].source_column == "Site_on_Master_Site_List__c"
+        assert mappings[1].target_field_api == "Site_on_Master_Site_List__c"
+        assert mappings[1].upload_enabled is True
+
+        assert mappings[2].source_column == "TM Cell ID"
+        assert mappings[2].target_field_api == "Name"
+        assert mappings[2].upload_enabled is True
+
+        assert mappings[3].source_column == "Random_Unmapped_1"
+        assert mappings[3].target_field_api == ""
+        assert mappings[3].upload_enabled is False
+
+        assert mappings[4].source_column == "Random_Unmapped_2"
+        assert mappings[4].target_field_api == ""
+        assert mappings[4].upload_enabled is False
+
 
 class TestDetectTargetObject:
     """Tests for target object auto-detection from uploaded spreadsheet headers."""

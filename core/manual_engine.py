@@ -189,6 +189,33 @@ def suggest_field_mappings(
         except Exception as e:
             logger.warning("Could not read Mapping_file.xlsx for field suggestions: %s", e)
 
+    # Core Sitetracker object alias lookups (handles standard field labels like Name -> TM Cell ID)
+    known_aliases: dict[str, dict[str, str]] = {
+        "sitetracker__site__c": {
+            "tmcellid": "Name",
+            "cellid": "Name",
+            "sitecellid": "Name",
+            "sitename": "Site_Name__c",
+            "siteonmastersitelist": "Site_on_Master_Site_List__c",
+            "dateofmastersitelisting": "Date_of_Master_Site_Listing__c",
+            "mastersitelist": "Site_on_Master_Site_List__c",
+            "dateofmastersitelist": "Date_of_Master_Site_Listing__c",
+        },
+        "bt_project__c": {
+            "projectref": "Name",
+            "projectreference": "Name",
+            "projectid": "Name",
+            "hubcellid": "Hub_Cell_ID_TMUK__c",
+            "hubcellidtmuk": "Hub_Cell_ID_TMUK__c",
+            "colotmukcell": "Co_Lo_TMUK_Cell__c",
+            "colocell": "Co_Lo_TMUK_Cell__c",
+        },
+        "sitetracker__project__c": {
+            "projectid": "Name",
+            "projectname": "sitetracker__Project_Name__c",
+        },
+    }
+
     for col in source_columns:
         clean_col = _clean_str(col)
         matched_field: dict[str, Any] | None = None
@@ -211,11 +238,17 @@ def suggest_field_mappings(
             elif clean_col in mf_rules and _clean_str(mf_rules[clean_col]) in sf_by_clean_api:
                 matched_field = sf_by_clean_api[_clean_str(mf_rules[clean_col])]
                 confidence = "Exact"
-            # 3. Stripped API match
+            # 3. Known aliases for this object
+            elif object_name and object_name.lower() in known_aliases:
+                obj_aliases = known_aliases[object_name.lower()]
+                if clean_col in obj_aliases and _clean_str(obj_aliases[clean_col]) in sf_by_clean_api:
+                    matched_field = sf_by_clean_api[_clean_str(obj_aliases[clean_col])]
+                    confidence = "Canonical"
+            # 4. Stripped API match
             elif clean_col in sf_by_stripped_api:
                 matched_field = sf_by_stripped_api[clean_col]
                 confidence = "Normalized"
-            # 4. Label match
+            # 5. Label match
             elif clean_col in sf_by_clean_label:
                 matched_field = sf_by_clean_label[clean_col]
                 confidence = "Normalized"
@@ -249,6 +282,23 @@ def suggest_field_mappings(
             match_confidence=confidence,
         ))
 
+    # Order mappings:
+    # 1. Primary Key / Record ID fields first (rank 0)
+    # 2. Matched fields with valid target API (rank 1)
+    # 3. Unmapped fields (rank 2)
+    def _mapping_sort_rank(m: AdhocFieldMapping) -> int:
+        is_pk = bool(
+            (source_pk_col and m.source_column == source_pk_col)
+            or (target_pk_field and m.target_field_api == target_pk_field)
+            or (m.target_field_api.lower() == "id")
+        )
+        if is_pk:
+            return 0
+        if m.target_field_api:
+            return 1
+        return 2
+
+    mappings.sort(key=_mapping_sort_rank)
     return mappings
 
 

@@ -197,23 +197,10 @@ def render(go_fn):
 # ==============================================================================
 
 def _render_step_1_upload():
-    st.markdown("### 1️⃣ Input Data Selection & SOQL Live Data Fetch")
-    st.caption("Select a predefined report model or upload an ad-hoc CSV/Excel file, then fetch live cloud baseline data or upload an offline file.")
-
-    # 1. Template / Quick-Select Selector
-    reports = YamlConfigLoader.list_reports()
-    report_names = [r.name for r in reports]
-    template_options = ["-- Custom / Ad-Hoc Object (Discover Any Object) --"] + report_names
-
-    col_tmpl, col_env_info = st.columns([2, 1])
-    with col_tmpl:
-        selected_tmpl = st.selectbox(
-            "📋 Quick-Load Predefined Report Model (Optional):",
-            template_options,
-            index=0,
-            key="adhoc_template_selector",
-            help="Select a configured report template (e.g. Master Site Listing) to automatically pre-configure target objects, primary keys, and field schemas.",
-        )
+    col_hdr, col_env_info = st.columns([2, 1])
+    with col_hdr:
+        st.markdown("### 1️⃣ Source Data & Sitetracker Baseline")
+        st.caption("Upload your updated spreadsheet file (.csv or .xlsx) and fetch live cloud baseline data via SOQL or upload an offline file.")
 
     active_prof = get_active_profile()
     is_auth, status_label = check_connection_status(profile=active_prof)
@@ -232,7 +219,7 @@ def _render_step_1_upload():
         status_color = "#04844B" if is_auth else "#EA001E"
         st.markdown(
             f"""
-            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:8px 12px; margin-top:14px; text-align:right;">
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:8px 12px; margin-top:4px; text-align:right;">
                 <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase;">Connected Org</div>
                 <div style="font-weight:700; color:#032D60; font-size:0.85rem; display:flex; justify-content:flex-end; align-items:center; gap:6px; margin-top:2px;">
                     {render_pill(env_label, env_color)}
@@ -243,22 +230,7 @@ def _render_step_1_upload():
             unsafe_allow_html=True,
         )
 
-    # If user selected a template, auto-populate template configuration
-    if selected_tmpl != "-- Custom / Ad-Hoc Object (Discover Any Object) --":
-        try:
-            yaml_cfg = YamlConfigLoader.load(selected_tmpl)
-            loader = MappingLoader(settings.MAPPING_FILE, selected_tmpl)
-            t_objs = loader.objects()
-            t_pks = loader.all_primary_keys()
-            if t_objs:
-                st.session_state.adhoc_selected_obj = t_objs[0]
-            if t_pks:
-                st.session_state.adhoc_target_pk = t_pks[0]
-            st.session_state.adhoc_selected_template = selected_tmpl
-        except Exception as e:
-            logger.warning("Could not pre-load template %s: %s", selected_tmpl, e)
-
-    # Show registered target object pill if set
+    # Show registered target object pill if detected or set
     cur_obj = st.session_state.get("adhoc_selected_obj")
     if cur_obj:
         st.markdown(
@@ -306,12 +278,11 @@ def _render_step_1_upload():
                 st.session_state.adhoc_source_df = df
                 st.session_state.adhoc_source_filename = filename
 
-                # Auto-detect target Salesforce object from columns if not already chosen
-                if not st.session_state.get("adhoc_selected_obj"):
-                    detected_obj = detect_target_object(list(df.columns))
-                    if detected_obj:
-                        st.session_state.adhoc_selected_obj = detected_obj
-                        st.session_state._adhoc_detected_obj = detected_obj
+                # Auto-detect target Salesforce object from columns
+                detected_obj = detect_target_object(list(df.columns))
+                if detected_obj:
+                    st.session_state.adhoc_selected_obj = detected_obj
+                    st.session_state._adhoc_detected_obj = detected_obj
 
             except Exception as e:
                 st.error(f"Failed to read uploaded file: {e}")
@@ -319,7 +290,13 @@ def _render_step_1_upload():
         src_df = st.session_state.get("adhoc_source_df")
         if src_df is not None:
             fn = st.session_state.get("adhoc_source_filename", "Uploaded File")
+            detected = st.session_state.get("_adhoc_detected_obj")
             st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Active Source: {fn}', 'green')}</div>", unsafe_allow_html=True)
+            if detected:
+                st.markdown(
+                    f"<div style='font-size:0.8rem; color:#15803D; margin-bottom:6px;'>✨ Auto-detected Salesforce Object: <b><code>{detected}</code></b></div>",
+                    unsafe_allow_html=True,
+                )
             with st.expander(f"👁️ Preview Source Data ({fn})", expanded=False):
                 st.caption(f"📁 Previewing top {min(len(src_df), 100):,} of {len(src_df):,} rows • {len(src_df.columns)} columns")
                 st.dataframe(src_df.head(100), use_container_width=True)
@@ -498,29 +475,12 @@ def _render_step_2_object():
         st.error("No updateable objects found in this Salesforce org.")
         return
 
-    # Quick Select Core Objects
-    st.markdown("**⚡ Quick Select Common Sitetracker Objects:**")
-    qcols = st.columns(5)
-    core_shortcuts = [
-        ("🏢 Site", "sitetracker__Site__c"),
-        ("📂 BT Project", "BT_Project__c"),
-        ("📋 Project", "sitetracker__Project__c"),
-        ("🔧 Work Order", "sitetracker__Work_Order__c"),
-        ("🚩 Milestone", "sitetracker__Milestone__c"),
-    ]
-    for c, (btn_label, obj_api) in zip(qcols, core_shortcuts):
-        is_active = (st.session_state.adhoc_selected_obj == obj_api)
-        if c.button(
-            f"{'👉 ' if is_active else ''}{btn_label}",
-            key=f"quick_btn_{obj_api}",
-            type="primary" if is_active else "secondary",
-            use_container_width=True,
-        ):
-            st.session_state.adhoc_selected_obj = obj_api
-            st.session_state.adhoc_fields = []
-            st.rerun()
-
-    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+    detected_obj = st.session_state.get("_adhoc_detected_obj")
+    if detected_obj:
+        st.markdown(
+            f"<div style='font-size:0.85rem; color:#15803D; margin-bottom:10px;'>✨ Auto-detected Target Object from your file headers: <b><code>{detected_obj}</code></b></div>",
+            unsafe_allow_html=True,
+        )
 
     # Search & Category Filters
     col_filter1, col_filter2 = st.columns([2, 1])
@@ -733,6 +693,18 @@ def _render_step_3_mapping():
             st.session_state.adhoc_step = 1
             st.rerun()
 
+    # Auto-generate mappings if not yet present or if target object changed
+    if not st.session_state.adhoc_mappings or st.session_state.get("_mappings_obj") != obj_name:
+        if st.session_state.adhoc_source_df is not None and sf_fields:
+            st.session_state.adhoc_mappings = suggest_field_mappings(
+                source_columns=list(st.session_state.adhoc_source_df.columns),
+                sf_fields=sf_fields,
+                source_pk_col=src_pk,
+                target_pk_field=sf_pk,
+                object_name=obj_name,
+            )
+            st.session_state._mappings_obj = obj_name
+
     mappings = st.session_state.adhoc_mappings
     if not mappings:
         st.warning("No mappings configured. Please go back to Step 2.")
@@ -753,8 +725,23 @@ def _render_step_3_mapping():
             if detected_alt and detected_alt != obj_name:
                 if st.button(f"⚡ Switch Target Object to detected: '{detected_alt}'", type="primary"):
                     st.session_state.adhoc_selected_obj = detected_alt
-                    st.session_state.adhoc_fields = []
-                    st.session_state.adhoc_step = 1
+                    active_prof = get_active_profile()
+                    with st.spinner(f"Loading fields for '{detected_alt}'..."):
+                        try:
+                            sf_fields_new = fetch_object_fields(detected_alt, profile=active_prof)
+                            st.session_state.adhoc_fields = sf_fields_new
+                            st.session_state._last_loaded_obj = detected_alt
+                            src_cols = list(st.session_state.adhoc_source_df.columns)
+                            st.session_state.adhoc_mappings = suggest_field_mappings(
+                                source_columns=src_cols,
+                                sf_fields=sf_fields_new,
+                                source_pk_col=st.session_state.adhoc_source_pk,
+                                target_pk_field=st.session_state.adhoc_target_pk,
+                                object_name=detected_alt,
+                            )
+                            st.session_state._mappings_obj = detected_alt
+                        except Exception as e:
+                            logger.error("Auto-switch object error: %s", e)
                     st.rerun()
 
     # Build options for target field selector
@@ -817,7 +804,7 @@ def _render_step_3_mapping():
             m.upload_enabled = cols[0].checkbox(
                 f"Upload {m.source_column}",
                 value=m.upload_enabled,
-                key=f"chk_upload_{idx}",
+                key=f"chk_upload_{idx}_{m.source_column}",
                 label_visibility="collapsed",
             )
 
@@ -837,24 +824,30 @@ def _render_step_3_mapping():
             f"Salesforce Field for {m.source_column}",
             sf_field_options,
             index=default_idx,
-            key=f"sel_sf_{idx}",
+            key=f"sel_sf_{idx}_{m.source_column}",
             label_visibility="collapsed",
         )
 
         if selected_opt != "-- Do Not Map --":
             chosen_api = api_lookup.get(selected_opt, selected_opt.split(" ")[0])
+            was_unmapped = not m.target_field_api
             m.target_field_api = chosen_api
             m.target_field_label = label_lookup.get(chosen_api, chosen_api)
             # Record ID and PK fields can never be updated
             if chosen_api.lower() == "id" or is_pk:
                 m.upload_enabled = False
+            elif was_unmapped:
+                m.upload_enabled = True
             # Auto-assign type if not manually modified
             if not m.data_type or m.data_type == "text":
                 m.data_type = dtype_lookup.get(chosen_api, "text")
+            if m.match_confidence in ("None", ""):
+                m.match_confidence = "Manual"
         else:
             m.target_field_api = ""
             m.target_field_label = ""
             m.upload_enabled = False
+            m.match_confidence = "None"
 
         # 4. Data Type Selector
         dt_idx = data_types.index(m.data_type) if m.data_type in data_types else 0
@@ -862,7 +855,7 @@ def _render_step_3_mapping():
             f"Data Type for {m.source_column}",
             data_types,
             index=dt_idx,
-            key=f"sel_dt_{idx}",
+            key=f"sel_dt_{idx}_{m.source_column}",
             label_visibility="collapsed",
         )
 
