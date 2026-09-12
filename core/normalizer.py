@@ -23,7 +23,10 @@ class DataNormalizer:
         """Convert null/nan values to empty string and strip string values."""
         if pd.isna(v) or v is None:
             return ""
-        return str(v).strip()
+        val = str(v).strip()
+        if val.lower() in ("none", "nan", "null", "<na>"):
+            return ""
+        return val
 
     @staticmethod
     def comparable_text(v) -> str:
@@ -31,7 +34,10 @@ class DataNormalizer:
         if pd.isna(v) or v is None:
             return ""
         text = str(v).replace("–", "-").replace("—", "-")
-        return re.sub(r"\s+", " ", text).strip()
+        norm = re.sub(r"\s+", " ", text).strip()
+        if norm.lower() in ("none", "nan", "null", "<na>"):
+            return ""
+        return norm
 
     @staticmethod
     def normalize_date_uk(v) -> tuple[str, bool]:

@@ -13,6 +13,13 @@ class TestNormalizeValue:
     def test_nan_returns_empty_string(self):
         assert DataNormalizer.normalize_value(float("nan")) == ""
 
+    def test_string_none_nan_null_returns_empty_string(self):
+        assert DataNormalizer.normalize_value("None") == ""
+        assert DataNormalizer.normalize_value("none") == ""
+        assert DataNormalizer.normalize_value("nan") == ""
+        assert DataNormalizer.normalize_value("null") == ""
+        assert DataNormalizer.normalize_value("<NA>") == ""
+
     def test_whitespace_stripped(self):
         assert DataNormalizer.normalize_value("  Hello World  ") == "Hello World"
 

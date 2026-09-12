@@ -317,6 +317,39 @@ class TestManualLoadEngine:
         assert final_df.iloc[0]["Id"] == "a0010000001AlphaAAA"
         assert final_df.iloc[0]["Site_Name__c"] == "Updated Alpha"
 
+    def test_engine_both_blank_or_none_not_flagged_as_delta(self, tmp_path):
+        # Arrange - Source has empty string "", Salesforce has None (both are empty)
+        source_df = pd.DataFrame([
+            {"Id": "a0010000001AlphaAAA", "Site_Name": ""},
+        ])
+        live_sf_df = pd.DataFrame([
+            {"Id": "a0010000001AlphaAAA", "Site_Name__c": None},
+        ])
+        run_dir = tmp_path / "both_blank_run"
+
+        mappings = [
+            AdhocFieldMapping("Id", "Id", "Record ID", data_type="text", upload_enabled=False),
+            AdhocFieldMapping("Site_Name", "Site_Name__c", "Site Name", data_type="text", upload_enabled=True),
+        ]
+        config = AdhocEngineConfig(
+            object_name="sitetracker__Site__c",
+            source_pk_col="Id",
+            target_pk_field="Id",
+            sf_id_field="Id",
+            insert_nulls=True,  # Even with insert_nulls=True, empty to empty must NOT be a delta
+            mappings=mappings,
+        )
+        engine = ManualLoadEngine(config, custom_run_dir=run_dir)
+
+        # Act
+        result = engine.run(source_df, live_sf_df)
+
+        # Assert: No change should be recorded since both are already blank/None
+        assert result.changed_records == 0
+        assert result.unchanged_records == 1
+        changes_df = pd.read_csv(result.artifacts["field_level_changes"])
+        assert len(changes_df) == 0
+
 from unittest.mock import MagicMock, patch
 from salesforce.adhoc_fetcher import fetch_all_objects, fetch_object_fields, fetch_adhoc_live_data
 
