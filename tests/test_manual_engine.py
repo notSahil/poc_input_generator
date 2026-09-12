@@ -8,6 +8,7 @@ from core.manual_engine import (
     AdhocEngineConfig,
     AdhocFieldMapping,
     ManualLoadEngine,
+    resolve_pk_and_fields_for_query,
     suggest_field_mappings,
 )
 from salesforce.adhoc_fetcher import chunk_identifiers
@@ -443,3 +444,40 @@ class TestAdhocFetcher:
             if path.suffix == ".csv":
                 df = pd.read_csv(path, dtype=str)
                 assert isinstance(df, pd.DataFrame)
+
+    def test_resolve_pk_and_fields_for_query_master_site_listing(self):
+        """Verify TM Cell ID resolves to Name and mapped fields are found."""
+        cols = ["TM Cell ID", "Date of Master Site Listing", "Site on Master Site List"]
+        pk_src, pk_sf, fields = resolve_pk_and_fields_for_query("sitetracker__Site__c", cols)
+        assert pk_src == "TM Cell ID"
+        assert pk_sf == "Name"
+        assert "Date_of_Master_Site_Listing__c" in fields
+        assert "Site_on_Master_Site_List__c" in fields
+
+    def test_resolve_pk_and_fields_for_query_explicit_id(self):
+        """Verify Record ID explicitly maps to Id."""
+        cols = ["Record ID (Site)", "Site Name"]
+        pk_src, pk_sf, fields = resolve_pk_and_fields_for_query("sitetracker__Site__c", cols)
+        assert pk_src == "Record ID (Site)"
+        assert pk_sf == "Id"
+
+    def test_engine_offline_baseline_column_name_fallback(self, tmp_path):
+        """Verify engine works when offline baseline has source column names instead of SF API names."""
+        source_df = pd.DataFrame([
+            {"TM Cell ID": "10140", "Site on Master Site List": "Yes"}
+        ])
+        # Baseline uses 'TM Cell ID' column instead of 'Name'
+        live_sf_df = pd.DataFrame([
+            {"Id": "a0p4J000000Dn1lQAC", "TM Cell ID": "10140", "Site on Master Site List": "No"}
+        ])
+        mappings = [
+            AdhocFieldMapping("TM Cell ID", "Name", "TM Cell ID", upload_enabled=False),
+            AdhocFieldMapping("Site on Master Site List", "Site_on_Master_Site_List__c", "Site on Master Site List", upload_enabled=True),
+        ]
+        config = AdhocEngineConfig("sitetracker__Site__c", "TM Cell ID", "Name", "Id", True, mappings)
+        engine = ManualLoadEngine(config, custom_run_dir=tmp_path / "offline_fallback_run")
+
+        result = engine.run(source_df, live_sf_df)
+        assert result.changed_records == 1
+        assert result.total_source_rows == 1
+

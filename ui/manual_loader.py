@@ -24,6 +24,7 @@ from core.manual_engine import (
     AdhocRunResult,
     ManualLoadEngine,
     detect_target_object,
+    resolve_pk_and_fields_for_query,
     suggest_field_mappings,
 )
 from core.mapping_loader import MappingLoader
@@ -388,32 +389,41 @@ def _render_step_1_upload():
 
         if is_auth:
             target_obj_for_fetch = st.session_state.get("adhoc_selected_obj") or "sitetracker__Site__c"
-            st.caption(f"ℹ️ Target Salesforce Object for SOQL: **{target_obj_for_fetch}**")
+            src_data = st.session_state.get("adhoc_source_df")
+
+            # Resolve PK and mapped fields dynamically
+            pk_col = None
+            pk_target_field = "Id"
+            fields_to_query: list[str] = []
+
+            if src_data is not None and not src_data.empty:
+                sample_dict = {c: src_data[c].dropna().head(10).tolist() for c in src_data.columns}
+                pk_col, pk_target_field, fields_to_query = resolve_pk_and_fields_for_query(
+                    object_name=target_obj_for_fetch,
+                    source_columns=list(src_data.columns),
+                    sample_values=sample_dict,
+                    sf_fields=st.session_state.get("adhoc_fields"),
+                )
+                fields_hint = f" • Querying: <b>{len(fields_to_query)} fields</b>" if fields_to_query else ""
+                st.caption(
+                    f"ℹ️ Target Object: <b>{target_obj_for_fetch}</b> • Identifier: <code>{pk_col} ➔ {pk_target_field}</code>{fields_hint}",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption(f"ℹ️ Target Salesforce Object for SOQL: **{target_obj_for_fetch}**")
 
             if st.button("🔄 Fetch Live Data from Sitetracker (SOQL)", key="btn_adhoc_fetch_live", type="primary"):
-                src_data = st.session_state.get("adhoc_source_df")
                 if src_data is None or src_data.empty:
                     st.warning("⚠️ Please upload a source spreadsheet first so we can filter SOQL records by your primary keys.")
                 else:
                     with st.spinner(f"Executing SOQL query against {env_label}..."):
                         try:
-                            # Detect or use PK column
-                            cols = list(src_data.columns)
-                            pk_col = None
-                            for c in ["Record ID (Site)", "Site ID", "Id", "Site_ID__c", "External_Id__c"]:
-                                if c in cols:
-                                    pk_col = c
-                                    break
-                            if not pk_col:
-                                pk_col = cols[0]
-
                             pk_values = src_data[pk_col].dropna().astype(str).str.strip().tolist()
-                            pk_target_field = "Id" if ("id" in pk_col.lower()) else "Site_ID__c"
 
-                            # Query live data
+                            # Query live data using accurate PK and fields
                             live_df = fetch_adhoc_live_data(
                                 object_name=target_obj_for_fetch,
-                                fields=[],
+                                fields=fields_to_query,
                                 pk_field=pk_target_field,
                                 pk_values=pk_values,
                                 profile=active_prof,
@@ -423,6 +433,8 @@ def _render_step_1_upload():
                             st.session_state.adhoc_baseline_is_live = True
                             st.session_state.adhoc_baseline_query_time = _format_ist_time()
                             st.session_state.adhoc_live_df = live_df
+                            st.session_state.adhoc_source_pk = pk_col
+                            st.session_state.adhoc_target_pk = pk_target_field
                             st.success(f"🎉 Successfully fetched {len(live_df):,} live records from Sitetracker ({env_label})!")
                             st.rerun()
                         except Exception as e:

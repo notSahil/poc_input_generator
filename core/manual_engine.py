@@ -302,6 +302,107 @@ def suggest_field_mappings(
     return mappings
 
 
+def resolve_pk_and_fields_for_query(
+    object_name: str,
+    source_columns: list[str],
+    sample_values: dict[str, list[str]] | None = None,
+    sf_fields: list[dict[str, Any]] | None = None,
+) -> tuple[str, str, list[str]]:
+    """
+    Intelligently determine the primary key source column, target Salesforce API field,
+    and associated fields to query from Salesforce for live baseline data retrieval.
+
+    Args:
+        object_name: Target Salesforce object API name (e.g. 'sitetracker__Site__c')
+        source_columns: List of column names from the uploaded source spreadsheet
+        sample_values: Optional mapping of column names to sample value strings
+        sf_fields: Optional describe fields from Salesforce
+
+    Returns:
+        tuple of (source_pk_col, target_pk_field, fields_to_query)
+    """
+    source_pk: str | None = None
+    target_pk: str | None = None
+    fields_to_query: list[str] = []
+
+    # 1. Check known Mapping_file.xlsx for configured primary keys and mapped fields
+    mapping_file = Path(settings.DATA_DIR) / "common" / "Mapping_file.xlsx"
+    if not mapping_file.exists():
+        mapping_file = Path("data/common/Mapping_file.xlsx")
+
+    if mapping_file.exists():
+        try:
+            mf = pd.read_excel(mapping_file)
+            for _, row in mf.iterrows():
+                obj = str(row.get("Object Name", "")).strip().lower()
+                src_c = str(row.get("Source File Column Name", "")).strip()
+                sf_api = str(row.get("API Name", "")).strip()
+                is_pk = str(row.get("Primary Key?", "")).strip().lower() in ("yes", "y", "true")
+
+                applies = False
+                obj_norm = object_name.lower()
+                if "site" in obj_norm and "site" in obj:
+                    applies = True
+                elif "bt_project" in obj_norm and "bt" in obj:
+                    applies = True
+                elif "project" in obj_norm and ("bt" not in obj and "project" in obj):
+                    applies = True
+
+                if applies and src_c in source_columns:
+                    if is_pk and not source_pk:
+                        source_pk = src_c
+                        target_pk = sf_api
+                    elif sf_api and sf_api.lower() != "id" and sf_api not in fields_to_query:
+                        fields_to_query.append(sf_api)
+        except Exception as e:
+            logger.warning("Could not parse Mapping_file.xlsx for PK resolution: %s", e)
+
+    # 2. Heuristic PK resolution if not resolved via Mapping_file.xlsx
+    if not source_pk:
+        # Check for explicit Salesforce ID columns
+        for c in source_columns:
+            c_low = c.lower().strip()
+            if c_low in ("id", "record id", "record id (site)", "record_id", "sf_id", "salesforce_id"):
+                source_pk = c
+                target_pk = "Id"
+                break
+
+    if not source_pk:
+        # Check for standard business identifiers
+        for c in source_columns:
+            c_clean = _clean_str(c)
+            if any(term in c_clean for term in ("cellid", "siteid", "projectref", "projectreference", "wespsid", "sitecode", "code", "ref")):
+                source_pk = c
+                target_pk = "Name"
+                break
+
+    if not source_pk and source_columns:
+        source_pk = source_columns[0]
+        # Check if sample values look like 15 or 18 character Salesforce IDs
+        first_vals = sample_values.get(source_pk, []) if sample_values else []
+        from salesforce.adhoc_fetcher import is_valid_salesforce_id
+        if first_vals and all(is_valid_salesforce_id(str(v).strip()) for v in first_vals[:5] if str(v).strip()):
+            target_pk = "Id"
+        else:
+            target_pk = "Name"
+
+    if not target_pk:
+        target_pk = "Name"
+
+    # 3. Discover additional fields to query via suggest_field_mappings if sf_fields provided
+    if sf_fields:
+        suggs = suggest_field_mappings(source_columns, sf_fields, source_pk_col=source_pk, target_pk_field=target_pk, object_name=object_name)
+        for s in suggs:
+            if s.upload_enabled and s.target_field_api and s.target_field_api != target_pk and s.target_field_api.lower() != "id":
+                if s.target_field_api not in fields_to_query:
+                    fields_to_query.append(s.target_field_api)
+
+    # Filter out target_pk and Id from fields_to_query (fetcher will automatically add Id and pk_field)
+    fields_to_query = [f for f in fields_to_query if f != target_pk and f.lower() != "id"]
+
+    return source_pk, target_pk, fields_to_query
+
+
 class ManualLoadEngine:
     """
     Executes delta comparisons, validates constraints, and produces
@@ -395,7 +496,16 @@ class ManualLoadEngine:
                 raise MappingError(f"Salesforce ID column '{sf_id_col}' not found in Salesforce data.")
 
         if pk_sf not in st_df.columns:
-            raise MappingError(f"Salesforce primary key field '{pk_sf}' not found in fetched live records.")
+            # Fallback for offline baseline files where columns use source column names or labels
+            if pk_src in st_df.columns:
+                st_df[pk_sf] = st_df[pk_src]
+            else:
+                raise MappingError(f"Salesforce primary key field '{pk_sf}' not found in fetched live records.")
+
+        # Ensure all mapped fields have fallbacks in st_df if offline file used source column names
+        for m in active_mappings:
+            if m.target_field_api not in st_df.columns and m.source_column in st_df.columns:
+                st_df[m.target_field_api] = st_df[m.source_column]
 
         # 2. Normalize PK values
         src_df[pk_src] = src_df[pk_src].apply(DataNormalizer.normalize_value)
