@@ -774,6 +774,7 @@ def _render_screen_3_validation():
                     insert_nulls=st.session_state.adhoc_insert_nulls,
                     mappings=mappings,
                     operation=st.session_state.adhoc_operation,
+                    source_filename=st.session_state.adhoc_source_filename or "",
                 )
                 engine = ManualLoadEngine(cfg)
                 res = engine.run(src_df, live_df)

@@ -193,6 +193,7 @@ class AdhocEngineConfig:
     insert_nulls: bool = False
     mappings: list[AdhocFieldMapping] = field(default_factory=list)
     operation: OperationType = OperationType.UPDATE
+    source_filename: str = ""
 
 
 @dataclass
@@ -705,10 +706,12 @@ class ManualLoadEngine:
         )
 
         # Archive source data input for historical auditability
+        source_fn = self.config.source_filename or "source_input.csv"
+        clean_fn = Path(source_fn).stem + ".csv"
         try:
             archive_dir = self.run_dir / "archive"
             archive_dir.mkdir(parents=True, exist_ok=True)
-            source_df.to_csv(archive_dir / "source_input.csv", index=False)
+            source_df.to_csv(archive_dir / clean_fn, index=False)
         except Exception as e:
             self.logger.warning("Could not archive source input to %s: %s", self.run_dir, e)
 
@@ -1079,6 +1082,9 @@ class ManualLoadEngine:
             f"Target Salesforce Object: {self.config.object_name}\n"
             f"Source Primary Key: {pk_src}\n"
             f"Salesforce Primary Key Field: {pk_sf}\n"
+            f"Source File: {clean_fn}\n"
+            f"Operator: {u_info.get('user_name', 'Local Operator')}\n"
+            f"Salesforce Org: {u_info.get('org_name', 'Salesforce')} ({u_info.get('profile', 'unknown')})\n"
             f"============================================================\n"
             f"Total Source Rows:       {len(source_df)}\n"
             f"Valid Primary Keys:      {len(valid_src)}\n"
@@ -1094,6 +1100,35 @@ class ManualLoadEngine:
         summary_path.write_text(summary_text, encoding="utf-8")
         artifacts["run_summary"] = summary_path
         artifacts["audit_log"] = audit.log_file
+
+        # 9b. run_metadata.json (Machine-readable rich metadata for Run History)
+        meta = {
+            "run_id": self.run_dir.name,
+            "timestamp": datetime.now().isoformat(),
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "formatted_date": datetime.now().strftime("%d %b %Y"),
+            "formatted_time": datetime.now().strftime("%H:%M:%S IST"),
+            "target_object": self.config.object_name,
+            "operation": str(self.config.operation).capitalize(),
+            "source_pk": pk_src,
+            "target_pk": pk_sf,
+            "source_filename": clean_fn,
+            "user_name": u_info.get("user_name", "Local Operator"),
+            "org_name": u_info.get("org_name", "Salesforce"),
+            "profile": u_info.get("profile", "unknown"),
+            "total_source_rows": len(source_df),
+            "valid_pks": len(valid_src),
+            "changed_records": len(updates),
+            "unchanged_records": max(0, len(valid_src) - len(updates) - len(duplicate_rows) - len(skipped_rows) - len(error_rows)),
+            "error_rows": len(error_rows),
+            "skipped_pks": len(skipped_rows),
+            "duplicate_pks": len(duplicate_rows),
+            "duplicate_sf_pks": len(duplicate_sf_rows),
+        }
+        meta_path = self._out("run_metadata.json")
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        artifacts["run_metadata"] = meta_path
 
         # 10. duplicate_salesforce_records.csv (Ambiguous SF matches)
         dup_sf_cols = ["Source_Row_Number", "Primary_Key", "SF_Match_Index", "Salesforce_Id", "Reason"]
