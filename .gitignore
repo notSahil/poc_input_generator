@@ -37,6 +37,7 @@ data/common/mapping_history/
 .sf_pkce*.json
 .sf_creds*.json
 data/manual_runs/
+data/mapping_profiles/
 *.zip
 *.pdf
 data/**/input/sitetracker/*_live.csv

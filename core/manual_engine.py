@@ -704,6 +704,14 @@ class ManualLoadEngine:
             Primary_Key=self.config.source_pk_col,
         )
 
+        # Archive source data input for historical auditability
+        try:
+            archive_dir = self.run_dir / "archive"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            source_df.to_csv(archive_dir / "source_input.csv", index=False)
+        except Exception as e:
+            self.logger.warning("Could not archive source input to %s: %s", self.run_dir, e)
+
         # 1. Filter enabled mappings (strictly exclude primary key and Salesforce Record ID from updates list)
         active_mappings = [
             m for m in self.config.mappings

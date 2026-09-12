@@ -28,27 +28,28 @@ def parse_run_summary(summary_path: Path) -> dict:
         text = summary_path.read_text(encoding="utf-8")
         for line in text.splitlines():
             line_str = line.strip()
-            if "Total source records:" in line_str:
+            if "Total source records:" in line_str or "Total Source Rows:" in line_str:
                 metrics["total"] = line_str.split(":")[-1].strip()
-            elif "SUCCESS (uploaded):" in line_str or "Delta Records:" in line_str:
+            elif "SUCCESS (uploaded):" in line_str or "Delta Records:" in line_str or "Rows With Changes:" in line_str:
                 metrics["updates"] = line_str.split(":")[-1].strip()
-            elif "ERRORS (rejected):" in line_str:
+            elif "ERRORS (rejected):" in line_str or "Validation Errors:" in line_str:
                 metrics["errors"] = line_str.split(":")[-1].strip()
-            elif "SKIPPED:" in line_str:
+            elif "SKIPPED:" in line_str or "Skipped (Not in SF):" in line_str:
                 metrics["skipped"] = line_str.split(":")[-1].strip()
-            elif "Duplicate keys found:" in line_str or "DUPLICATE PKs:" in line_str:
+            elif "Duplicate keys found:" in line_str or "DUPLICATE PKs:" in line_str or "Duplicate Primary Keys:" in line_str:
                 metrics["duplicates"] = line_str.split(":")[-1].strip()
     except Exception as e:
-        logger.warning("Failed to parse run summary at %s: %e", summary_path, e)
+        logger.warning("Failed to parse run summary at %s: %s", summary_path, e)
 
     return metrics
 
 
 def scan_all_runs(report_filter: str | None = None) -> list[dict]:
-    """Scan the data directory and return all runs sorted newest first."""
+    """Scan the data directory and return all runs (both guided reports and ad-hoc loads) sorted newest first."""
     runs = []
-    reports = YamlConfigLoader.list_reports()
 
+    # 1. Predefined Guided Reports
+    reports = YamlConfigLoader.list_reports()
     for r in reports:
         if report_filter and report_filter != "All Reports" and r.name != report_filter:
             continue
@@ -75,9 +76,10 @@ def scan_all_runs(report_filter: str | None = None) -> list[dict]:
 
                     runs.append({
                         "report": r.name,
+                        "type": "Guided Report",
                         "date": date_dir.name,
                         "time": run_dir.name.replace("run_", "").replace("-", ":"),
-                        "run_id": f"{r.name} • {date_dir.name} {run_dir.name.replace('run_', '')}",
+                        "run_id": f"📥 {r.name} • {date_dir.name} {run_dir.name.replace('run_', '')}",
                         "run_dir": run_dir,
                         "archive_dir": matching_archive if matching_archive.exists() else None,
                         "summary_file": summary_file,
@@ -85,6 +87,40 @@ def scan_all_runs(report_filter: str | None = None) -> list[dict]:
                     })
         except Exception as e:
             logger.warning("Error scanning runs for report %s: %s", r.name, e)
+
+    # 2. Ad-Hoc / Manual Dataloader Runs
+    manual_runs_dir = settings.DATA_DIR / "manual_runs"
+    if manual_runs_dir.exists():
+        for obj_dir in sorted(manual_runs_dir.iterdir()):
+            if not obj_dir.is_dir() or obj_dir.name.startswith("."):
+                continue
+
+            report_label = f"Ad-Hoc: {obj_dir.name}"
+            if report_filter and report_filter != "All Reports" and report_filter != report_label:
+                continue
+
+            for date_dir in sorted(obj_dir.iterdir(), reverse=True):
+                if not date_dir.is_dir() or date_dir.name.startswith("."):
+                    continue
+                for run_dir in sorted(date_dir.iterdir(), reverse=True):
+                    if not run_dir.is_dir() or run_dir.name.startswith("."):
+                        continue
+
+                    summary_file = run_dir / "run_summary.txt"
+                    metrics = parse_run_summary(summary_file)
+                    matching_archive = run_dir / "archive"
+
+                    runs.append({
+                        "report": report_label,
+                        "type": "Ad-Hoc Ingestion",
+                        "date": date_dir.name,
+                        "time": run_dir.name.replace("run_", "").replace("-", ":"),
+                        "run_id": f"⚡ {report_label} • {date_dir.name} {run_dir.name.replace('run_', '')}",
+                        "run_dir": run_dir,
+                        "archive_dir": matching_archive if matching_archive.exists() else None,
+                        "summary_file": summary_file,
+                        "metrics": metrics,
+                    })
 
     # Sort newest date and time first
     runs.sort(key=lambda x: (x["date"], x["time"]), reverse=True)
@@ -100,6 +136,14 @@ def render(go):
     # 1. Report Filter
     reports = YamlConfigLoader.list_reports()
     report_names = ["All Reports"] + [r.name for r in reports]
+
+    manual_runs_dir = settings.DATA_DIR / "manual_runs"
+    if manual_runs_dir.exists():
+        manual_labels = [
+            f"Ad-Hoc: {d.name}" for d in sorted(manual_runs_dir.iterdir())
+            if d.is_dir() and not d.name.startswith(".")
+        ]
+        report_names.extend(manual_labels)
 
     col_f1, col_f2 = st.columns([2, 2])
     with col_f1:
@@ -147,37 +191,55 @@ def render(go):
     final_f = r_dir / "final_input_file.csv"
     render_download_with_confirmation(
         btn_c1, "📥 Final Input File", final_f,
-        download_filename=f"{chosen_run['report']}_final.csv",
+        download_filename=f"{chosen_run['report'].replace(':', '_')}_final.csv",
         key=f"hist_final_{selected_run_id}"
     )
 
     rb_f = r_dir / "rollback_file.csv"
     render_download_with_confirmation(
         btn_c2, "🔙 Rollback File", rb_f,
-        download_filename=f"{chosen_run['report']}_rollback.csv",
+        download_filename=f"{chosen_run['report'].replace(':', '_')}_rollback.csv",
         key=f"hist_rb_{selected_run_id}"
     )
 
     err_f = r_dir / "error_records.csv"
     render_download_with_confirmation(
         btn_c3, "🚫 Error Records", err_f,
-        download_filename=f"{chosen_run['report']}_errors.csv",
+        download_filename=f"{chosen_run['report'].replace(':', '_')}_errors.csv",
         key=f"hist_err_{selected_run_id}"
     )
 
     succ_f = r_dir / "success_records.csv"
     render_download_with_confirmation(
         btn_c4, "✅ Success Records", succ_f,
-        download_filename=f"{chosen_run['report']}_success.csv",
+        download_filename=f"{chosen_run['report'].replace(':', '_')}_success.csv",
         key=f"hist_succ_{selected_run_id}"
     )
 
     val_f = r_dir / "validation_report.csv"
     render_download_with_confirmation(
         btn_c5, "📋 Validation Audit", val_f,
-        download_filename=f"{chosen_run['report']}_validation.csv",
+        download_filename=f"{chosen_run['report'].replace(':', '_')}_validation.csv",
         key=f"hist_val_{selected_run_id}"
     )
+
+    # Extra diagnostics & duplicate files if present
+    extra_files = [
+        ("field_level_changes.csv", "🔍 Field Changes"),
+        ("duplicate_primary_keys.csv", "🔀 Source Duplicates"),
+        ("duplicate_salesforce_records.csv", "⚠️ SF Duplicates"),
+        ("skipped_records.csv", "⏭️ Skipped Records"),
+    ]
+    present_extras = [(fn, label, r_dir / fn) for fn, label in extra_files if (r_dir / fn).exists()]
+    if present_extras:
+        extra_cols = st.columns(len(present_extras))
+        for i, (fn, label, f_path) in enumerate(present_extras):
+            clean_rep = chosen_run['report'].replace(':', '_').replace(' ', '_')
+            render_download_with_confirmation(
+                extra_cols[i], label, f_path,
+                download_filename=f"{clean_rep}_{fn}",
+                key=f"hist_{fn}_{selected_run_id}"
+            )
 
     # Archived Inputs
     a_dir = chosen_run["archive_dir"]
