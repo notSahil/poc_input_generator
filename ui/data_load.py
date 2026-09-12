@@ -824,8 +824,8 @@ def _render_step_ingest(selected_report: str):
             return
 
         elif status in ("COMPLETED", "FAILED"):
+            is_rb = job_info.get("is_rollback", False)
             if status == "COMPLETED":
-                is_rb = job_info.get("is_rollback", False)
                 title = "⏪ Rollback Completed" if is_rb else "🎉 Ingest Completed"
                 st.success(f"**{title}**! Processed {job_info.get('processed_records_overall', 0):,} records across {job_info.get('total_objects', 1)} objects.")
                 for obj_name, o_meta in job_info.get("objects", {}).items():
@@ -844,8 +844,82 @@ def _render_step_ingest(selected_report: str):
                                 fail_df = pd.read_csv(fail_path, dtype=str)
                                 st.dataframe(fail_df, use_container_width=True)
             else:
-                st.error(f"❌ Ingest job failed on server: {job_info.get('error_summary', 'Unknown error')}")
+                title = "Rollback" if is_rb else "Ingest"
+                st.error(f"❌ {title} job failed on server: {job_info.get('error_summary', 'Unknown error')}")
 
+            if not is_rb:
+                completed_objects = list(job_info.get("objects", {}).keys())
+                if not completed_objects:
+                    try:
+                        loader_ingest = MappingLoader(settings.MAPPING_FILE, selected_report)
+                        completed_objects = loader_ingest.objects()
+                    except Exception:
+                        completed_objects = []
+
+                has_multi_obj = len(completed_objects) > 1
+
+                # Check if rollback records exist
+                has_completed_rb = False
+                if has_multi_obj:
+                    for obj in completed_objects:
+                        c_target = obj.strip().replace(" ", "_")
+                        if (result.run_dir / f"rollback_file_{c_target}.csv").exists():
+                            has_completed_rb = True
+                            break
+                if not has_completed_rb:
+                    has_completed_rb = (result.run_dir / "rollback_file.csv").exists()
+
+                if has_completed_rb:
+                    st.markdown("---")
+                    st.markdown("### ⏪ Emergency Rollback / Revert Safety Net")
+                    st.warning("⚠️ **Need to undo this upload?** You can revert all records back to their original Sitetracker values prior to this run.")
+
+                    with st.expander("🔍 Preview Rollback Records (Values to be restored)", expanded=False):
+                        if has_multi_obj:
+                            rb_tab_list = st.tabs([f"⏪ {obj}" for obj in completed_objects])
+                            for obj, tab in zip(completed_objects, rb_tab_list):
+                                with tab:
+                                    c_target = obj.strip().replace(" ", "_")
+                                    rb_file_obj = result.run_dir / f"rollback_file_{c_target}.csv"
+                                    if rb_file_obj.exists():
+                                        df_rb = pd.read_csv(rb_file_obj, dtype=str)
+                                        st.caption(f"**{len(df_rb):,}** rollback records ready for **{obj}**")
+                                        st.dataframe(df_rb, use_container_width=True)
+                                    else:
+                                        st.info(f"No rollback records for {obj}.")
+                        else:
+                            rb_single = result.run_dir / "rollback_file.csv"
+                            if rb_single.exists():
+                                df_rb = pd.read_csv(rb_single, dtype=str)
+                                st.caption(f"**{len(df_rb):,}** rollback records ready to restore")
+                                st.dataframe(df_rb, use_container_width=True)
+
+                    col_rb1, col_rb2 = st.columns([2, 1])
+                    with col_rb1:
+                        confirm_revert_comp = st.text_input(
+                            "Type REVERT to enable rollback",
+                            placeholder="REVERT",
+                            key="input_confirm_completed_revert"
+                        )
+                    with col_rb2:
+                        st.write("")
+                        st.write("")
+                        revert_enabled = (confirm_revert_comp.strip() == "REVERT")
+                        rb_btn_label = "⏪ Execute Rollback for All Objects" if has_multi_obj else "⏪ Execute Rollback Now"
+                        if st.button(rb_btn_label, type="secondary", disabled=not revert_enabled, key="btn_execute_completed_revert"):
+                            target_obj = None if has_multi_obj else (completed_objects[0] if completed_objects else None)
+                            start_background_ingest(
+                                run_dir=result.run_dir,
+                                report_name=selected_report,
+                                is_rollback=True,
+                                profile=active_prof,
+                                batch_size=15,
+                                target_object=target_obj,
+                                engine=job_info.get("engine", "composite"),
+                            )
+                            st.rerun()
+
+            st.markdown("---")
             if st.button("🔄 Dismiss & Reset for New Ingest", key="btn_clear_job_state", type="primary"):
                 clear_job_progress(result.run_dir)
                 st.rerun()
@@ -965,7 +1039,7 @@ def _render_step_ingest(selected_report: str):
     # Emergency Rollback / Revert Safety Net
     has_rb = is_multi_obj_push or active_rb_file.exists()
     if has_rb:
-        with st.expander("⏪ Emergency Rollback Safety Net", expanded=False):
+        with st.expander("⏪ Emergency Rollback / Revert Safety Net", expanded=False):
             st.warning("⚠️ **Safety Net**: Revert pre-change values back into Sitetracker to restore records to how they were prior to this run.")
             if is_multi_obj_push:
                 rb_tab_list = st.tabs([f"⏪ {obj}" for obj in ingest_objects])
