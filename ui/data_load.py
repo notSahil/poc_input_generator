@@ -698,6 +698,20 @@ def _render_step_ingest(selected_report: str):
         help_text="Full audit trail per row and check", key="ingest_val"
     )
 
+    audit_file = result.run_dir / "audit.log"
+    if audit_file.exists():
+        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+        with st.expander("📜 View Audit Log (audit.log)", expanded=False):
+            st.code(audit_file.read_text(encoding="utf-8"), language="text")
+            with open(audit_file, "r", encoding="utf-8") as af:
+                st.download_button(
+                    "📥 Download Audit Log (.log)",
+                    af.read(),
+                    file_name=f"{selected_report}_audit.log",
+                    mime="text/plain",
+                    key="btn_download_audit_log_step4",
+                )
+
     # Bulk API 2.0 Ingest Gate
     st.markdown("---")
     st.markdown("#### 🚀 Push to Sitetracker (Bulk API 2.0)")

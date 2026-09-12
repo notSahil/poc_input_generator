@@ -9,6 +9,7 @@ from datetime import datetime
 import pandas as pd
 
 from config import settings
+from core.audit_logger import AuditLogger, resolve_user_identity
 from core.config_loader import YamlConfigLoader
 from core.exceptions import EngineSkipError, MappingError, ValidationError
 from core.mapping_loader import MappingLoader
@@ -83,6 +84,16 @@ class InputFileEngine:
         run_dir = self.runs_dir / run_day / run_time
         run_dir.mkdir(parents=True, exist_ok=True)
 
+        audit = AuditLogger(run_dir)
+        u_info = resolve_user_identity()
+        audit.start_run(
+            run_id=f"{self.report_name} • {run_day} {run_time}",
+            report_name=self.report_name,
+            mode="Guided Report Pipeline",
+            user=u_info.get("user_name"),
+            org=f"{u_info.get('org_name')} ({u_info.get('profile')})",
+        )
+
         def out(name: str) -> Path:
             return run_dir / name
 
@@ -94,6 +105,13 @@ class InputFileEngine:
 
         # 5. Load & normalize source data
         src_df = DataNormalizer.read_spreadsheet(source_file)
+        audit.info(
+            f"Source file loaded: {source_file.name}",
+            tag="INPUT",
+            Rows=len(src_df),
+            Size_KB=round(source_file.stat().st_size / 1024, 1),
+            Target_Objects=", ".join(mapping.objects()) if mapping.objects() else "Default",
+        )
 
         for col in self.text_case_columns:
             if col in src_df.columns:
@@ -101,6 +119,13 @@ class InputFileEngine:
 
         # 6. Load & normalize Sitetracker data
         st_df = DataNormalizer.read_spreadsheet(st_file)
+        is_live = st_file.name.endswith("_sitetracker_live.csv")
+        audit.info(
+            f"Baseline file loaded: {st_file.name}",
+            tag="BASELINE",
+            Rows=len(st_df),
+            Origin="Live SOQL Query" if is_live else "Offline Disk File",
+        )
 
         # Locate Salesforce ID column
         if self.sf_id_column in st_df.columns:
@@ -591,7 +616,31 @@ class InputFileEngine:
             archive.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(source_file), str(archive / source_file.name))
             shutil.copy2(str(st_file), str(archive / st_file.name))
-            self.logger.info("Archived copies of input files to %s", archive)
+        # Log validation summary to audit.log
+        audit.info(
+            "Delta calculation and validation completed",
+            tag="VALIDATION",
+            Valid_PKs=len(valid_src),
+            Invalid_PKs=len(invalid_pks_df),
+            Duplicate_PKs=len(duplicate_pk_values),
+            Changed_Records=len(updates),
+            Skipped_Records=total_skipped,
+            Validation_Errors=total_errors,
+        )
+
+        if error_rows:
+            for err in error_rows[:10]:
+                audit.warning(
+                    f"Row rejected: {err.get('Primary_Key')}",
+                    tag="REJECTED_ROW",
+                    Code=err.get("Error_Code"),
+                    Reason=err.get("Error_Message"),
+                )
+            if len(error_rows) > 10:
+                audit.warning(f"... and {len(error_rows) - 10} more validation error rows.", tag="REJECTED_ROW")
+
+        gen_files = ["final_input_file.csv", "rollback_file.csv", "field_level_changes.csv", "validation_report.csv"]
+        audit.info("Generated delta artifacts", tag="ARTIFACTS", Files=", ".join(gen_files))
 
         self.logger.info("Run finished. Output written to %s", run_dir)
 

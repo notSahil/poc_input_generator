@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from config import settings
+from core.audit_logger import AuditLogger
 from core.mapping_loader import MappingLoader
 from salesforce.bulk_uploader import BulkUploadResult
 
@@ -138,6 +139,7 @@ def _ingest_worker(
 ) -> None:
     """Background worker executing the data load across all objects."""
     logger.info("Background ingest worker started for %s (engine=%s)", run_dir, engine)
+    audit = AuditLogger(run_dir)
 
     # 1. Determine targets and inspect record counts
     loader = MappingLoader(settings.MAPPING_FILE, report_name)
@@ -145,6 +147,23 @@ def _ingest_worker(
 
     is_multi = not target_object or "All Objects" in target_object
     target_objects = all_objects if is_multi else [target_object]
+
+    if is_rollback:
+        audit.info(
+            f"Rollback execution started for {report_name}",
+            tag="ROLLBACK",
+            Engine="Lightning REST Collections" if engine == "composite" else "Bulk API 2.0",
+            Target_Objects=", ".join(target_objects),
+            Batch_Size=batch_size,
+        )
+    else:
+        audit.info(
+            f"Cloud upload started for {report_name}",
+            tag="UPLOAD",
+            Engine="Lightning REST Collections" if engine == "composite" else "Bulk API 2.0",
+            Target_Objects=", ".join(target_objects),
+            Batch_Size=batch_size,
+        )
 
     prefix = "rollback_file_" if is_rollback else "final_input_file_"
 
@@ -252,6 +271,17 @@ def _ingest_worker(
                     progress_state["successful_records_overall"] = base_succ + c_succ
                     progress_state["failed_records_overall"] = base_fail + c_fail
                     _save_progress(run_dir, progress_state)
+
+                    if stage == "completed_chunk":
+                        audit.info(
+                            f"{o_name} batch {info.get('current_chunk')}/{info.get('total_chunks')} completed",
+                            tag="BATCH",
+                            Object=o_name,
+                            Records=f"{info.get('chunk_start')}-{info.get('chunk_end')}",
+                            Batch_Size=info.get('chunk_size'),
+                            Success=info.get('successful_records'),
+                            Failed=info.get('failed_records'),
+                        )
                 return cb
 
             cb_func = make_callback(obj, overall_processed, overall_success, overall_failed)
@@ -285,6 +315,15 @@ def _ingest_worker(
             if res.failures_csv_path:
                 object_meta[obj]["failures_file"] = res.failures_csv_path.name
 
+            if res.failures:
+                for fail_item in res.failures:
+                    audit.record_error(
+                        record_id=fail_item.get("sf__Id") or fail_item.get("Id") or "UNKNOWN_ID",
+                        object_name=obj,
+                        message=fail_item.get("sf__Error") or fail_item.get("Error") or "Salesforce update rejected",
+                        field_name=fail_item.get("sf__Fields") or fail_item.get("Fields") or None,
+                    )
+
             overall_processed += res.total_records
             overall_success += res.successful_records
             overall_failed += res.failed_records
@@ -294,13 +333,29 @@ def _ingest_worker(
             progress_state["failed_records_overall"] = overall_failed
             _save_progress(run_dir, progress_state)
 
+        fin_status = "SUCCESS" if overall_failed == 0 else "COMPLETED_WITH_ERRORS"
         progress_state["status"] = "COMPLETED"
         progress_state["end_time"] = datetime.now().isoformat()
         _save_progress(run_dir, progress_state)
+        audit.finish(
+            status=fin_status,
+            successes=overall_success,
+            failures=overall_failed,
+            output_files=[f.name for f in object_files.values() if f.exists()],
+        )
         logger.info("Background ingest worker completed successfully for %s", run_dir)
 
     except Exception as exc:
         logger.exception("Background ingest worker failed: %s", exc)
+        audit.exception("Background ingest worker encountered unhandled error", exc=exc)
+        if any(term in str(exc).lower() for term in ("timeout", "connection", "network", "socket", "eof")):
+            audit.network_error(operation=f"Salesforce upload for {progress_state.get('current_object')}", error=exc)
+        audit.finish(
+            status="FAILED",
+            successes=overall_success,
+            failures=overall_failed,
+            Error=str(exc),
+        )
         progress_state["status"] = "FAILED"
         progress_state["error_summary"] = str(exc)
         progress_state["end_time"] = datetime.now().isoformat()

@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from config import settings
+from core.audit_logger import AuditLogger, resolve_user_identity
 from core.exceptions import MappingError, ValidationError
 from core.normalizer import DataNormalizer
 
@@ -294,6 +295,24 @@ class ManualLoadEngine:
             AdhocRunResult with execution metrics and artifact paths.
         """
         self.logger.info("Starting manual load engine for object: %s", self.config.object_name)
+
+        audit = AuditLogger(self.run_dir)
+        u_info = resolve_user_identity()
+        audit.start_run(
+            run_id=self.run_dir.name,
+            report_name=f"Ad-Hoc: {self.config.object_name}",
+            mode="Ad-Hoc Object Ingestion",
+            user=u_info.get("user_name"),
+            org=f"{u_info.get('org_name')} ({u_info.get('profile')})",
+        )
+        audit.info(
+            "Source and live Salesforce data loaded",
+            tag="INPUT",
+            Source_Rows=len(source_df),
+            Salesforce_Rows=len(live_sf_df),
+            Target_Object=self.config.object_name,
+            Primary_Key=self.config.source_pk_col,
+        )
 
         # 1. Filter enabled mappings (strictly exclude primary key and Salesforce Record ID from updates list)
         active_mappings = [
@@ -629,6 +648,18 @@ class ManualLoadEngine:
         summary_path = self._out("run_summary.txt")
         summary_path.write_text(summary_text, encoding="utf-8")
         artifacts["run_summary"] = summary_path
+        artifacts["audit_log"] = audit.log_file
+
+        audit.info(
+            "Ad-Hoc delta processing completed",
+            tag="VALIDATION",
+            Total_Source=len(source_df),
+            Valid_PKs=len(valid_src),
+            Changed_Records=len(updates),
+            Unchanged_Records=max(0, len(valid_src) - len(updates) - len(duplicate_rows) - len(skipped_rows) - len(error_rows)),
+            Error_Rows=len(error_rows),
+            Duplicate_PKs=len(duplicate_rows),
+        )
 
         unchanged_count = max(0, len(valid_src) - len(updates) - len(duplicate_rows) - len(skipped_rows) - len(error_rows))
 

@@ -199,9 +199,24 @@ def render(go):
     # Full Run Summary Text
     sum_f = chosen_run["summary_file"]
     if sum_f.exists():
-        with st.expander("📄 View Run Summary Log", expanded=True):
+        with st.expander("📄 View Run Summary Log", expanded=False):
             with open(sum_f, "r", encoding="utf-8") as f:
                 st.text(f.read())
+
+    # Full Audit Log
+    audit_f = r_dir / "audit.log"
+    if audit_f.exists():
+        with st.expander("📜 View Audit & Troubleshooting Log (audit.log)", expanded=True):
+            with open(audit_f, "r", encoding="utf-8") as af:
+                audit_text = af.read()
+            st.code(audit_text, language="text")
+            st.download_button(
+                "📥 Download Audit Log (.log)",
+                audit_text,
+                file_name=f"{chosen_run['report']}_{chosen_run['date']}_audit.log",
+                mime="text/plain",
+                key=f"hist_audit_btn_{selected_run_id}",
+            )
 
     st.caption(f"📂 Storage Path: `{r_dir}`")
 

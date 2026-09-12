@@ -12,6 +12,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `mapping_loader.py`: Reads the `Mapping_file.xlsx` to determine which columns to map.
 - `config_loader.py`: Loads the YAML configurations.
 - `models.py`: Data classes or Pydantic models for structured data holding.
+- `audit_logger.py`: Thread-safe, non-blocking per-run audit and diagnostic logger producing `audit.log` across engine execution and background uploads.
 - `exceptions.py`: Custom error handling.
 
 ### `/ui` (Streamlit Frontend)
@@ -134,4 +135,8 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 24. **Dedicated Revert Progress Telemetry, Enterprise Branding Decoupling, and Port 8080 Portable Launchers (`ui/data_load.py`, `app.py`, `ui/manual_loader.py`, `run_windows.bat`, `run_company_laptop_8080.bat`, `run_company_laptop_8080.sh`)**:
     - *Decision:* Remove intrusive "Phone Disconnect Safe" banners from the active ingest screen. Add distinct, dedicated rollback / revert progress visualization when `is_rollback=True` (displaying "Revert / Rollback in Progress", restored record counts, and revert in-flight notifications). Replace all copycat "Dataloader.io" terminology across navigation cards and headers with clear enterprise descriptions of delta computation and schema synchronization. Add portable launchers configured for port 8080.
     - *Reason:* Extraneous banners added visual noise and cluttered the progress monitor. Rollback operations previously reused ingest phrasing ("Ingestion in Progress"), creating operator confusion. Decoupling from "Dataloader.io" naming conveys proper enterprise software identity, and port 8080 launchers enable seamless execution on company laptops without port conflict.
+25. **Simple, Reliable Per-Run Audit Logging (`core/audit_logger.py`, `core/engine.py`, `core/manual_engine.py`, `salesforce/job_manager.py`, `ui/data_load.py`, `ui/run_history.py`)**:
+    - *Decision:* Implement a dedicated, thread-safe, non-blocking `AuditLogger` writing a human-readable `audit.log` into every run directory (`runs/<date>/run_<time>/audit.log` and `data/manual_runs/<obj>/<date>/run_<time>/audit.log`). Log 6 essential operational checkpoints: Run start (user, org, mode), Input/validation, Upload progress (batches, size, duration), Salesforce record errors (ID, field, error code, message), Python tracebacks (standard `traceback.format_exc()` without local variables), and Run completion (status, duration, output files). Enforce strict security masking for tokens and secrets, and wrap file writing in defensive error boundaries so logging failures can never disrupt data operations. Add "View Log" and "Download Log" controls in Step 4 and Run History.
+    - *Reason:* Operators and engineers need clear, immediate forensic visibility when a data load fails, without requiring server terminal access or complex log aggregation infrastructure. Thread-safe file appending ensures background upload workers write safely, while secret masking protects against token leaks in compliance with security policies.
+
 
