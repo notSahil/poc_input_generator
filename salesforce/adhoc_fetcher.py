@@ -278,7 +278,8 @@ def fetch_adhoc_live_data(
     if attr_cols:
         df = df.drop(columns=attr_cols)
 
-    # Deduplicate by Salesforce Id if present
+    # Deduplicate by Salesforce Id across chunk boundaries, but preserve any ambiguous
+    # multiple Salesforce records that share the same business key (pk_field) for upstream detection.
     if "Id" in df.columns:
         df = df.drop_duplicates(subset=["Id"])
 

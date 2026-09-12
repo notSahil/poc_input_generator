@@ -24,6 +24,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 COMMON_DIR = DATA_DIR / "common"
 MAPPING_FILE = COMMON_DIR / "Mapping_file.xlsx"
 MAPPING_HISTORY_DIR = COMMON_DIR / "mapping_history"
+MAPPING_PROFILES_DIR = DATA_DIR / "mapping_profiles"
 CONFIG_DIR = PROJECT_ROOT / "config" / "reports"
 
 # === Salesforce OAuth ===

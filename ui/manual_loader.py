@@ -7,6 +7,7 @@ and push updates directly via Salesforce Bulk API 2.0 with 1-click rollback.
 
 from datetime import datetime
 from io import BytesIO
+import json
 import logging
 from pathlib import Path
 import re
@@ -16,22 +17,29 @@ import pandas as pd
 import streamlit as st
 
 from config import settings
-from core.config_loader import YamlConfigLoader
-from core.exceptions import SalesforceAPIError, SalesforceAuthError
+from core.exceptions import PrimaryKeyNotFoundError, SalesforceAPIError, SalesforceAuthError
 from core.manual_engine import (
     AdhocEngineConfig,
     AdhocFieldMapping,
     AdhocRunResult,
     ManualLoadEngine,
+    MappingProfile,
+    MappingStatus,
+    OperationType,
+    detect_salesforce_duplicates,
+    detect_source_duplicates,
     detect_target_object,
-    resolve_pk_and_fields_for_query,
+    detect_unmatched_records,
+    normalize_header,
+    resolve_pk_from_mapping,
     suggest_field_mappings,
 )
-from core.mapping_loader import MappingLoader
+from core.normalizer import DataNormalizer
 from salesforce.adhoc_fetcher import (
     fetch_adhoc_live_data,
     fetch_all_objects,
     fetch_object_fields,
+    is_valid_salesforce_id,
 )
 from salesforce.auth import check_connection_status, get_active_profile, is_token_valid
 from salesforce.job_manager import (
@@ -54,26 +62,26 @@ def _format_ist_time(timestamp: float | None = None) -> str:
     return dt.strftime("%d/%m/%Y %H:%M:%S IST")
 
 
+def _invalidate_validation_cache():
+    """Reset validation state and confirmation when configuration changes."""
+    st.session_state.adhoc_unmatched_confirmed = False
+    st.session_state.adhoc_live_df = None
+    st.session_state.adhoc_run_result = None
+    st.session_state.adhoc_bulk_result = None
+    st.session_state.adhoc_sf_duplicates_df = None
+    st.session_state.adhoc_unmatched_list = []
+
+
 def _init_manual_state():
     """Ensure session state variables for manual dataloader are initialized."""
     if "adhoc_step" not in st.session_state:
         st.session_state.adhoc_step = 0
+    if "adhoc_operation" not in st.session_state:
+        st.session_state.adhoc_operation = OperationType.UPDATE
     if "adhoc_source_df" not in st.session_state:
         st.session_state.adhoc_source_df = None
     if "adhoc_source_filename" not in st.session_state:
         st.session_state.adhoc_source_filename = ""
-    if "adhoc_baseline_df" not in st.session_state:
-        st.session_state.adhoc_baseline_df = None
-    if "adhoc_baseline_filename" not in st.session_state:
-        st.session_state.adhoc_baseline_filename = ""
-    if "adhoc_baseline_is_live" not in st.session_state:
-        st.session_state.adhoc_baseline_is_live = False
-    if "adhoc_baseline_query_time" not in st.session_state:
-        st.session_state.adhoc_baseline_query_time = ""
-    if "adhoc_live_df" not in st.session_state:
-        st.session_state.adhoc_live_df = None
-    if "adhoc_selected_template" not in st.session_state:
-        st.session_state.adhoc_selected_template = None
     if "adhoc_objects" not in st.session_state:
         st.session_state.adhoc_objects = []
     if "adhoc_selected_obj" not in st.session_state:
@@ -87,13 +95,21 @@ def _init_manual_state():
     if "adhoc_mappings" not in st.session_state:
         st.session_state.adhoc_mappings = []
     if "adhoc_insert_nulls" not in st.session_state:
-        st.session_state.adhoc_insert_nulls = True
+        st.session_state.adhoc_insert_nulls = False
+    if "adhoc_live_df" not in st.session_state:
+        st.session_state.adhoc_live_df = None
     if "adhoc_run_result" not in st.session_state:
         st.session_state.adhoc_run_result = None
     if "adhoc_bulk_result" not in st.session_state:
         st.session_state.adhoc_bulk_result = None
-    if "adhoc_rollback_result" not in st.session_state:
-        st.session_state.adhoc_rollback_result = None
+    if "adhoc_unmatched_confirmed" not in st.session_state:
+        st.session_state.adhoc_unmatched_confirmed = False
+    if "adhoc_profile_name" not in st.session_state:
+        st.session_state.adhoc_profile_name = ""
+    if "adhoc_sf_duplicates_df" not in st.session_state:
+        st.session_state.adhoc_sf_duplicates_df = None
+    if "adhoc_unmatched_list" not in st.session_state:
+        st.session_state.adhoc_unmatched_list = []
 
 
 def _safe_read_csv(path: Path | None) -> pd.DataFrame:
@@ -158,12 +174,12 @@ def render(go_fn):
 
     st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
 
-    # Step Tracker
+    # 4-Step Tracker
     steps = [
-        "1. Upload Source Data",
-        "2. Select Object & Key",
-        "3. Field Mapping",
-        "4. Review, Diff & Upload",
+        "1. Object & Upload",
+        "2. Mapping Profile & Match Key",
+        "3. Validate & Confirm",
+        "4. Results & Downloads",
     ]
     cur_step = st.session_state.adhoc_step
 
@@ -182,298 +198,30 @@ def render(go_fn):
 
     st.markdown("---")
 
-    # Step Router
+    # 4-Screen Router
     if cur_step == 0:
-        _render_step_1_upload()
+        _render_screen_1_upload()
     elif cur_step == 1:
-        _render_step_2_object()
+        _render_screen_2_mapping()
     elif cur_step == 2:
-        _render_step_3_mapping()
-    elif cur_step == 3:
-        _render_step_4_execution()
+        _render_screen_3_validation()
+        _render_screen_4_results()
 
 
 # ==============================================================================
-# STEP 1: UPLOAD SOURCE DATA
+# SCREEN 1: TARGET OBJECT & FILE UPLOAD
 # ==============================================================================
 
-def _render_step_1_upload():
-    col_hdr, col_env_info = st.columns([2, 1])
-    with col_hdr:
-        st.markdown("### 1️⃣ Source Data & Sitetracker Baseline")
-        st.caption("Upload your updated spreadsheet file (.csv or .xlsx) and fetch live cloud baseline data via SOQL or upload an offline file.")
+def _render_screen_1_upload():
+    st.markdown("### 1️⃣ Target Object & File Upload")
+    st.caption("Select your target Salesforce object and upload your source data spreadsheet (.csv, .xlsx, or .xls).")
 
-    active_prof = get_active_profile()
-    is_auth, status_label = check_connection_status(profile=active_prof)
-    if active_prof == "partial":
-        env_label = "Partial Copy Sandbox"
-        env_color = "purple"
-    elif active_prof == "sandbox":
-        env_label = "Developer Sandbox"
-        env_color = "amber"
-    else:
-        env_label = "Production Org"
-        env_color = "blue"
-
-    with col_env_info:
-        status_dot = "● Connected" if is_auth else f"● {status_label}"
-        status_color = "#04844B" if is_auth else "#EA001E"
-        st.markdown(
-            f"""
-            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:8px 12px; margin-top:4px; text-align:right;">
-                <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase;">Connected Org</div>
-                <div style="font-weight:700; color:#032D60; font-size:0.85rem; display:flex; justify-content:flex-end; align-items:center; gap:6px; margin-top:2px;">
-                    {render_pill(env_label, env_color)}
-                    <span style="color:{status_color}; font-size:0.8rem; font-weight:600;">{status_dot}</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    # Show registered target object pill if detected or set
-    cur_obj = st.session_state.get("adhoc_selected_obj")
-    if cur_obj:
-        st.markdown(
-            f"""
-            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between;">
-                <div style="font-size:0.85rem; font-weight:600; color:#475569;">Target Salesforce Object:</div>
-                <div>{render_pill(cur_obj, 'blue')}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    # Dual Card Layout
-    col_src_card, col_st_card = st.columns(2)
-
-    # Card 1: Source Spreadsheet
-    with col_src_card:
-        st.markdown(
-            """
-            <div class="slds-card">
-                <div class="slds-card-title">📄 Source Excel / CSV Input</div>
-                <div class="slds-card-subtitle">Spreadsheet containing site updates to push into Sitetracker.</div>
-            """,
-            unsafe_allow_html=True,
-        )
-        uploaded_file = st.file_uploader(
-            "Upload Source Spreadsheet (CSV or Excel)",
-            type=["csv", "xlsx", "xls"],
-            key="adhoc_file_input",
-            help="Upload an updated data file (.csv, .xlsx, .xls) containing records to process.",
-        )
-        if uploaded_file is not None:
-            try:
-                filename = uploaded_file.name
-                if filename.lower().endswith((".xlsx", ".xls")):
-                    df = pd.read_excel(uploaded_file, dtype=str)
-                else:
-                    try:
-                        df = pd.read_csv(uploaded_file, dtype=str, encoding="utf-8")
-                    except UnicodeDecodeError:
-                        uploaded_file.seek(0)
-                        df = pd.read_csv(uploaded_file, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
-
-                df = df.fillna("").astype(str)
-                st.session_state.adhoc_source_df = df
-                st.session_state.adhoc_source_filename = filename
-
-                # Auto-detect target Salesforce object from columns
-                detected_obj = detect_target_object(list(df.columns))
-                if detected_obj:
-                    st.session_state.adhoc_selected_obj = detected_obj
-                    st.session_state._adhoc_detected_obj = detected_obj
-
-            except Exception as e:
-                st.error(f"Failed to read uploaded file: {e}")
-
-        src_df = st.session_state.get("adhoc_source_df")
-        if src_df is not None:
-            fn = st.session_state.get("adhoc_source_filename", "Uploaded File")
-            detected = st.session_state.get("_adhoc_detected_obj")
-            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Active Source: {fn}', 'green')}</div>", unsafe_allow_html=True)
-            if detected:
-                st.markdown(
-                    f"<div style='font-size:0.8rem; color:#15803D; margin-bottom:6px;'>✨ Auto-detected Salesforce Object: <b><code>{detected}</code></b></div>",
-                    unsafe_allow_html=True,
-                )
-            with st.expander(f"👁️ Preview Source Data ({fn})", expanded=False):
-                st.caption(f"📁 Previewing top {min(len(src_df), 100):,} of {len(src_df):,} rows • {len(src_df.columns)} columns")
-                st.dataframe(src_df.head(100), use_container_width=True)
-        else:
-            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill('Missing source file', 'amber')}</div>", unsafe_allow_html=True)
-            st.caption("Upload your spreadsheet above to begin.")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # Card 2: Sitetracker Baseline Data
-    with col_st_card:
-        st.markdown(
-            """
-            <div class="slds-card">
-                <div class="slds-card-title">🔄 Sitetracker Baseline Data</div>
-                <div class="slds-card-subtitle">Current records from Sitetracker used to compute deltas.</div>
-            """,
-            unsafe_allow_html=True,
-        )
-        uploaded_st = st.file_uploader(
-            "Upload Sitetracker Baseline (CSV or Excel)",
-            type=["csv", "xlsx", "xls"],
-            key="adhoc_baseline_input",
-            help="Optional: Upload an offline baseline export file if not fetching live via SOQL.",
-        )
-        if uploaded_st is not None:
-            try:
-                fn_st = uploaded_st.name
-                if fn_st.lower().endswith((".xlsx", ".xls")):
-                    b_df = pd.read_excel(uploaded_st, dtype=str)
-                else:
-                    try:
-                        b_df = pd.read_csv(uploaded_st, dtype=str, encoding="utf-8")
-                    except UnicodeDecodeError:
-                        uploaded_st.seek(0)
-                        b_df = pd.read_csv(uploaded_st, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
-                b_df = b_df.fillna("").astype(str)
-                st.session_state.adhoc_baseline_df = b_df
-                st.session_state.adhoc_baseline_filename = fn_st
-                st.session_state.adhoc_baseline_is_live = False
-                st.session_state.adhoc_baseline_query_time = _format_ist_time()
-            except Exception as e:
-                st.error(f"Failed to read baseline file: {e}")
-
-        b_df = st.session_state.get("adhoc_baseline_df")
-        if b_df is not None:
-            is_live = st.session_state.get("adhoc_baseline_is_live", False)
-            q_time = st.session_state.get("adhoc_baseline_query_time", _format_ist_time())
-            b_name = st.session_state.get("adhoc_baseline_filename", "Live SOQL Baseline")
-
-            if is_live:
-                st.markdown(
-                    f"""
-                    <div style="background:#F0FDF4; border:1px solid #86EFAC; border-radius:8px; padding:10px 12px; margin-bottom:10px;">
-                        <div style="display:flex; align-items:center; justify-content:space-between;">
-                            <span style="font-size:0.85rem; font-weight:700; color:#166534;">🌐 LIVE SITETRACKER (SOQL QUERY)</span>
-                            <span style="background:#DCFCE7; color:#166534; font-size:0.75rem; font-weight:600; padding:2px 8px; border-radius:10px;">● Live Cloud Data</span>
-                        </div>
-                        <div style="font-size:0.8rem; color:#15803D; margin-top:4px;">
-                            Direct query from <b>{env_label}</b> ({q_time})<br>
-                            Records: <b>{len(b_df):,}</b> • Columns: <b>{len(b_df.columns)}</b>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    f"""
-                    <div style="background:#F8FAFC; border:1px solid #CBD5E1; border-radius:8px; padding:10px 12px; margin-bottom:10px;">
-                        <div style="display:flex; align-items:center; justify-content:space-between;">
-                            <span style="font-size:0.85rem; font-weight:700; color:#334155;">📁 OFFLINE SPREADSHEET FILE</span>
-                            <span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:600; padding:2px 8px; border-radius:10px;">📁 Disk File</span>
-                        </div>
-                        <div style="font-size:0.8rem; color:#475569; margin-top:4px;">
-                            Offline file: <code>{b_name}</code> (Loaded: {q_time})<br>
-                            Records: <b>{len(b_df):,}</b> • Columns: <b>{len(b_df.columns)}</b>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-            with st.expander(f"👁️ Preview Sitetracker Data ({b_name})", expanded=False):
-                st.caption(f"📁 Previewing top {min(len(b_df), 100):,} of {len(b_df):,} rows • {len(b_df.columns)} columns")
-                st.dataframe(b_df.head(100), use_container_width=True)
-        else:
-            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill('Missing baseline data', 'amber')}</div>", unsafe_allow_html=True)
-            st.caption("Upload baseline file above or fetch live via SOQL.")
-
-        if is_auth:
-            target_obj_for_fetch = st.session_state.get("adhoc_selected_obj") or "sitetracker__Site__c"
-            src_data = st.session_state.get("adhoc_source_df")
-
-            # Resolve PK and mapped fields dynamically
-            pk_col = None
-            pk_target_field = "Id"
-            fields_to_query: list[str] = []
-
-            if src_data is not None and not src_data.empty:
-                sample_dict = {c: src_data[c].dropna().head(10).tolist() for c in src_data.columns}
-                pk_col, pk_target_field, fields_to_query = resolve_pk_and_fields_for_query(
-                    object_name=target_obj_for_fetch,
-                    source_columns=list(src_data.columns),
-                    sample_values=sample_dict,
-                    sf_fields=st.session_state.get("adhoc_fields"),
-                )
-                fields_hint = f" • Querying: <b>{len(fields_to_query)} fields</b>" if fields_to_query else ""
-                st.caption(
-                    f"ℹ️ Target Object: <b>{target_obj_for_fetch}</b> • Identifier: <code>{pk_col} ➔ {pk_target_field}</code>{fields_hint}",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.caption(f"ℹ️ Target Salesforce Object for SOQL: **{target_obj_for_fetch}**")
-
-            if st.button("🔄 Fetch Live Data from Sitetracker (SOQL)", key="btn_adhoc_fetch_live", type="primary"):
-                if src_data is None or src_data.empty:
-                    st.warning("⚠️ Please upload a source spreadsheet first so we can filter SOQL records by your primary keys.")
-                else:
-                    with st.spinner(f"Executing SOQL query against {env_label}..."):
-                        try:
-                            pk_values = src_data[pk_col].dropna().astype(str).str.strip().tolist()
-
-                            # Query live data using accurate PK and fields
-                            live_df = fetch_adhoc_live_data(
-                                object_name=target_obj_for_fetch,
-                                fields=fields_to_query,
-                                pk_field=pk_target_field,
-                                pk_values=pk_values,
-                                profile=active_prof,
-                            )
-                            st.session_state.adhoc_baseline_df = live_df
-                            st.session_state.adhoc_baseline_filename = f"{target_obj_for_fetch}_sitetracker_live.csv"
-                            st.session_state.adhoc_baseline_is_live = True
-                            st.session_state.adhoc_baseline_query_time = _format_ist_time()
-                            st.session_state.adhoc_live_df = live_df
-                            st.session_state.adhoc_source_pk = pk_col
-                            st.session_state.adhoc_target_pk = pk_target_field
-                            st.success(f"🎉 Successfully fetched {len(live_df):,} live records from Sitetracker ({env_label})!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to fetch live Sitetracker data: {e}")
-        else:
-            st.warning("Salesforce is not connected. Please log in to fetch live data.")
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # Next step buttons
-    st.markdown("<div style='margin-top: 24px;'></div>", unsafe_allow_html=True)
-    if st.session_state.adhoc_source_df is not None:
-        if st.button("Next: Select Object & Identifier ➔", type="primary", use_container_width=True):
-            st.session_state.adhoc_step = 1
-            st.rerun()
-
-
-# ==============================================================================
-# STEP 2: SELECT OBJECT & IDENTIFIER
-# ==============================================================================
-
-def _render_step_2_object():
-    st.markdown("### 2️⃣ Select Target Salesforce Object & Primary Key")
-    st.caption("Choose which Salesforce object to update and which field uniquely identifies records.")
-
-    src_df = st.session_state.adhoc_source_df
-    if src_df is None:
-        st.warning("Please upload a source file in Step 1 first.")
-        if st.button("⬅ Back to Upload"):
-            st.session_state.adhoc_step = 0
-            st.rerun()
-        return
-
-    # Discover Objects from Salesforce
     active_prof = get_active_profile()
     if not is_token_valid(profile=active_prof):
         st.error(f"Not authenticated with Salesforce ({active_prof}). Please log in via the Data Export page first.")
         return
 
+    # 1. Discover Objects from Salesforce
     if not st.session_state.adhoc_objects:
         with st.spinner("Connecting to Salesforce and querying available objects..."):
             try:
@@ -487,7 +235,7 @@ def _render_step_2_object():
         st.error("No updateable objects found in this Salesforce org.")
         return
 
-    # Object Selection (Category Filter + Searchable Dropdown)
+    # Target Object Selection
     col_cat, col_obj = st.columns([1, 2])
     with col_cat:
         filter_category = st.selectbox(
@@ -506,21 +254,11 @@ def _render_step_2_object():
     else:
         filtered_objs = all_objs
 
-    # Format object choices: "Site (sitetracker__Site__c)"
-    obj_display_map = {
-        f"{o['label']} ({o['name']})": o["name"]
-        for o in filtered_objs
-    }
-
+    obj_display_map = {f"{o['label']} ({o['name']})": o["name"] for o in filtered_objs}
     if not obj_display_map:
-        st.warning("No objects found in this category. Showing all available objects.")
         filtered_objs = all_objs
-        obj_display_map = {
-            f"{o['label']} ({o['name']})": o["name"]
-            for o in filtered_objs
-        }
+        obj_display_map = {f"{o['label']} ({o['name']})": o["name"] for o in filtered_objs}
 
-    # Find default index based on current selected object
     default_idx = 0
     if st.session_state.adhoc_selected_obj:
         for idx, (k, v) in enumerate(obj_display_map.items()):
@@ -535,365 +273,440 @@ def _render_step_2_object():
             index=default_idx,
             help="Type to search and select the Salesforce object to update.",
         )
-    selected_obj = obj_display_map[selected_display]
-    st.session_state.adhoc_selected_obj = selected_obj
+    chosen_obj = obj_display_map[selected_display]
+    if chosen_obj != st.session_state.adhoc_selected_obj:
+        st.session_state.adhoc_selected_obj = chosen_obj
+        st.session_state.adhoc_fields = []
+        _invalidate_validation_cache()
 
     # Discover Fields on the Selected Object
-    if not st.session_state.adhoc_fields or st.session_state.get("_last_loaded_obj") != selected_obj:
-        with st.spinner(f"Inspecting fields on '{selected_obj}'..."):
+    if not st.session_state.adhoc_fields or st.session_state.get("_last_loaded_obj") != chosen_obj:
+        with st.spinner(f"Inspecting fields on '{chosen_obj}'..."):
             try:
-                st.session_state.adhoc_fields = fetch_object_fields(selected_obj, profile=active_prof)
-                st.session_state._last_loaded_obj = selected_obj
+                st.session_state.adhoc_fields = fetch_object_fields(chosen_obj, profile=active_prof)
+                st.session_state._last_loaded_obj = chosen_obj
             except Exception as e:
-                st.error(f"Failed to inspect fields on '{selected_obj}': {e}")
+                st.error(f"Failed to inspect fields on '{chosen_obj}': {e}")
                 return
 
-    sf_fields = st.session_state.adhoc_fields
-
-    # Primary Key Selection
-    st.markdown("#### 🔑 Record Matching Key (Primary Key)")
-    st.caption("Select how records in your spreadsheet will match existing records in Salesforce.")
-
-    col_src_pk, col_sf_pk = st.columns(2)
-
-    src_columns = list(src_df.columns)
-
-    # Check if Mapping_file.xlsx specifies a primary key for this object
-    rec_src_pk = None
-    rec_sf_pk = None
-    mapping_file = Path(settings.DATA_DIR) / "common" / "Mapping_file.xlsx"
-    if not mapping_file.exists():
-        mapping_file = Path("data/common/Mapping_file.xlsx")
-    if mapping_file.exists():
-        try:
-            mf = pd.read_excel(mapping_file)
-            for _, row in mf.iterrows():
-                if str(row.get("Primary Key?", "")).strip().lower() in ("yes", "y", "true"):
-                    obj = str(row.get("Object Name", "")).strip().lower()
-                    src_c = str(row.get("Source File Column Name", "")).strip()
-                    sf_api = str(row.get("API Name", "")).strip()
-
-                    applies = False
-                    if "site" in selected_obj.lower() and "site" in obj:
-                        applies = True
-                    elif "bt_project" in selected_obj.lower() and "bt" in obj:
-                        applies = True
-                    elif "project" in selected_obj.lower() and ("bt" not in obj and "project" in obj):
-                        applies = True
-
-                    if applies and src_c in src_columns:
-                        rec_src_pk = src_c
-                        rec_sf_pk = sf_api
-                        break
-        except Exception:
-            pass
-
-    # Determine default source PK index
-    src_pk_default_idx = 0
-    if rec_src_pk and rec_src_pk in src_columns:
-        src_pk_default_idx = src_columns.index(rec_src_pk)
-    else:
-        for idx, c in enumerate(src_columns):
-            if any(term in c.lower() for term in ("id", "site_id", "project", "wes", "code", "ref")):
-                src_pk_default_idx = idx
-                break
-
-    with col_src_pk:
-        selected_src_pk = st.selectbox(
-            "Source Column (Spreadsheet Identifier)",
-            src_columns,
-            index=src_pk_default_idx,
-            help="Column in your uploaded file that holds unique record keys.",
+    # 2. Operation Selection
+    st.markdown("#### ⚙️ Operation")
+    op_col1, op_col2 = st.columns([1, 2])
+    with op_col1:
+        st.radio(
+            "Select Operation:",
+            ["Update (Active)", "Insert (Upcoming)"],
+            index=0,
+            key="adhoc_op_radio",
+            help="Update is currently active. Insert operation will be available in an upcoming release.",
         )
-        st.session_state.adhoc_source_pk = selected_src_pk
+        st.session_state.adhoc_operation = OperationType.UPDATE
+    with op_col2:
+        st.caption("ℹ️ **Update**: Queries matching records in Salesforce via your designated Match Key, calculates deltas, and updates modified fields using the record's resolved Salesforce `Id`.")
 
-    # Determine default target SF PK index
-    sf_pk_default_idx = 0
-    if rec_sf_pk and any(f["api_name"] == rec_sf_pk for f in sf_fields):
-        for idx, f in enumerate(sf_fields):
-            if f["api_name"] == rec_sf_pk:
-                sf_pk_default_idx = idx
-                break
-    else:
-        for idx, f in enumerate(sf_fields):
-            if f["is_external_id"] or f["api_name"] == "Id" or "id" in f["api_name"].lower():
-                sf_pk_default_idx = idx
-                break
+    # 3. File Upload
+    st.markdown("#### 📁 Upload Source Spreadsheet")
+    st.caption("Supports CSV and Excel files. String identifiers with leading zeroes (e.g. `00120`, `01040`) are preserved strictly.")
 
-    with col_sf_pk:
-        sf_display_map = {
-            f"{f['api_name']} ({f['label']})" + (" [External ID]" if f["is_external_id"] else ""): f["api_name"]
-            for f in sf_fields
-        }
-        selected_sf_pk_display = st.selectbox(
-            "Salesforce Target Field (Identifier)",
-            list(sf_display_map.keys()),
-            index=sf_pk_default_idx,
-            help="Salesforce field matching your spreadsheet identifier (e.g. Id, External ID).",
-        )
-        selected_sf_pk = sf_display_map[selected_sf_pk_display]
-        st.session_state.adhoc_target_pk = selected_sf_pk
+    uploaded_file = st.file_uploader(
+        "Drop CSV or Excel file here:",
+        type=["csv", "xlsx", "xls"],
+        key="adhoc_source_file_uploader",
+    )
 
+    if uploaded_file is not None:
+        if st.session_state.adhoc_source_filename != uploaded_file.name:
+            try:
+                with st.spinner("Reading spreadsheet..."):
+                    df = DataNormalizer.read_spreadsheet(uploaded_file)
+                st.session_state.adhoc_source_df = df
+                st.session_state.adhoc_source_filename = uploaded_file.name
+                _invalidate_validation_cache()
+                st.success(f"Loaded `{uploaded_file.name}`: **{len(df):,} rows**, **{len(df.columns)} columns**.")
+            except Exception as e:
+                st.error(f"Failed to read spreadsheet: {e}")
+                st.session_state.adhoc_source_df = None
+                return
+
+    src_df = st.session_state.adhoc_source_df
+    if src_df is not None:
+        st.info("💡 **File Size Guidance**: Recommended file size is up to 200 MB (~100,000 rows) for optimal browser responsiveness. Datasets under 2,000 records execute in 15–30 seconds via REST Collections.")
+
+        with st.expander(f"👁️ Data Preview: `{st.session_state.adhoc_source_filename}` (First 100 rows)", expanded=False):
+            st.dataframe(src_df.head(100), use_container_width=True)
+
+        if src_df.empty:
+            st.warning("Uploaded file contains no data rows.")
+            return
+
+    # Navigation Button
     st.markdown("<div style='margin-top: 24px;'></div>", unsafe_allow_html=True)
-    col_back, col_next = st.columns([1, 2])
-    with col_back:
-        if st.button("⬅ Back to Upload", use_container_width=True):
-            st.session_state.adhoc_step = 0
-            st.rerun()
-
-    with col_next:
-        if st.button("Next: Field Mapping & Selection ➔", type="primary", use_container_width=True):
-            # Generate auto-match suggestions
-            st.session_state.adhoc_mappings = suggest_field_mappings(
-                source_columns=src_columns,
-                sf_fields=sf_fields,
-                source_pk_col=selected_src_pk,
-                target_pk_field=selected_sf_pk,
-                object_name=selected_obj,
-            )
-            st.session_state.adhoc_step = 2
-            st.rerun()
+    can_proceed = bool(chosen_obj and src_df is not None and not src_df.empty)
+    if st.button("Next: Mapping Profile & Match Key ➔", type="primary", use_container_width=True, disabled=not can_proceed):
+        st.session_state.adhoc_step = 1
+        st.rerun()
 
 
 # ==============================================================================
-# STEP 3: FIELD MAPPING & SELECTION
+# SCREEN 2: MAPPING PROFILE & MATCH KEY SELECTION
 # ==============================================================================
 
-def _render_step_3_mapping():
-    st.markdown("### 3️⃣ Field Mapping & Selection")
-    st.caption("Check the fields you want to update in Salesforce and verify data types.")
+def _render_screen_2_mapping():
+    st.markdown("### 2️⃣ Mapping Profile & Match Key Selection")
+    st.caption("Configure how spreadsheet columns map to Salesforce fields and designate the unique Match Key.")
 
+    src_df = st.session_state.adhoc_source_df
     obj_name = st.session_state.adhoc_selected_obj
-    src_pk = st.session_state.adhoc_source_pk
-    sf_pk = st.session_state.adhoc_target_pk
     sf_fields = st.session_state.adhoc_fields
 
-    col_hdr_info, col_hdr_btn = st.columns([3, 1])
-    with col_hdr_info:
-        st.markdown(
-            f"""
-            <div style="background:#F0F4F8; border-left:4px solid #0176D3; border-radius:4px; padding:10px 16px; margin-bottom:12px;">
-                <div style="font-size:0.9rem; color:#032D60;">
-                    <b>Target Object:</b> <code>{obj_name}</code> &nbsp;|&nbsp;
-                    <b>Identifier Mapping:</b> <code>{src_pk}</code> ➔ <code>{sf_pk}</code>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-    with col_hdr_btn:
-        if st.button("🔄 Change Object / Key", use_container_width=True, help="Go back to Step 2 to select a different Salesforce object or matching key"):
-            st.session_state.adhoc_step = 1
-            st.rerun()
-
-    # Auto-generate mappings if not yet present or if target object changed
-    if not st.session_state.adhoc_mappings or st.session_state.get("_mappings_obj") != obj_name:
-        if st.session_state.adhoc_source_df is not None and sf_fields:
-            st.session_state.adhoc_mappings = suggest_field_mappings(
-                source_columns=list(st.session_state.adhoc_source_df.columns),
-                sf_fields=sf_fields,
-                source_pk_col=src_pk,
-                target_pk_field=sf_pk,
-                object_name=obj_name,
-            )
-            st.session_state._mappings_obj = obj_name
-
-    mappings = st.session_state.adhoc_mappings
-    if not mappings:
-        st.warning("No mappings configured. Please go back to Step 2.")
-        if st.button("⬅ Back to Object Selection"):
-            st.session_state.adhoc_step = 1
+    if src_df is None or not obj_name:
+        st.warning("Please upload a file and select an object in Step 1 first.")
+        if st.button("⬅ Back to Step 1"):
+            st.session_state.adhoc_step = 0
             st.rerun()
         return
 
-    # Check if ANY non-key field was matched
-    mapped_non_pk = [m for m in mappings if m.source_column != src_pk and m.target_field_api]
-    if not mapped_non_pk and len(mappings) > 1:
-        st.warning(
-            f"⚠️ **Notice**: None of your spreadsheet columns matched fields on **`{obj_name}`**.\n\n"
-            f"Please verify if **`{obj_name}`** is the correct Salesforce object for this file."
-        )
-        if st.session_state.adhoc_source_df is not None:
-            detected_alt = detect_target_object(list(st.session_state.adhoc_source_df.columns))
-            if detected_alt and detected_alt != obj_name:
-                if st.button(f"⚡ Switch Target Object to detected: '{detected_alt}'", type="primary"):
-                    st.session_state.adhoc_selected_obj = detected_alt
-                    active_prof = get_active_profile()
-                    with st.spinner(f"Loading fields for '{detected_alt}'..."):
-                        try:
-                            sf_fields_new = fetch_object_fields(detected_alt, profile=active_prof)
-                            st.session_state.adhoc_fields = sf_fields_new
-                            st.session_state._last_loaded_obj = detected_alt
-                            src_cols = list(st.session_state.adhoc_source_df.columns)
-                            st.session_state.adhoc_mappings = suggest_field_mappings(
-                                source_columns=src_cols,
-                                sf_fields=sf_fields_new,
-                                source_pk_col=st.session_state.adhoc_source_pk,
-                                target_pk_field=st.session_state.adhoc_target_pk,
-                                object_name=detected_alt,
-                            )
-                            st.session_state._mappings_obj = detected_alt
-                        except Exception as e:
-                            logger.error("Auto-switch object error: %s", e)
-                    st.rerun()
+    src_columns = list(src_df.columns)
 
-    # Build options for target field selector
+    # 1. Profile Management Toolbar
+    st.markdown("#### 📋 Profile & Auto-Mapping")
+    prof_col1, prof_col2 = st.columns([1, 1])
+
+    with prof_col1:
+        if st.button("⚡ Auto-Map from Mapping_file.xlsx", use_container_width=True, help="Load authoritative field definitions and primary key from Mapping_file.xlsx"):
+            # Authoritative PK resolution
+            pk_res = resolve_pk_from_mapping(obj_name, src_columns)
+            if pk_res:
+                st.session_state.adhoc_source_pk, st.session_state.adhoc_target_pk = pk_res
+                st.toast(f"Authoritatively resolved Match Key: {pk_res[0]} ➔ {pk_res[1]}")
+            else:
+                st.toast("No authoritative primary key configured for this object in Mapping_file.xlsx. Please select manually below.")
+
+            st.session_state.adhoc_mappings = suggest_field_mappings(
+                source_columns=src_columns,
+                sf_fields=sf_fields,
+                source_pk_col=st.session_state.adhoc_source_pk,
+                target_pk_field=st.session_state.adhoc_target_pk,
+                object_name=obj_name,
+            )
+            _invalidate_validation_cache()
+            st.rerun()
+
+    with prof_col2:
+        # Scan saved profiles in data/mapping_profiles/
+        prof_dir = getattr(settings, "MAPPING_PROFILES_DIR", settings.DATA_DIR / "mapping_profiles")
+        saved_files = sorted(prof_dir.glob("*.json")) if prof_dir.exists() else []
+        prof_options = ["-- Select Saved Profile --"] + [f.stem for f in saved_files]
+
+        sel_saved = st.selectbox("Load Saved Profile:", prof_options, label_visibility="collapsed", key="sel_saved_prof")
+        if sel_saved != "-- Select Saved Profile --":
+            target_path = prof_dir / f"{sel_saved}.json"
+            if target_path.exists():
+                try:
+                    loaded_prof = MappingProfile.load_from_file(target_path)
+                    compat = loaded_prof.check_compatibility(src_columns)
+                    if compat["missing"]:
+                        st.warning(f"⚠️ Profile expects columns missing from this file: `{', '.join(compat['missing'])}`")
+                    if compat["extra"]:
+                        st.info(f"ℹ️ File contains columns not defined in profile: `{', '.join(compat['extra'])}`")
+
+                    st.session_state.adhoc_source_pk = loaded_prof.source_pk_col
+                    st.session_state.adhoc_target_pk = loaded_prof.target_pk_field
+                    st.session_state.adhoc_mappings = loaded_prof.mappings
+                    st.session_state.adhoc_insert_nulls = loaded_prof.insert_nulls
+                    _invalidate_validation_cache()
+                    st.success(f"Loaded profile: `{sel_saved}`")
+                except Exception as e:
+                    st.error(f"Error loading profile: {e}")
+
+    # Profile Save / Export / Import Accordion
+    with st.expander("💾 Save / Export / Import Mapping Profiles", expanded=False):
+        save_col, exp_col, imp_col = st.columns(3)
+        with save_col:
+            new_prof_name = st.text_input("Save Current Profile As:", placeholder="e.g. MasterSite_Update_v1")
+            if st.button("Save Profile", disabled=not new_prof_name):
+                prof = MappingProfile(
+                    profile_name=new_prof_name,
+                    object_name=obj_name,
+                    operation=st.session_state.adhoc_operation,
+                    source_pk_col=st.session_state.adhoc_source_pk,
+                    target_pk_field=st.session_state.adhoc_target_pk,
+                    mappings=st.session_state.adhoc_mappings,
+                    insert_nulls=st.session_state.adhoc_insert_nulls,
+                )
+                try:
+                    saved_p = prof.save_to_file()
+                    st.success(f"Saved to `{saved_p.name}`!")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+
+        with exp_col:
+            st.write("Export Profile (.json)")
+            curr_prof = MappingProfile(
+                profile_name=st.session_state.adhoc_profile_name or f"{obj_name}_mapping",
+                object_name=obj_name,
+                operation=st.session_state.adhoc_operation,
+                source_pk_col=st.session_state.adhoc_source_pk,
+                target_pk_field=st.session_state.adhoc_target_pk,
+                mappings=st.session_state.adhoc_mappings,
+                insert_nulls=st.session_state.adhoc_insert_nulls,
+            )
+            prof_json = json.dumps(curr_prof.to_dict(), indent=2)
+            st.download_button("📥 Download JSON", prof_json, file_name=f"{obj_name}_mapping_profile.json", mime="application/json")
+
+        with imp_col:
+            st.write("Import Profile (.json)")
+            imp_file = st.file_uploader("Upload Profile JSON:", type=["json"], key="adhoc_imp_prof")
+            if imp_file is not None:
+                try:
+                    imp_data = json.loads(imp_file.read().decode("utf-8"))
+                    imported = MappingProfile.from_dict(imp_data)
+                    st.session_state.adhoc_source_pk = imported.source_pk_col
+                    st.session_state.adhoc_target_pk = imported.target_pk_field
+                    st.session_state.adhoc_mappings = imported.mappings
+                    st.session_state.adhoc_insert_nulls = imported.insert_nulls
+                    _invalidate_validation_cache()
+                    st.success("Imported profile successfully!")
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
+
+    # 2. Match Key Selection Section
+    st.markdown("---")
+    st.markdown("#### 🔑 Match Key Designation (Primary Key)")
+    st.caption("Select which spreadsheet column and Salesforce field uniquely identify records. If unmapped, select manually.")
+
+    col_src_pk, col_sf_pk = st.columns(2)
+
+    # Initial resolution if not yet set
+    if not st.session_state.adhoc_source_pk or not st.session_state.adhoc_target_pk:
+        pk_res = resolve_pk_from_mapping(obj_name, src_columns)
+        if pk_res:
+            st.session_state.adhoc_source_pk, st.session_state.adhoc_target_pk = pk_res
+
+    src_pk_idx = src_columns.index(st.session_state.adhoc_source_pk) if st.session_state.adhoc_source_pk in src_columns else 0
+    with col_src_pk:
+        selected_src_pk = st.selectbox(
+            "Source Column (Spreadsheet Identifier):",
+            src_columns,
+            index=src_pk_idx,
+            help="Column in your uploaded file that holds unique record keys.",
+        )
+        if selected_src_pk != st.session_state.adhoc_source_pk:
+            st.session_state.adhoc_source_pk = selected_src_pk
+            _invalidate_validation_cache()
+
+    # Target SF field selection
+    sf_display_map = {
+        f"{f['api_name']} ({f['label']})" + (" [External ID]" if f["is_external_id"] else ""): f["api_name"]
+        for f in sf_fields
+    }
+    sf_pk_idx = 0
+    if st.session_state.adhoc_target_pk:
+        for idx, (disp, api) in enumerate(sf_display_map.items()):
+            if api == st.session_state.adhoc_target_pk:
+                sf_pk_idx = idx
+                break
+
+    with col_sf_pk:
+        selected_sf_disp = st.selectbox(
+            "Salesforce Match Field:",
+            list(sf_display_map.keys()),
+            index=sf_pk_idx,
+            help="Salesforce field used for matching records (e.g. Name, Site_ID__c, Id).",
+        )
+        selected_sf_pk = sf_display_map[selected_sf_disp]
+        if selected_sf_pk != st.session_state.adhoc_target_pk:
+            st.session_state.adhoc_target_pk = selected_sf_pk
+            _invalidate_validation_cache()
+
+    # Source Duplicate Check (First Occurrence Wins)
+    if selected_src_pk:
+        _, dup_source_df = detect_source_duplicates(src_df, selected_src_pk)
+        if not dup_source_df.empty:
+            st.warning(
+                f"⚠️ **Found {len(dup_source_df):,} duplicate row(s)** for Match Key `{selected_src_pk}`.\n\n"
+                f"**First Occurrence Wins**: The first row for each key will be updated. The {len(dup_source_df):,} duplicate rows will be quarantined to `duplicate_primary_keys.csv` for audit."
+            )
+            with st.expander(f"🔍 Inspect {len(dup_source_df):,} Quarantined Duplicate Source Rows", expanded=False):
+                st.dataframe(dup_source_df.head(50), use_container_width=True)
+
+    # 3. Interactive Field Mapping Grid
+    st.markdown("---")
+    st.markdown("#### 🗺️ Field Mappings")
+
+    # Generate initial suggestions if empty
+    if not st.session_state.adhoc_mappings:
+        st.session_state.adhoc_mappings = suggest_field_mappings(
+            source_columns=src_columns,
+            sf_fields=sf_fields,
+            source_pk_col=selected_src_pk,
+            target_pk_field=selected_sf_pk,
+            object_name=obj_name,
+        )
+
+    mappings = st.session_state.adhoc_mappings
+
+    # Bulk Select / Deselect & Null toggle
+    col_bulk, col_null = st.columns([1.5, 1])
+    with col_bulk:
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("☑️ Select All Mapped", use_container_width=True):
+                for m in mappings:
+                    if m.source_column != selected_src_pk and m.target_field_api and m.target_field_api.lower() != "id":
+                        m.upload_enabled = True
+                _invalidate_validation_cache()
+                st.rerun()
+        with b2:
+            if st.button("⬜ Deselect All", use_container_width=True):
+                for m in mappings:
+                    m.upload_enabled = False
+                _invalidate_validation_cache()
+                st.rerun()
+
+    with col_null:
+        insert_nulls = st.checkbox(
+            "Overwrite cloud values with null/blank (#N/A)",
+            value=st.session_state.adhoc_insert_nulls,
+            help="When checked, blank cells in the spreadsheet will clear existing Salesforce data. Safe default is unchecked (blanks are ignored).",
+        )
+        if insert_nulls != st.session_state.adhoc_insert_nulls:
+            st.session_state.adhoc_insert_nulls = insert_nulls
+            _invalidate_validation_cache()
+
+    # Field selector options
     sf_field_options = ["-- Do Not Map --"] + [f"{f['api_name']} ({f['label']})" for f in sf_fields]
     api_lookup = {f"{f['api_name']} ({f['label']})": f["api_name"] for f in sf_fields}
     label_lookup = {f["api_name"]: f["label"] for f in sf_fields}
     dtype_lookup = {f["api_name"]: f["data_type"] for f in sf_fields}
 
-    # Bulk Select / Deselect
-    col_actions, col_opt = st.columns([2, 2])
-    with col_actions:
-        b_col1, b_col2 = st.columns(2)
-        with b_col1:
-            if st.button("☑️ Select All Fields", use_container_width=True):
-                for m in mappings:
-                    if m.source_column != src_pk and m.target_field_api and m.target_field_api.lower() != "id":
-                        m.upload_enabled = True
-                st.rerun()
-        with b_col2:
-            if st.button("⬜ Deselect All", use_container_width=True):
-                for m in mappings:
-                    m.upload_enabled = False
-                st.rerun()
-
-    with col_opt:
-        st.session_state.adhoc_insert_nulls = st.checkbox(
-            "Clear field in Salesforce if spreadsheet cell is blank (#N/A)",
-            value=st.session_state.adhoc_insert_nulls,
-            help="When enabled, blank values in your file will wipe existing values in Salesforce. When unchecked, blanks are safely ignored.",
-        )
-
-    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-
-    # Interactive Mapping Editor Rows
-    st.markdown("#### 📋 Field Mapping Configuration")
-    header_cols = st.columns([1, 3, 4, 2, 2])
-    header_cols[0].markdown("**Upload?**")
-    header_cols[1].markdown("**Source Column**")
-    header_cols[2].markdown("**Salesforce Target Field**")
-    header_cols[3].markdown("**Data Type**")
-    header_cols[4].markdown("**Match Status**")
-
-    st.markdown("<hr style='margin: 4px 0 12px 0;'>", unsafe_allow_html=True)
+    # Header Row
+    st.markdown(
+        """
+        <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:8px 12px; margin-bottom:8px; font-weight:700; color:#475569; font-size:0.85rem; display:grid; grid-template-columns: 50px 2fr 3fr 1.2fr 1.5fr;">
+            <div>Upload</div>
+            <div>Source Column</div>
+            <div>Target Salesforce Field</div>
+            <div>Data Type</div>
+            <div>Status</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
     for idx, m in enumerate(mappings):
-        cols = st.columns([1, 3, 4, 2, 2])
-        is_pk = bool(m.source_column == src_pk or (sf_pk and m.target_field_api == sf_pk))
-        is_id_field = bool(m.target_field_api and m.target_field_api.lower() == "id")
+        is_pk = (m.source_column == selected_src_pk or m.target_field_api == selected_sf_pk)
+        is_id_field = (m.target_field_api.lower() == "id")
 
-        # 1. Upload Checkbox (Record ID and Primary Keys are strictly lookup-only)
-        if is_pk:
-            cols[0].markdown("🔑 *Key*")
-            m.upload_enabled = False
-        elif is_id_field:
-            cols[0].markdown("🔒 *ID*")
-            m.upload_enabled = False
-        else:
-            m.upload_enabled = cols[0].checkbox(
-                f"Upload {m.source_column}",
-                value=m.upload_enabled,
-                key=f"chk_upload_{idx}_{m.source_column}",
-                label_visibility="collapsed",
-            )
+        cols = st.columns([0.5, 2, 3, 1.2, 1.5])
+
+        # 1. Upload Toggle Checkbox
+        with cols[0]:
+            if is_pk or is_id_field:
+                st.markdown("<div style='margin-top:8px; color:#94A3B8;'>🔒</div>", unsafe_allow_html=True)
+            else:
+                checked = st.checkbox(
+                    f"Enable {m.source_column}",
+                    value=m.upload_enabled,
+                    key=f"chk_en_{idx}_{m.source_column}",
+                    label_visibility="collapsed",
+                )
+                if checked != m.upload_enabled:
+                    m.upload_enabled = checked
+                    _invalidate_validation_cache()
 
         # 2. Source Column Name
-        cols[1].markdown(f"`{m.source_column}`")
+        with cols[1]:
+            st.markdown(f"<div style='margin-top:6px; font-weight:600; color:#032D60;'><code>{m.source_column}</code></div>", unsafe_allow_html=True)
 
         # 3. Target Salesforce Field Selector
-        cur_display = "-- Do Not Map --"
-        if m.target_field_api:
-            for opt in sf_field_options:
-                if opt.startswith(f"{m.target_field_api} (") or opt == m.target_field_api:
-                    cur_display = opt
-                    break
-
-        default_idx = sf_field_options.index(cur_display) if cur_display in sf_field_options else 0
-        selected_opt = cols[2].selectbox(
-            f"Salesforce Field for {m.source_column}",
-            sf_field_options,
-            index=default_idx,
-            key=f"sel_sf_{idx}_{m.source_column}",
-            label_visibility="collapsed",
-        )
-
-        if selected_opt != "-- Do Not Map --":
-            chosen_api = api_lookup.get(selected_opt, selected_opt.split(" ")[0])
-            was_unmapped = not m.target_field_api
-            m.target_field_api = chosen_api
-            m.target_field_label = label_lookup.get(chosen_api, chosen_api)
-            # Record ID and PK fields can never be updated
-            if chosen_api.lower() == "id" or is_pk:
-                m.upload_enabled = False
-            elif was_unmapped:
-                m.upload_enabled = True
-            # Auto-assign type if not manually modified
-            if not m.data_type or m.data_type == "text":
-                m.data_type = dtype_lookup.get(chosen_api, "text")
-            if m.match_confidence in ("None", ""):
-                m.match_confidence = "Manual"
-        else:
-            m.target_field_api = ""
-            m.target_field_label = ""
-            m.upload_enabled = False
-            m.match_confidence = "None"
-
-        # 4. Data Type (Read-only, fetched directly from Sitetracker schema describe)
-        if m.target_field_api:
-            actual_dtype = dtype_lookup.get(m.target_field_api, m.data_type or "text")
-            m.data_type = actual_dtype
-            dtype_upper = actual_dtype.upper()
-            if actual_dtype == "date":
-                dtype_badge = f"<span style='background:#EFF6FF; color:#1D4ED8; border:1px solid #BFDBFE; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>📅 {dtype_upper}</span>"
-            elif actual_dtype in ("number", "currency", "percent"):
-                dtype_badge = f"<span style='background:#FFFBEB; color:#B45309; border:1px solid #FDE68A; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>🔢 {dtype_upper}</span>"
-            elif actual_dtype == "boolean":
-                dtype_badge = f"<span style='background:#FAF5FF; color:#7E22CE; border:1px solid #E9D5FF; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>🔘 {dtype_upper}</span>"
+        with cols[2]:
+            cur_disp = "-- Do Not Map --"
+            if m.target_field_api:
+                for opt in sf_field_options:
+                    if opt.startswith(f"{m.target_field_api} (") or opt == m.target_field_api:
+                        cur_disp = opt
+                        break
+            default_opt_idx = sf_field_options.index(cur_disp) if cur_disp in sf_field_options else 0
+            sel_field = st.selectbox(
+                f"SF Field for {m.source_column}",
+                sf_field_options,
+                index=default_opt_idx,
+                key=f"sel_field_{idx}_{m.source_column}",
+                label_visibility="collapsed",
+            )
+            if sel_field != "-- Do Not Map --":
+                chosen_api = api_lookup.get(sel_field, sel_field.split(" ")[0])
+                if chosen_api != m.target_field_api:
+                    m.target_field_api = chosen_api
+                    m.target_field_label = label_lookup.get(chosen_api, chosen_api)
+                    m.data_type = dtype_lookup.get(chosen_api, "text")
+                    if chosen_api.lower() != "id" and not is_pk:
+                        m.upload_enabled = True
+                    _invalidate_validation_cache()
             else:
-                dtype_badge = f"<span style='background:#F1F5F9; color:#475569; border:1px solid #CBD5E1; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>🔤 {dtype_upper}</span>"
-            cols[3].markdown(f"<div style='margin-top:6px;'>{dtype_badge}</div>", unsafe_allow_html=True)
-        else:
-            cols[3].markdown("<div style='margin-top:8px; color:#94A3B8; font-weight:600;'>—</div>", unsafe_allow_html=True)
+                if m.target_field_api:
+                    m.target_field_api = ""
+                    m.target_field_label = ""
+                    m.upload_enabled = False
+                    _invalidate_validation_cache()
 
-        # 5. Match Status Pill
-        if is_pk:
-            cols[4].markdown(render_pill("Primary Key", "blue"), unsafe_allow_html=True)
-        elif is_id_field:
-            cols[4].markdown(render_pill("Record ID (Read Only)", "gray"), unsafe_allow_html=True)
-        elif m.target_field_api:
-            cols[4].markdown(render_pill(m.match_confidence or "Matched", "green"), unsafe_allow_html=True)
-        else:
-            cols[4].markdown(render_pill("Unmapped", "gray"), unsafe_allow_html=True)
+        # 4. Data Type Badge
+        with cols[3]:
+            if m.target_field_api:
+                actual_dtype = dtype_lookup.get(m.target_field_api, m.data_type or "text")
+                dtype_upper = actual_dtype.upper()
+                if actual_dtype == "date":
+                    st.markdown(f"<div style='margin-top:6px;'><span style='background:#EFF6FF; color:#1D4ED8; border:1px solid #BFDBFE; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>📅 {dtype_upper}</span></div>", unsafe_allow_html=True)
+                elif actual_dtype in ("number", "currency", "percent"):
+                    st.markdown(f"<div style='margin-top:6px;'><span style='background:#FFFBEB; color:#B45309; border:1px solid #FDE68A; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>🔢 {dtype_upper}</span></div>", unsafe_allow_html=True)
+                elif actual_dtype == "boolean":
+                    st.markdown(f"<div style='margin-top:6px;'><span style='background:#FAF5FF; color:#7E22CE; border:1px solid #E9D5FF; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>🔘 {dtype_upper}</span></div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div style='margin-top:6px;'><span style='background:#F1F5F9; color:#475569; border:1px solid #CBD5E1; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:700;'>🔤 {dtype_upper}</span></div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='margin-top:8px; color:#94A3B8;'>—</div>", unsafe_allow_html=True)
 
-    # Validation check
-    active_count = sum(1 for m in mappings if m.upload_enabled and m.target_field_api)
+        # 5. Status Badge
+        with cols[4]:
+            if is_pk:
+                st.markdown("<div style='margin-top:6px;'>" + render_pill("Match Key", "blue") + "</div>", unsafe_allow_html=True)
+            elif is_id_field:
+                st.markdown("<div style='margin-top:6px;'>" + render_pill("Record ID (Read Only)", "gray") + "</div>", unsafe_allow_html=True)
+            elif m.target_field_api and m.upload_enabled:
+                st.markdown("<div style='margin-top:6px;'>" + render_pill("Mapped", "green") + "</div>", unsafe_allow_html=True)
+            elif m.target_field_api and not m.upload_enabled:
+                st.markdown("<div style='margin-top:6px;'>" + render_pill("Ignored", "gray") + "</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='margin-top:6px;'>" + render_pill("Unmapped", "gray") + "</div>", unsafe_allow_html=True)
 
+    # Navigation Buttons
     st.markdown("<div style='margin-top: 24px;'></div>", unsafe_allow_html=True)
-    col_back, col_next = st.columns([1, 2])
-    with col_back:
-        if st.button("⬅ Back to Object Selection", use_container_width=True):
-            st.session_state.adhoc_step = 1
+    nav_back, nav_next = st.columns([1, 2])
+    with nav_back:
+        if st.button("⬅ Back to Object & Upload", use_container_width=True):
+            st.session_state.adhoc_step = 0
             st.rerun()
 
-    with col_next:
-        if active_count == 0:
-            st.warning("⚠️ Please select at least one field to upload before proceeding.")
+    active_count = sum(1 for m in mappings if m.upload_enabled and m.target_field_api and not (m.source_column == selected_src_pk or m.target_field_api == selected_sf_pk))
+    with nav_next:
+        if not selected_src_pk or not selected_sf_pk:
+            st.error("Please select a valid Source Column and Target Salesforce Field as the Match Key.")
+        elif active_count == 0:
+            st.warning("Please select at least one field to update before proceeding.")
         else:
-            btn_label = f"Next: Fetch Live Data & Review Deltas ({active_count} fields selected) ➔"
-            if st.button(btn_label, type="primary", use_container_width=True):
-                st.session_state.adhoc_step = 3
+            if st.button(f"Next: Validate & Confirm ({active_count} fields) ➔", type="primary", use_container_width=True):
+                st.session_state.adhoc_step = 2
                 st.rerun()
 
 
 # ==============================================================================
-# STEP 4: REVIEW, LIVE FETCH, DIFF & UPLOAD
+# SCREEN 3: VALIDATE, PREVIEW CHANGES & CONFIRM
 # ==============================================================================
 
-def _render_step_4_execution():
-    st.markdown("### 4️⃣ Live Sitetracker Fetch, Delta Review & Upload")
-    st.caption("Query live records matching your primary keys, validate deltas, and upload directly via Bulk API 2.0.")
+def _render_screen_3_validation():
+    st.markdown("### 3️⃣ Live Validation & Delta Preview")
+    st.caption("Perform URL-safe live query against Salesforce, inspect ambiguous duplicate matches, confirm unmatched records, and review deltas.")
 
     src_df = st.session_state.adhoc_source_df
     obj_name = st.session_state.adhoc_selected_obj
@@ -901,6 +714,13 @@ def _render_step_4_execution():
     sf_pk = st.session_state.adhoc_target_pk
     mappings = st.session_state.adhoc_mappings
     active_prof = get_active_profile()
+
+    if src_df is None or not obj_name or not src_pk or not sf_pk:
+        st.warning("Missing required configuration. Please return to Step 2.")
+        if st.button("⬅ Back to Mapping"):
+            st.session_state.adhoc_step = 1
+            st.rerun()
+        return
 
     active_fields = [
         m.target_field_api for m in mappings
@@ -910,6 +730,7 @@ def _render_step_4_execution():
         and m.target_field_api != sf_pk
     ]
 
+    # Target and Key Banner
     st.markdown(
         f"""
         <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:14px 18px; margin-bottom:16px;">
@@ -919,7 +740,7 @@ def _render_step_4_execution():
                     <span style="color:#64748B; font-size:0.9rem; margin-left:8px;">({len(src_df):,} source records)</span>
                 </div>
                 <div>
-                    <span style="font-size:0.85rem; color:#64748B;">Identifier: </span>
+                    <span style="font-size:0.85rem; color:#64748B;">Match Key: </span>
                     <code style="background:#F1F5F9; padding:2px 6px; border-radius:4px;">{src_pk} ➔ {sf_pk}</code>
                     <span style="margin-left:12px; font-size:0.85rem; color:#64748B;">Updating: </span>
                     <b>{len(active_fields)} fields</b>
@@ -930,24 +751,11 @@ def _render_step_4_execution():
         unsafe_allow_html=True
     )
 
-    # 1. Trigger Live Fetch & Delta Calculation
-    col_trigger, col_back = st.columns([3, 1])
-    with col_trigger:
-        btn_calc = st.button(
-            "⚡ 1-Click: Fetch Live Sitetracker Data & Compute Deltas",
-            type="primary",
-            use_container_width=True,
-            key="btn_run_adhoc_engine",
-        )
-    with col_back:
-        if st.button("⬅ Adjust Mappings", use_container_width=True):
-            st.session_state.adhoc_step = 2
-            st.rerun()
-
-    if btn_calc:
+    # 1. Trigger Live Fetch & Validation
+    if st.session_state.adhoc_live_df is None or st.session_state.adhoc_run_result is None:
         with st.spinner("Executing URL-safe live SOQL query against Salesforce..."):
             try:
-                pk_values = src_df[src_pk].dropna().tolist()
+                pk_values = [str(v).strip() for v in src_df[src_pk].dropna().tolist() if str(v).strip()]
                 live_df = fetch_adhoc_live_data(
                     object_name=obj_name,
                     fields=active_fields,
@@ -965,245 +773,223 @@ def _render_step_4_execution():
                     sf_id_field="Id",
                     insert_nulls=st.session_state.adhoc_insert_nulls,
                     mappings=mappings,
+                    operation=st.session_state.adhoc_operation,
                 )
                 engine = ManualLoadEngine(cfg)
                 res = engine.run(src_df, live_df)
                 st.session_state.adhoc_run_result = res
-                changes_count = len(_safe_read_csv(res.artifacts.get("field_level_changes")))
-                st.success(f"Completed! Found {res.changed_records} records with updates ({changes_count} field changes).")
+
+                # Check for SF ambiguous duplicates
+                st.session_state.adhoc_sf_duplicates_df = detect_salesforce_duplicates(live_df, sf_pk)
+
+                # Check for unmatched records
+                sf_pks = set(live_df[sf_pk].astype(str).str.strip().dropna()) if sf_pk in live_df.columns else set()
+                st.session_state.adhoc_unmatched_list = detect_unmatched_records(pk_values, sf_pks)
 
             except Exception as e:
-                st.error(f"Execution failed: {e}")
-                logger.exception("Ad-hoc engine execution error")
-                return
-
-    # Display Results if Available
-    res: AdhocRunResult = st.session_state.adhoc_run_result
-    if res is not None and res.object_name == obj_name:
-        st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
-        st.markdown("#### 📊 Execution Delta Metrics")
-
-        k_col1, k_col2, k_col3, k_col4 = st.columns(4)
-        with k_col1:
-            st.markdown(render_kpi_card("Total Source Rows", f"{res.total_source_rows:,}", "Processed records", "default"), unsafe_allow_html=True)
-        with k_col2:
-            st.markdown(render_kpi_card("Records to Update", f"{res.changed_records:,}", "Deltas identified", "success"), unsafe_allow_html=True)
-        with k_col3:
-            st.markdown(render_kpi_card("Validation Errors", f"{res.error_rows:,}", "Quarantined rows", "error" if res.error_rows > 0 else "default"), unsafe_allow_html=True)
-        with k_col4:
-            st.markdown(render_kpi_card("Unchanged / Skipped", f"{res.unchanged_records + res.skipped_pks:,}", "No update required", "default"), unsafe_allow_html=True)
-
-        # Tabs for Visual Review
-        tab_changes, tab_grid, tab_errors, tab_summary = st.tabs([
-            f"👁️ Field-Level Changes ({res.changed_records} records)",
-            "📋 Validation Audit Grid",
-            f"🚫 Error Diagnostics ({res.error_rows})",
-            "📄 Run Summary",
-        ])
-
-        with tab_changes:
-            chg_path = res.artifacts.get("field_level_changes")
-            chg_df = _safe_read_csv(chg_path)
-            if not chg_df.empty:
-                st.dataframe(chg_df, use_container_width=True)
-            else:
-                st.info("No field-level changes detected between spreadsheet and Salesforce.")
-
-        with tab_grid:
-            val_path = res.artifacts.get("validation_report")
-            val_df = _safe_read_csv(val_path)
-            if not val_df.empty:
-                badge_map = {
-                    "READY_FOR_UPLOAD": "🟢 UPDATE DETECTED",
-                    "REJECTED_ERRORS": "🔴 ERROR (REJECTED)",
-                    "UNCHANGED": "⚪ UNCHANGED",
-                    "DUPLICATE_SKIPPED": "⚠️ DUPLICATE",
-                    "SKIPPED": "⚪ NOT IN SALESFORCE",
-                }
-                status_list = [badge_map.get(str(r.get("Final_Status", "")), f"⚪ {r.get('Final_Status', '')}") for _, r in val_df.iterrows()]
-                val_df.insert(0, "Status", status_list)
-                st.dataframe(val_df, use_container_width=True)
-            else:
-                st.info("Validation audit grid is empty.")
-
-        with tab_errors:
-            err_path = res.artifacts.get("error_records")
-            err_df = _safe_read_csv(err_path)
-            if not err_df.empty:
-                st.dataframe(err_df, use_container_width=True)
-            else:
-                st.info("No validation errors found in this run! 🎉")
-
-        with tab_summary:
-            sum_path = res.artifacts.get("run_summary")
-            if sum_path and sum_path.exists():
-                st.code(sum_path.read_text(encoding="utf-8"))
-
-        # Download Hub
-        st.markdown("---")
-        st.markdown("#### 📥 Download Generated Artifacts")
-        d_col1, d_col2, d_col3, d_col4 = st.columns(4)
-
-        final_path = res.artifacts.get("final_input_file")
-        if final_path and final_path.exists():
-            with open(final_path, "rb") as f:
-                d_col1.download_button("📥 Final Input File (.csv)", f.read(), file_name="final_input_file.csv", mime="text/csv", use_container_width=True)
-
-        rollback_path = res.artifacts.get("rollback_file")
-        if rollback_path and rollback_path.exists():
-            with open(rollback_path, "rb") as f:
-                d_col2.download_button("🔙 Rollback File (.csv)", f.read(), file_name="rollback_file.csv", mime="text/csv", use_container_width=True)
-
-        if chg_path and chg_path.exists():
-            with open(chg_path, "rb") as f:
-                d_col3.download_button("👁️ Field Changes (.csv)", f.read(), file_name="field_level_changes.csv", mime="text/csv", use_container_width=True)
-
-        val_path = res.artifacts.get("validation_report")
-        if val_path and val_path.exists():
-            with open(val_path, "rb") as f:
-                d_col4.download_button("📋 Validation Report (.csv)", f.read(), file_name="validation_report.csv", mime="text/csv", use_container_width=True)
-
-        # Push to Salesforce (Background Ingest Engine)
-        st.markdown("---")
-        st.markdown("#### 🚀 Push to Sitetracker")
-        st.caption(f"Direct cloud upload to **{obj_name}** in **{active_prof.title()}**.")
-
-        # Check background job status
-        job_info = get_job_progress(res.run_dir)
-        if job_info:
-            status = job_info.get("status", "RUNNING")
-            if status == "RUNNING":
-                is_rb = job_info.get("is_rollback", False)
-                eng_name = "Lightning REST Collections" if job_info.get("engine") == "composite" else "Bulk API 2.0"
-                title = f"⏪ Rollback in Progress ({eng_name})" if is_rb else f"🚀 Ingest in Progress ({eng_name})"
-                st.markdown(f"### {title}")
-                st.caption(f"Executing cloud update on **{obj_name}** in **{active_prof.title()}**.")
-
-                tot_recs = job_info.get("total_records_overall", res.changed_records)
-                proc_recs = job_info.get("processed_records_overall", 0)
-                succ_recs = job_info.get("successful_records_overall", 0)
-                fail_recs = job_info.get("failed_records_overall", 0)
-
-                prog_val = min(1.0, max(0.0, proc_recs / tot_recs)) if tot_recs > 0 else 0.0
-                st.progress(prog_val, text=f"Progress: {proc_recs:,} of {tot_recs:,} records ({int(prog_val * 100)}%)")
-
-                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-                m_col1.metric("Total Records", f"{tot_recs:,}")
-                m_col2.metric("Processed", f"{proc_recs:,}")
-                m_col3.metric("Successful", f"{succ_recs:,}")
-                if fail_recs > 0:
-                    m_col4.metric("Failed", f"{fail_recs:,}")
-                else:
-                    try:
-                        s_dt = datetime.fromisoformat(job_info["start_time"])
-                        el_sec = int((datetime.now() - s_dt).total_seconds())
-                        m_col4.metric("Elapsed Time", f"{el_sec}s")
-                    except Exception:
-                        m_col4.metric("Elapsed Time", "N/A")
-
-                # In-flight chunk evaluation detail
-                stage = job_info.get("stage", "completed_chunk")
-                c_chunk = job_info.get("current_chunk", 0)
-                t_chunk = job_info.get("total_chunks", 0)
-                r_start = job_info.get("chunk_start", 0)
-                r_end = job_info.get("chunk_end", 0)
-
-                if t_chunk > 0:
-                    badge_color = "#EFF6FF" if is_rb else "#F0FDF4"
-                    border_color = "#93C5FD" if is_rb else "#86EFAC"
-                    text_color = "#1E40AF" if is_rb else "#166534"
-                    sub_color = "#1D4ED8" if is_rb else "#15803D"
-                    icon = "⏪" if is_rb else "⏳"
-                    st.markdown(
-                        f"""
-                        <div style="background:{badge_color}; border:1px solid {border_color}; border-radius:6px; padding:10px 14px; margin: 12px 0; font-size:0.9rem; color:{text_color}; display:flex; align-items:center; gap:8px;">
-                            <span>{icon}</span>
-                            <div><b>Active Chunk:</b> Evaluating Chunk <b>{c_chunk} of {t_chunk}</b> (Records {r_start} to {r_end} on <b>{obj_name}</b>)<br>
-                            <span style="font-size:0.8rem; color:{sub_color};">Salesforce Apex triggers & Sitetracker automation evaluating in cloud...</span></div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                col_ref_btn, col_ref_txt = st.columns([1, 3])
-                with col_ref_btn:
-                    if st.button("🔄 Refresh Status", key="btn_adhoc_refresh_running", type="secondary"):
-                        st.rerun()
-                with col_ref_txt:
-                    st.caption("ℹ️ Progress updates automatically every 1.5 seconds. Background worker continues even if you switch tabs.")
-
-                time.sleep(1.5)
-                st.rerun()
-                return
-
-            elif status in ("COMPLETED", "FAILED"):
-                is_rb = job_info.get("is_rollback", False)
-                if status == "COMPLETED":
-                    title = "⏪ Rollback Completed" if is_rb else "🎉 Ingest Completed"
-                    tot = job_info.get("total_records_overall", 0)
-                    succ = job_info.get("successful_records_overall", 0)
-                    fail = job_info.get("failed_records_overall", 0)
-                    if fail == 0:
-                        st.success(f"**{title}**! Successfully processed all {succ:,} records on **{obj_name}** with 0 errors! 🚀")
-                    else:
-                        st.warning(f"**{title}** completed with {succ:,} successes and {fail:,} failures on **{obj_name}**.")
-                        # Check for failure file
-                        o_meta = job_info.get("objects", {}).get(obj_name, {})
-                        if o_meta.get("failures_file"):
-                            fail_path = res.run_dir / o_meta["failures_file"]
-                            if fail_path.exists():
-                                st.error(f"Failures saved to `{fail_path.name}`:")
-                                fail_df = _safe_read_csv(fail_path)
-                                st.dataframe(fail_df, use_container_width=True)
-                else:
-                    title = "Rollback" if is_rb else "Ingest"
-                    st.error(f"❌ {title} job failed on server: {job_info.get('error_summary', 'Unknown error')}")
-
-                # Rollback Safety Net if not already a rollback
-                if not is_rb and rollback_path and rollback_path.exists():
-                    st.markdown("---")
-                    st.markdown("### ⏪ Emergency Rollback / Revert Safety Net")
-                    st.warning("⚠️ **Need to undo this upload?** You can revert all records back to their original Sitetracker values prior to this run.")
-
-                    with st.expander("🔍 Preview Rollback Records (Values to be restored)", expanded=False):
-                        df_rb = _safe_read_csv(rollback_path)
-                        st.caption(f"**{len(df_rb):,}** rollback records ready to restore")
-                        if not df_rb.empty:
-                            st.dataframe(df_rb, use_container_width=True)
-
-                    col_rb1, col_rb2 = st.columns([2, 1])
-                    with col_rb1:
-                        confirm_revert_comp = st.text_input(
-                            "Type REVERT to enable rollback",
-                            placeholder="REVERT",
-                            key="adhoc_confirm_completed_revert",
-                        )
-                    with col_rb2:
-                        st.write("")
-                        st.write("")
-                        revert_enabled = (confirm_revert_comp.strip() == "REVERT")
-                        if st.button("⏪ Execute Rollback Now", type="secondary", disabled=not revert_enabled, key="btn_adhoc_execute_revert"):
-                            start_background_ingest(
-                                run_dir=res.run_dir,
-                                report_name="Ad-Hoc Ingest",
-                                is_rollback=True,
-                                profile=active_prof,
-                                batch_size=50,
-                                target_object=obj_name,
-                                engine=job_info.get("engine", "composite"),
-                            )
-                            st.rerun()
-
-                st.markdown("---")
-                if st.button("🔄 Dismiss & Reset for New Ingest", key="btn_adhoc_clear_job_state", type="primary"):
-                    clear_job_progress(res.run_dir)
+                st.error(f"Live validation failed: {e}")
+                logger.exception("Live validation error")
+                if st.button("⬅ Back to Mapping & Match Key"):
+                    st.session_state.adhoc_step = 1
                     st.rerun()
                 return
 
-        # If no active job, show controls to initiate Ingest
-        if res.changed_records == 0:
-            st.info("No changes to upload. All spreadsheet records already match Salesforce.")
+    res: AdhocRunResult = st.session_state.adhoc_run_result
+    live_df = st.session_state.adhoc_live_df
+    sf_dups_df = st.session_state.adhoc_sf_duplicates_df
+    unmatched_keys = st.session_state.adhoc_unmatched_list
+
+    # =========================================================================
+    # PRE-FLIGHT BLOCKERS & SAFETY GATES
+    # =========================================================================
+
+    has_blockers = False
+
+    # A. Ambiguous Salesforce Duplicate Blocker
+    if sf_dups_df is not None and not sf_dups_df.empty:
+        has_blockers = True
+        st.error(
+            f"⛔ **EXECUTION BLOCKED: Ambiguous Salesforce Matches Detected ({len(sf_dups_df):,} records)**\n\n"
+            f"Salesforce returned multiple records sharing the same `{sf_pk}` key. "
+            f"Updating would corrupt duplicate records in Salesforce. Please resolve duplicate keys in Salesforce before uploading."
+        )
+        with st.expander(f"🔍 View {len(sf_dups_df):,} Ambiguous Duplicate Salesforce Records", expanded=True):
+            st.dataframe(sf_dups_df, use_container_width=True)
+
+    # B. Direct Salesforce Id Validation Blocker
+    if sf_pk.lower() == "id":
+        invalid_ids = [v for v in src_df[src_pk].astype(str).str.strip() if not is_valid_salesforce_id(v)]
+        if invalid_ids:
+            has_blockers = True
+            st.error(
+                f"⛔ **EXECUTION BLOCKED: Malformed Salesforce IDs Detected ({len(invalid_ids):,} invalid values)**\n\n"
+                f"When matching by Salesforce `Id`, every value must be a valid 15 or 18 character alphanumeric ID. Examples of invalid values: `{invalid_ids[:5]}`"
+            )
+
+    # C. Unmatched Records Gate (Default to Exclude + Require Confirmation)
+    if unmatched_keys:
+        st.warning(
+            f"⚠️ **Found {len(unmatched_keys):,} unmatched record(s)** out of {len(src_df):,} total source records.\n\n"
+            f"**Default Behavior**: Unmatched records are excluded from the update. Only the **{len(src_df) - len(unmatched_keys):,} matched records** will be updated in Salesforce."
+        )
+        with st.expander(f"🔍 Inspect {len(unmatched_keys):,} Unmatched Primary Keys (Quarantined to skipped_records.csv)", expanded=False):
+            st.write(unmatched_keys[:100])
+
+        confirmed = st.checkbox(
+            f"I confirm: Proceed with updating only the {len(src_df) - len(unmatched_keys):,} matched records (exclude {len(unmatched_keys):,} unmatched records)",
+            value=st.session_state.adhoc_unmatched_confirmed,
+            key="adhoc_chk_unmatched_confirm",
+        )
+        st.session_state.adhoc_unmatched_confirmed = confirmed
+
+    # Delta Metrics KPI Cards
+    st.markdown("#### 📊 Proposed Execution Metrics")
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.markdown(render_kpi_card("Total Source Rows", f"{res.total_source_rows:,}", "Spreadsheet records", "default"), unsafe_allow_html=True)
+    with k2:
+        st.markdown(render_kpi_card("Records to Update", f"{res.changed_records:,}", "Deltas identified", "success"), unsafe_allow_html=True)
+    with k3:
+        st.markdown(render_kpi_card("Unmatched / Skipped", f"{len(unmatched_keys):,}", "Excluded from upload", "default"), unsafe_allow_html=True)
+    with k4:
+        st.markdown(render_kpi_card("Ambiguous SF Matches", f"{len(sf_dups_df) if sf_dups_df is not None else 0:,}", "Blockers", "error" if (sf_dups_df is not None and not sf_dups_df.empty) else "default"), unsafe_allow_html=True)
+
+    # Field-Level Changes & Audit Table Tabs
+    tab_changes, tab_audit = st.tabs([
+        f"👁️ Field-Level Changes ({res.changed_records} records)",
+        "📋 Full Validation Audit Grid",
+    ])
+
+    with tab_changes:
+        chg_path = res.artifacts.get("field_level_changes")
+        chg_df = _safe_read_csv(chg_path)
+        if not chg_df.empty:
+            st.dataframe(chg_df, use_container_width=True)
+        else:
+            st.info("No field-level changes detected between spreadsheet and Salesforce.")
+
+    with tab_audit:
+        val_path = res.artifacts.get("validation_report")
+        val_df = _safe_read_csv(val_path)
+        if not val_df.empty:
+            st.dataframe(val_df, use_container_width=True)
+        else:
+            st.info("Validation grid empty.")
+
+    # Navigation & Run Trigger
+    st.markdown("<div style='margin-top: 24px;'></div>", unsafe_allow_html=True)
+    col_back, col_run = st.columns([1, 2])
+
+    with col_back:
+        if st.button("⬅ Back to Mapping & Key", use_container_width=True):
+            st.session_state.adhoc_step = 1
+            st.rerun()
+
+    with col_run:
+        # Check confirmation requirements
+        unmatched_gate_ok = (not unmatched_keys) or st.session_state.adhoc_unmatched_confirmed
+        can_run = (not has_blockers) and unmatched_gate_ok and (res.changed_records > 0)
+
+        if has_blockers:
+            st.button("⛔ Blocked: Resolve Errors Above", disabled=True, use_container_width=True)
+        elif unmatched_keys and not st.session_state.adhoc_unmatched_confirmed:
+            st.button("⚠️ Check Confirmation Above to Proceed", disabled=True, use_container_width=True)
+        elif res.changed_records == 0:
+            st.button("ℹ️ No Deltas to Update", disabled=True, use_container_width=True)
+        else:
+            if st.button(f"Confirm & Run Ingest ({res.changed_records:,} records) ➔", type="primary", use_container_width=True):
+                st.session_state.adhoc_step = 3
+                st.rerun()
+
+
+# ==============================================================================
+# SCREEN 4: RUN RESULTS, DOWNLOADS & ROLLBACK
+# ==============================================================================
+
+def _render_screen_4_results():
+    st.markdown("### 4️⃣ Execution Results & Downloads Hub")
+    st.caption("Monitor live progress, download generated audit artifacts, inspect failures, or execute emergency rollback.")
+
+    res: AdhocRunResult = st.session_state.adhoc_run_result
+    obj_name = st.session_state.adhoc_selected_obj
+    active_prof = get_active_profile()
+
+    if res is None:
+        st.warning("No run results found. Please complete Step 3 first.")
+        if st.button("⬅ Back to Validation"):
+            st.session_state.adhoc_step = 2
+            st.rerun()
+        return
+
+    # Check background job status
+    job_info = get_job_progress(res.run_dir)
+    if job_info:
+        status = job_info.get("status", "RUNNING")
+        if status == "RUNNING":
+            is_rb = job_info.get("is_rollback", False)
+            eng_name = "Lightning REST Collections" if job_info.get("engine") == "composite" else "Bulk API 2.0"
+            title = f"⏪ Rollback in Progress ({eng_name})" if is_rb else f"🚀 Ingest in Progress ({eng_name})"
+            st.markdown(f"### {title}")
+            st.caption(f"Executing cloud update on **{obj_name}** in **{active_prof.title()}**.")
+
+            tot_recs = job_info.get("total_records_overall", res.changed_records)
+            proc_recs = job_info.get("processed_records_overall", 0)
+            succ_recs = job_info.get("successful_records_overall", 0)
+            fail_recs = job_info.get("failed_records_overall", 0)
+
+            prog_val = min(1.0, max(0.0, proc_recs / tot_recs)) if tot_recs > 0 else 0.0
+            st.progress(prog_val, text=f"Progress: {proc_recs:,} of {tot_recs:,} records ({int(prog_val * 100)}%)")
+
+            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+            m_col1.metric("Total Records", f"{tot_recs:,}")
+            m_col2.metric("Processed", f"{proc_recs:,}")
+            m_col3.metric("Successful", f"{succ_recs:,}")
+            if fail_recs > 0:
+                m_col4.metric("Failed", f"{fail_recs:,}")
+            else:
+                try:
+                    s_dt = datetime.fromisoformat(job_info["start_time"])
+                    el_sec = int((datetime.now() - s_dt).total_seconds())
+                    m_col4.metric("Elapsed Time", f"{el_sec}s")
+                except Exception:
+                    m_col4.metric("Elapsed Time", "N/A")
+
+            col_ref_btn, col_ref_txt = st.columns([1, 3])
+            with col_ref_btn:
+                if st.button("🔄 Refresh Status", key="btn_adhoc_refresh_running", type="secondary"):
+                    st.rerun()
+            with col_ref_txt:
+                st.caption("ℹ️ Progress updates automatically every 1.5 seconds. Background worker continues even if you switch tabs.")
+
+            time.sleep(1.5)
+            st.rerun()
             return
+
+        elif status in ("COMPLETED", "FAILED"):
+            is_rb = job_info.get("is_rollback", False)
+            if status == "COMPLETED":
+                title = "⏪ Rollback Completed" if is_rb else "🎉 Ingest Completed"
+                succ = job_info.get("successful_records_overall", 0)
+                fail = job_info.get("failed_records_overall", 0)
+                if fail == 0:
+                    st.success(f"**{title}**! Successfully processed all {succ:,} records on **{obj_name}** with 0 errors! 🚀")
+                else:
+                    st.warning(f"**{title}** completed with {succ:,} successes and {fail:,} failures on **{obj_name}**.")
+                    o_meta = job_info.get("objects", {}).get(obj_name, {})
+                    if o_meta.get("failures_file"):
+                        fail_path = res.run_dir / o_meta["failures_file"]
+                        if fail_path.exists():
+                            st.error(f"Failures saved to `{fail_path.name}`:")
+                            fail_df = _safe_read_csv(fail_path)
+                            st.dataframe(fail_df, use_container_width=True)
+            else:
+                title = "Rollback" if is_rb else "Ingest"
+                st.error(f"❌ {title} job failed on server: {job_info.get('error_summary', 'Unknown error')}")
+
+    # Start Ingest Controls if not yet running
+    if not job_info:
+        st.markdown("#### 🚀 Launch Salesforce Ingest Job")
+        st.caption(f"Ready to update **{res.changed_records:,} records** on **{obj_name}** in **{active_prof.title()}**.")
 
         col_eng, col_batch = st.columns([1.5, 1])
         with col_eng:
@@ -1215,7 +1001,6 @@ def _render_step_4_execution():
                 ],
                 index=0,
                 key="adhoc_sel_ingest_engine",
-                help="Lightning REST Collections processes batches in 1-2 seconds per 50 records without queue delay. Bulk API 2.0 uses Salesforce cloud queues."
             )
             engine_key = "composite" if "Lightning" in sel_engine else "bulk2"
 
@@ -1225,14 +1010,13 @@ def _render_step_4_execution():
                 options=[5, 10, 15, 25, 50],
                 value=50 if engine_key == "composite" else 25,
                 key="adhoc_sel_batch_size",
-                help="Micro-batching prevents Apex 151 DML limit. Smaller batches (10-15) update progress every 20-30s. Larger batches (50) take ~1-2s in REST Composite."
+                help="Smaller batches stay well below Apex 151 DML limit.",
             )
-            st.caption("ℹ️ **Recommended**: 50 records/chunk for Lightning REST Collections.")
 
         col_c1, col_c2 = st.columns([2, 1])
         with col_c1:
             confirm_phrase = st.text_input(
-                "Type CONFIRM to enable Ingest",
+                "Type CONFIRM to execute update:",
                 placeholder="CONFIRM",
                 key="adhoc_confirm_push",
             )
@@ -1241,7 +1025,7 @@ def _render_step_4_execution():
             st.write("")
             st.write("")
             push_enabled = (confirm_phrase.strip() == "CONFIRM")
-            if st.button(f"🚀 Ingest Deltas to {obj_name}", type="primary", disabled=not push_enabled, key="btn_adhoc_execute_push"):
+            if st.button(f"🚀 Execute Ingest Now", type="primary", disabled=not push_enabled, key="btn_adhoc_execute_push"):
                 start_background_ingest(
                     run_dir=res.run_dir,
                     report_name="Ad-Hoc Ingest",
@@ -1253,25 +1037,82 @@ def _render_step_4_execution():
                 )
                 st.rerun()
 
-        # Direct Rollback Option
-        if rollback_path and rollback_path.exists():
-            st.markdown("---")
-            with st.expander("🔙 1-Click Rollback / Revert Option", expanded=False):
-                st.caption(f"Revert all {res.changed_records} records back to their original Sitetracker values using `{rollback_path.name}`.")
-                col_rba, col_rbb = st.columns([2, 1])
-                with col_rba:
-                    rb_confirm = st.text_input("Type REVERT to trigger rollback", placeholder="REVERT", key="adhoc_direct_rb_confirm")
-                with col_rbb:
-                    st.write("")
-                    st.write("")
-                    if st.button("🔙 Execute 1-Click Rollback", type="secondary", disabled=(rb_confirm.strip() != "REVERT"), key="btn_adhoc_direct_rb"):
-                        start_background_ingest(
-                            run_dir=res.run_dir,
-                            report_name="Ad-Hoc Ingest",
-                            is_rollback=True,
-                            profile=active_prof,
-                            batch_size=bulk_batch_size,
-                            target_object=obj_name,
-                            engine=engine_key,
-                        )
-                        st.rerun()
+    # Download Hub
+    st.markdown("---")
+    st.markdown("#### 📥 Download Generated Artifacts")
+    d1, d2, d3, d4 = st.columns(4)
+
+    final_p = res.artifacts.get("final_input_file")
+    if final_p and final_p.exists():
+        with open(final_p, "rb") as f:
+            d1.download_button("📥 Final Input File (.csv)", f.read(), file_name="final_input_file.csv", mime="text/csv", use_container_width=True)
+
+    rollback_p = res.artifacts.get("rollback_file")
+    if rollback_p and rollback_p.exists():
+        with open(rollback_p, "rb") as f:
+            d2.download_button("🔙 Rollback File (.csv)", f.read(), file_name="rollback_file.csv", mime="text/csv", use_container_width=True)
+
+    chg_p = res.artifacts.get("field_level_changes")
+    if chg_p and chg_p.exists():
+        with open(chg_p, "rb") as f:
+            d3.download_button("👁️ Field Changes (.csv)", f.read(), file_name="field_level_changes.csv", mime="text/csv", use_container_width=True)
+
+    dup_src_p = res.artifacts.get("duplicate_primary_keys")
+    if dup_src_p and dup_src_p.exists():
+        with open(dup_src_p, "rb") as f:
+            d4.download_button("⚠️ Source Duplicates (.csv)", f.read(), file_name="duplicate_primary_keys.csv", mime="text/csv", use_container_width=True)
+
+    d5, d6, d7, d8 = st.columns(4)
+    skipped_p = res.artifacts.get("skipped_records")
+    if skipped_p and skipped_p.exists():
+        with open(skipped_p, "rb") as f:
+            d5.download_button("⚪ Unmatched Records (.csv)", f.read(), file_name="skipped_records.csv", mime="text/csv", use_container_width=True)
+
+    dup_sf_p = res.artifacts.get("duplicate_salesforce_records")
+    if dup_sf_p and dup_sf_p.exists():
+        with open(dup_sf_p, "rb") as f:
+            d6.download_button("🚫 SF Duplicates (.csv)", f.read(), file_name="duplicate_salesforce_records.csv", mime="text/csv", use_container_width=True)
+
+    err_p = res.artifacts.get("error_records")
+    if err_p and err_p.exists():
+        with open(err_p, "rb") as f:
+            d7.download_button("❌ Error Records (.csv)", f.read(), file_name="error_records.csv", mime="text/csv", use_container_width=True)
+
+    audit_p = res.artifacts.get("audit_log")
+    if audit_p and Path(audit_p).exists():
+        with open(audit_p, "rb") as f:
+            d8.download_button("📄 Audit Log (.log)", f.read(), file_name="audit.log", mime="text/plain", use_container_width=True)
+
+    # 1-Click Rollback Safety Net
+    if rollback_p and rollback_p.exists() and job_info and job_info.get("status") == "COMPLETED" and not job_info.get("is_rollback"):
+        st.markdown("---")
+        st.markdown("### ⏪ Emergency 1-Click Rollback")
+        st.warning(f"⚠️ Need to undo this upload? You can restore all {res.changed_records:,} records back to their original Sitetracker values.")
+
+        col_rb_txt, col_rb_btn = st.columns([2, 1])
+        with col_rb_txt:
+            rb_phrase = st.text_input("Type REVERT to enable rollback:", placeholder="REVERT", key="adhoc_rb_confirm_phrase")
+        with col_rb_btn:
+            st.write("")
+            st.write("")
+            if st.button("⏪ Execute Rollback Now", type="secondary", disabled=(rb_phrase.strip() != "REVERT"), key="btn_adhoc_do_rollback"):
+                start_background_ingest(
+                    run_dir=res.run_dir,
+                    report_name="Ad-Hoc Ingest",
+                    is_rollback=True,
+                    profile=active_prof,
+                    batch_size=50,
+                    target_object=obj_name,
+                    engine=job_info.get("engine", "composite"),
+                )
+                st.rerun()
+
+    # Reset button for new run
+    st.markdown("---")
+    if st.button("🔄 Start New Ingestion", key="btn_start_new_ingestion", type="secondary"):
+        clear_job_progress(res.run_dir)
+        st.session_state.adhoc_step = 0
+        st.session_state.adhoc_source_df = None
+        st.session_state.adhoc_source_filename = ""
+        _invalidate_validation_cache()
+        st.rerun()

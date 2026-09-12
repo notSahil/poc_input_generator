@@ -26,6 +26,11 @@ class MappingFileNotFoundError(MappingError):
     pass
 
 
+class PrimaryKeyNotFoundError(MappingError):
+    """No primary key mapping was found for the selected object and no match key was specified."""
+    pass
+
+
 class ValidationError(InputGeneratorError):
     """Input data failed validation checks."""
     def __init__(self, message: str, errors: list[str] | None = None):

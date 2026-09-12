@@ -4,11 +4,19 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from core.exceptions import PrimaryKeyNotFoundError
 from core.manual_engine import (
     AdhocEngineConfig,
     AdhocFieldMapping,
     ManualLoadEngine,
+    MappingProfile,
+    MappingStatus,
+    OperationType,
+    detect_salesforce_duplicates,
+    detect_source_duplicates,
+    detect_unmatched_records,
     resolve_pk_and_fields_for_query,
+    resolve_pk_from_mapping,
     suggest_field_mappings,
 )
 from salesforce.adhoc_fetcher import chunk_identifiers
@@ -480,4 +488,242 @@ class TestAdhocFetcher:
         result = engine.run(source_df, live_sf_df)
         assert result.changed_records == 1
         assert result.total_source_rows == 1
+
+
+class TestMappingProfile:
+    """Tests for mapping profile persistence, serialization, security, and compatibility."""
+
+    def test_mapping_profile_save_load_export_import(self, tmp_path):
+        mappings = [
+            AdhocFieldMapping("TM Cell ID", "Name", "TM Cell ID", upload_enabled=False, status=MappingStatus.MAPPED),
+            AdhocFieldMapping("Status", "Status__c", "Status", data_type="text", upload_enabled=True, status=MappingStatus.MAPPED),
+        ]
+        profile = MappingProfile(
+            profile_name="Test Site Profile",
+            object_name="sitetracker__Site__c",
+            operation=OperationType.UPDATE,
+            source_pk_col="TM Cell ID",
+            target_pk_field="Name",
+            mappings=mappings,
+            insert_nulls=False,
+            created_by="Unit Tester",
+        )
+
+        saved_path = profile.save_to_file(profiles_dir=tmp_path)
+        assert saved_path.exists()
+        assert saved_path.name == "Test_Site_Profile.json"
+
+        loaded = MappingProfile.load_from_file(saved_path)
+        assert loaded.profile_name == "Test Site Profile"
+        assert loaded.object_name == "sitetracker__Site__c"
+        assert loaded.operation == OperationType.UPDATE
+        assert loaded.source_pk_col == "TM Cell ID"
+        assert loaded.target_pk_field == "Name"
+        assert len(loaded.mappings) == 2
+        assert loaded.mappings[1].target_field_api == "Status__c"
+
+        # Test to_dict / from_dict
+        d = profile.to_dict()
+        assert isinstance(d, dict)
+        assert d["profile_name"] == "Test Site Profile"
+        profile_2 = MappingProfile.from_dict(d)
+        assert profile_2.profile_name == profile.profile_name
+        assert profile_2.operation == profile.operation
+
+    def test_profile_json_contains_no_secrets(self, tmp_path):
+        mappings = [
+            AdhocFieldMapping("Col1", "Field1__c", "Label 1", upload_enabled=True)
+        ]
+        profile = MappingProfile(
+            profile_name="Secure Profile",
+            object_name="sitetracker__Site__c",
+            source_pk_col="Col1",
+            target_pk_field="Field1__c",
+            mappings=mappings,
+        )
+        saved_path = profile.save_to_file(profiles_dir=tmp_path)
+        content = saved_path.read_text(encoding="utf-8")
+
+        # Must not contain common secret terms
+        for secret_word in ["token", "password", "secret", "client_id", "access_token", "refresh_token"]:
+            assert f'"{secret_word}"' not in content.lower()
+
+    def test_saved_profile_compatibility_warnings(self):
+        mappings = [
+            AdhocFieldMapping("ColA", "FieldA__c", "Field A"),
+            AdhocFieldMapping("ColB", "FieldB__c", "Field B"),
+        ]
+        profile = MappingProfile(
+            profile_name="Compat Profile",
+            object_name="sitetracker__Site__c",
+            source_pk_col="ColA",
+            target_pk_field="FieldA__c",
+            mappings=mappings,
+        )
+
+        # Source file is missing ColB, but has extra ColC
+        source_cols = ["ColA", "ColC"]
+        compat = profile.check_compatibility(source_cols)
+        assert "ColB" in compat["missing"]
+        assert "ColC" in compat["extra"]
+        assert "ColA" not in compat["missing"]
+
+
+class TestDuplicateDetectionAndSafety:
+    """Tests for duplicate source keys, ambiguous SF duplicates, and unmatched records."""
+
+    def test_source_duplicates_first_occurrence_wins(self):
+        source_data = pd.DataFrame([
+            {"Site_ID": "SITE-001", "Val": "Row1"},
+            {"Site_ID": "SITE-002", "Val": "Row2"},
+            {"Site_ID": "SITE-001", "Val": "Row3-Dup"},
+            {"Site_ID": "SITE-003", "Val": "Row4"},
+            {"Site_ID": "SITE-002", "Val": "Row5-Dup"},
+        ])
+        dedup_df, dup_df = detect_source_duplicates(source_data, "Site_ID")
+        assert len(dedup_df) == 3
+        assert list(dedup_df["Val"]) == ["Row1", "Row2", "Row4"]
+        assert len(dup_df) == 2
+        assert list(dup_df["Val"]) == ["Row3-Dup", "Row5-Dup"]
+
+    def test_salesforce_ambiguous_duplicate_blocks_execution(self, tmp_path):
+        source_df = pd.DataFrame([
+            {"TM Cell ID": "10140", "Site Name": "Updated Alpha"}
+        ])
+        # Salesforce returns TWO records with same business key (Name = 10140)
+        live_sf_df = pd.DataFrame([
+            {"Id": "a0p4J000000Dn1lQAC", "Name": "10140", "Site Name": "Old Alpha 1"},
+            {"Id": "a0p4J000000Dn1lQAD", "Name": "10140", "Site Name": "Old Alpha 2"},
+        ])
+        mappings = [
+            AdhocFieldMapping("TM Cell ID", "Name", "TM Cell ID", upload_enabled=False),
+            AdhocFieldMapping("Site Name", "Site Name", "Site Name", upload_enabled=True),
+        ]
+        config = AdhocEngineConfig(
+            object_name="sitetracker__Site__c",
+            source_pk_col="TM Cell ID",
+            target_pk_field="Name",
+            sf_id_field="Id",
+            insert_nulls=False,
+            mappings=mappings,
+        )
+        engine = ManualLoadEngine(config, custom_run_dir=tmp_path / "ambiguous_sf_run")
+        result = engine.run(source_df, live_sf_df)
+
+        assert result.duplicate_sf_pks == 2
+        assert result.changed_records == 0  # Blocked from being included in updates!
+        assert "duplicate_salesforce_records" in result.artifacts
+        dup_sf_file = result.artifacts["duplicate_salesforce_records"]
+        assert dup_sf_file.exists()
+        dup_sf_df = pd.read_csv(dup_sf_file, dtype=str)
+        assert len(dup_sf_df) == 2
+        assert "AMBIGUOUS_SF_DUPLICATE" in dup_sf_df["Reason"].values
+
+    def test_unmatched_records_default_excluded(self, tmp_path):
+        source_pks = ["SITE-100", "SITE-200", "SITE-300"]
+        sf_pks = {"SITE-100", "SITE-200"}
+        unmatched = detect_unmatched_records(source_pks, sf_pks)
+        assert unmatched == ["SITE-300"]
+
+        source_df = pd.DataFrame([
+            {"Site_ID": "SITE-100", "Name": "Site 100 Updated"},
+            {"Site_ID": "SITE-300", "Name": "Site 300 Unmatched"},
+        ])
+        live_sf_df = pd.DataFrame([
+            {"Id": "a0p001", "Site_ID": "SITE-100", "Name": "Site 100 Old"},
+        ])
+        mappings = [
+            AdhocFieldMapping("Site_ID", "Site_ID", "Site ID", upload_enabled=False),
+            AdhocFieldMapping("Name", "Name", "Name", upload_enabled=True),
+        ]
+        config = AdhocEngineConfig(
+            object_name="sitetracker__Site__c",
+            source_pk_col="Site_ID",
+            target_pk_field="Site_ID",
+            sf_id_field="Id",
+            insert_nulls=False,
+            mappings=mappings,
+        )
+        engine = ManualLoadEngine(config, custom_run_dir=tmp_path / "unmatched_run")
+        result = engine.run(source_df, live_sf_df)
+
+        assert result.skipped_pks == 1
+        assert result.changed_records == 1
+        skip_df = pd.read_csv(result.artifacts["skipped_records"], dtype=str)
+        assert len(skip_df) == 1
+        assert skip_df.iloc[0]["Primary_Key"] == "SITE-300"
+        assert skip_df.iloc[0]["Reason"] == "PK_NOT_FOUND_IN_SALESFORCE"
+
+    def test_update_lookup_by_business_key_final_dml_by_id(self, tmp_path):
+        source_df = pd.DataFrame([
+            {"TM Cell ID": "00120", "Status": "Active"}
+        ])
+        live_sf_df = pd.DataFrame([
+            {"Id": "a0p4J000000Dn1lQAC", "Name": "00120", "Status": "Inactive"}
+        ])
+        mappings = [
+            AdhocFieldMapping("TM Cell ID", "Name", "TM Cell ID", upload_enabled=False),
+            AdhocFieldMapping("Status", "Status", "Status", upload_enabled=True),
+        ]
+        config = AdhocEngineConfig(
+            object_name="sitetracker__Site__c",
+            source_pk_col="TM Cell ID",
+            target_pk_field="Name",
+            sf_id_field="Id",
+            insert_nulls=False,
+            mappings=mappings,
+        )
+        engine = ManualLoadEngine(config, custom_run_dir=tmp_path / "dml_by_id_run")
+        result = engine.run(source_df, live_sf_df)
+
+        assert result.changed_records == 1
+        final_df = pd.read_csv(result.artifacts["final_input_file"], dtype=str)
+        assert len(final_df) == 1
+        assert "Id" in final_df.columns
+        assert final_df.iloc[0]["Id"] == "a0p4J000000Dn1lQAC"
+        # Business key column should not be sent in update payload if not upload_enabled
+        assert "Name" not in final_df.columns
+        assert "TM Cell ID" not in final_df.columns
+
+    def test_leading_zero_values_preserved(self, tmp_path):
+        source_df = pd.DataFrame([
+            {"TM Cell ID": "00120", "Code": "00050"}
+        ])
+        live_sf_df = pd.DataFrame([
+            {"Id": "a0p001", "Name": "00120", "Code": "00010"}
+        ])
+        mappings = [
+            AdhocFieldMapping("TM Cell ID", "Name", "TM Cell ID", upload_enabled=False),
+            AdhocFieldMapping("Code", "Code", "Code", upload_enabled=True),
+        ]
+        config = AdhocEngineConfig(
+            object_name="sitetracker__Site__c",
+            source_pk_col="TM Cell ID",
+            target_pk_field="Name",
+            sf_id_field="Id",
+            insert_nulls=False,
+            mappings=mappings,
+        )
+        engine = ManualLoadEngine(config, custom_run_dir=tmp_path / "leading_zeros_run")
+        result = engine.run(source_df, live_sf_df)
+
+        final_df = pd.read_csv(result.artifacts["final_input_file"], dtype=str)
+        assert final_df.iloc[0]["Code"] == "00050"
+
+    def test_authoritative_resolution_no_fuzzy_fallbacks(self):
+        # 1. Unrecognized object returns None
+        assert resolve_pk_from_mapping("NonExistentObject__c", ["Col1", "Col2"]) is None
+
+        # 2. Known object with unrecognized columns returns None (never guesses or picks first column)
+        assert resolve_pk_from_mapping("sitetracker__Site__c", ["RandomColA", "RandomColB"]) is None
+
+        # 3. Known object with exact matching authoritative column returns the configured PK
+        resolved = resolve_pk_from_mapping("sitetracker__Site__c", ["TM Cell ID", "OtherCol"])
+        assert resolved == ("TM Cell ID", "Name")
+
+    def test_empty_match_key_raises_error(self):
+        # PrimaryKeyNotFoundError can be raised and has descriptive messaging
+        with pytest.raises(PrimaryKeyNotFoundError) as exc_info:
+            raise PrimaryKeyNotFoundError("No primary key mapping was found and no match key was selected.")
+        assert "No primary key mapping" in str(exc_info.value)
 

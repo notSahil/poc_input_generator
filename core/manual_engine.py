@@ -4,8 +4,10 @@ Provides an isolated, headless engine to perform delta comparisons, validations,
 and audit artifact generation for arbitrary Salesforce objects and fields.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from enum import StrEnum
+import json
 import logging
 from pathlib import Path
 import re
@@ -14,10 +16,36 @@ import pandas as pd
 
 from config import settings
 from core.audit_logger import AuditLogger, resolve_user_identity
-from core.exceptions import MappingError, ValidationError
+from core.exceptions import MappingError, PrimaryKeyNotFoundError, ValidationError
 from core.normalizer import DataNormalizer
 
 logger = logging.getLogger(__name__)
+
+
+class OperationType(StrEnum):
+    UPDATE = "update"
+    INSERT = "insert"
+    UPSERT = "upsert"
+
+
+class MappingStatus(StrEnum):
+    MAPPED = "mapped"
+    UNMAPPED = "unmapped"
+    IGNORED = "ignored"
+    INVALID = "invalid"
+
+
+CANONICAL_OBJECT_MAP: dict[str, str] = {
+    "Site": "sitetracker__Site__c",
+    "BT Project": "BT_Project__c",
+    "Project": "sitetracker__Project__c",
+}
+SF_TO_MAPPING_NAMES: dict[str, str] = {v: k for k, v in CANONICAL_OBJECT_MAP.items()}
+
+
+def normalize_header(s: str) -> str:
+    """Normalize a header or field name for authoritative comparison."""
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
 
 @dataclass
@@ -28,7 +56,131 @@ class AdhocFieldMapping:
     target_field_label: str
     data_type: str = "text"  # 'text', 'date', 'number', 'boolean'
     upload_enabled: bool = True
-    match_confidence: str = "Manual"  # 'Exact', 'Normalized', 'Manual', 'None'
+    match_confidence: str = "Manual"  # 'Exact', 'Normalized', 'Canonical', 'Manual', 'None'
+    status: MappingStatus = MappingStatus.UNMAPPED
+
+
+@dataclass
+class MappingProfile:
+    """Persistent mapping configuration for the Dataloader flow.
+    Stored as JSON in data/mapping_profiles/. Contains NO credentials or secrets.
+    """
+    profile_name: str
+    object_name: str
+    operation: OperationType = OperationType.UPDATE
+    source_pk_col: str = ""
+    target_pk_field: str = ""
+    mappings: list[AdhocFieldMapping] = field(default_factory=list)
+    insert_nulls: bool = False
+    created_at: str = ""
+    created_by: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert profile to serializable dict ensuring no secrets."""
+        return {
+            "profile_name": self.profile_name,
+            "object_name": self.object_name,
+            "operation": str(self.operation),
+            "source_pk_col": self.source_pk_col,
+            "target_pk_field": self.target_pk_field,
+            "insert_nulls": bool(self.insert_nulls),
+            "created_at": self.created_at or datetime.now().isoformat(),
+            "created_by": self.created_by or "Local Operator",
+            "mappings": [
+                {
+                    "source_column": m.source_column,
+                    "target_field_api": m.target_field_api,
+                    "target_field_label": m.target_field_label,
+                    "data_type": m.data_type,
+                    "upload_enabled": m.upload_enabled,
+                    "match_confidence": m.match_confidence,
+                    "status": str(m.status),
+                }
+                for m in self.mappings
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "MappingProfile":
+        """Instantiate profile from dictionary."""
+        mappings = [
+            AdhocFieldMapping(
+                source_column=m.get("source_column", ""),
+                target_field_api=m.get("target_field_api", ""),
+                target_field_label=m.get("target_field_label", ""),
+                data_type=m.get("data_type", "text"),
+                upload_enabled=m.get("upload_enabled", True),
+                match_confidence=m.get("match_confidence", "Manual"),
+                status=MappingStatus(m.get("status", "mapped")),
+            )
+            for m in d.get("mappings", [])
+        ]
+        op_str = d.get("operation", "update").lower()
+        op = OperationType.UPDATE
+        if op_str == "insert":
+            op = OperationType.INSERT
+        elif op_str == "upsert":
+            op = OperationType.UPSERT
+
+        return cls(
+            profile_name=d.get("profile_name", ""),
+            object_name=d.get("object_name", ""),
+            operation=op,
+            source_pk_col=d.get("source_pk_col", ""),
+            target_pk_field=d.get("target_pk_field", ""),
+            mappings=mappings,
+            insert_nulls=bool(d.get("insert_nulls", False)),
+            created_at=d.get("created_at", ""),
+            created_by=d.get("created_by", ""),
+        )
+
+    def save_to_file(self, profiles_dir: Path | None = None) -> Path:
+        """Save profile to JSON in data/mapping_profiles/ (or custom directory)."""
+        target_dir = Path(profiles_dir or getattr(settings, "MAPPING_PROFILES_DIR", settings.DATA_DIR / "mapping_profiles"))
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        clean_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", self.profile_name.strip())
+        if not clean_name:
+            clean_name = f"profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        file_path = target_dir / f"{clean_name}.json"
+        data = self.to_dict()
+
+        # Sanity check: Ensure absolutely no credentials or tokens are saved
+        forbidden_keys = {"token", "password", "secret", "client_id", "access_token", "refresh_token"}
+        found_secrets = forbidden_keys.intersection(k.lower() for k in data.keys())
+        if found_secrets:
+            raise ValueError(f"Security violation: Mapping profile contains forbidden keys: {found_secrets}")
+
+        file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        logger.info("Saved mapping profile '%s' to %s", self.profile_name, file_path)
+        return file_path
+
+    @classmethod
+    def load_from_file(cls, path: Path) -> "MappingProfile":
+        """Load mapping profile from JSON file."""
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Mapping profile not found: {p}")
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return cls.from_dict(data)
+
+    def check_compatibility(self, source_columns: list[str]) -> dict[str, list[str]]:
+        """Check compatibility between profile expected columns and uploaded file columns.
+
+        Returns:
+            dict with 'missing' (columns in profile but not in uploaded file)
+            and 'extra' (columns in uploaded file but not in profile)
+        """
+        profile_cols = {m.source_column for m in self.mappings if m.source_column}
+        if self.source_pk_col:
+            profile_cols.add(self.source_pk_col)
+
+        file_cols = set(source_columns)
+
+        missing = sorted(profile_cols - file_cols)
+        extra = sorted(file_cols - profile_cols)
+        return {"missing": missing, "extra": extra}
 
 
 @dataclass
@@ -38,8 +190,9 @@ class AdhocEngineConfig:
     source_pk_col: str
     target_pk_field: str
     sf_id_field: str = "Id"
-    insert_nulls: bool = True
+    insert_nulls: bool = False
     mappings: list[AdhocFieldMapping] = field(default_factory=list)
+    operation: OperationType = OperationType.UPDATE
 
 
 @dataclass
@@ -56,6 +209,7 @@ class AdhocRunResult:
     skipped_pks: int
     error_rows: int
     artifacts: dict[str, Path] = field(default_factory=dict)
+    duplicate_sf_pks: int = 0
 
 
 def _clean_str(s: str) -> str:
@@ -64,13 +218,11 @@ def _clean_str(s: str) -> str:
 
 
 def detect_target_object(source_columns: list[str]) -> str | None:
+    """Auto-detect the intended Salesforce object based on uploaded spreadsheet column names
+    using authoritative Mapping_file.xlsx column definitions.
     """
-    Auto-detect the intended Salesforce object based on uploaded spreadsheet column names.
-    Uses Mapping_file.xlsx and common column heuristics.
-    """
-    clean_cols = {_clean_str(c) for c in source_columns}
+    clean_cols = {normalize_header(c) for c in source_columns}
 
-    # 1. Check known Mapping_file.xlsx
     mapping_file = Path(settings.DATA_DIR) / "common" / "Mapping_file.xlsx"
     if not mapping_file.exists():
         mapping_file = Path("data/common/Mapping_file.xlsx")
@@ -86,30 +238,20 @@ def detect_target_object(source_columns: list[str]) -> str | None:
                 api_name = str(row.get("API Name", "")).strip()
 
                 for candidate in (src_col, sf_field, api_name):
-                    if candidate and _clean_str(candidate) in clean_cols:
+                    if candidate and normalize_header(candidate) in clean_cols:
                         obj_scores[obj] = obj_scores.get(obj, 0) + 1
 
             if obj_scores:
                 best_obj = max(obj_scores, key=obj_scores.get)
-                obj_lower = best_obj.lower()
-                if "site" in obj_lower:
-                    return "sitetracker__Site__c"
-                elif "bt project" in obj_lower:
-                    return "BT_Project__c"
-                elif "project" in obj_lower:
-                    return "sitetracker__Project__c"
+                # Map through canonical mapping dictionary
+                if best_obj in CANONICAL_OBJECT_MAP:
+                    return CANONICAL_OBJECT_MAP[best_obj]
+                # Normalized lookup
+                for k, v in CANONICAL_OBJECT_MAP.items():
+                    if normalize_header(k) == normalize_header(best_obj):
+                        return v
         except Exception as e:
             logger.warning("Could not parse Mapping_file.xlsx for object auto-detection: %s", e)
-
-    # 2. Heuristic fallback based on distinctive column names
-    for col in source_columns:
-        c_clean = _clean_str(col)
-        if any(term in c_clean for term in ("tmcellid", "siteonmastersitelist", "dateofmastersitelisting", "sitetrackersitec")):
-            return "sitetracker__Site__c"
-        if any(term in c_clean for term in ("projectref", "projectreference", "ranpriority", "hemeasdelay")):
-            return "BT_Project__c"
-        if any(term in c_clean for term in ("wespsid", "hemeasstatus")):
-            return "sitetracker__Project__c"
 
     return None
 
@@ -302,30 +444,142 @@ def suggest_field_mappings(
     return mappings
 
 
+def resolve_pk_from_mapping(
+    object_name: str,
+    source_columns: list[str],
+) -> tuple[str, str] | None:
+    """Authoritative primary key resolution using Mapping_file.xlsx.
+
+    Matches the target Salesforce object exactly and matches source headers
+    after normalizing case, spaces, underscores, and punctuation.
+    Never guesses, never uses fuzzy fallbacks, and never defaults to first column.
+
+    Returns:
+        (source_pk_column, target_salesforce_field) or None if no match configured.
+    """
+    mapping_file = Path(settings.DATA_DIR) / "common" / "Mapping_file.xlsx"
+    if not mapping_file.exists():
+        mapping_file = Path("data/common/Mapping_file.xlsx")
+
+    if not mapping_file.exists():
+        return None
+
+    try:
+        mf = pd.read_excel(mapping_file)
+    except Exception as e:
+        logger.error("Failed to read Mapping_file.xlsx for authoritative PK resolution: %s", e)
+        raise MappingError(f"Could not read mapping file: {e}") from e
+
+    # Determine canonical mapping name for object
+    target_obj_canon = object_name
+    for k, v in CANONICAL_OBJECT_MAP.items():
+        if normalize_header(k) == normalize_header(object_name) or normalize_header(v) == normalize_header(object_name):
+            target_obj_canon = k
+            break
+
+    clean_source_cols = {normalize_header(c): c for c in source_columns}
+
+    for _, row in mf.iterrows():
+        obj = str(row.get("Object Name", "")).strip()
+        src_c = str(row.get("Source File Column Name", "")).strip()
+        sf_api = str(row.get("API Name", "")).strip()
+        is_pk = str(row.get("Primary Key?", "")).strip().lower() in ("yes", "y", "true")
+
+        # Object must match canonically
+        if normalize_header(obj) != normalize_header(target_obj_canon):
+            continue
+
+        if is_pk and normalize_header(src_c) in clean_source_cols:
+            actual_src_col = clean_source_cols[normalize_header(src_c)]
+            return actual_src_col, sf_api
+
+    return None
+
+
+def detect_source_duplicates(
+    df: pd.DataFrame,
+    pk_col: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Detect duplicate keys in uploaded source DataFrame using First Occurrence Wins.
+
+    Args:
+        df: Source DataFrame
+        pk_col: Column name of the primary key
+
+    Returns:
+        tuple of (deduplicated_df, duplicates_df)
+    """
+    if df.empty or pk_col not in df.columns:
+        return df.copy(), pd.DataFrame(columns=df.columns)
+
+    norm_series = df[pk_col].astype(str).str.strip()
+    is_dup = norm_series.duplicated(keep="first")
+
+    dedup_df = df[~is_dup].copy()
+    dup_df = df[is_dup].copy()
+
+    return dedup_df, dup_df
+
+
+def detect_salesforce_duplicates(
+    sf_df: pd.DataFrame,
+    pk_field: str,
+) -> pd.DataFrame:
+    """Detect if Salesforce returned ambiguous duplicate records for the same key.
+
+    Returns:
+        DataFrame containing all records where pk_field appears more than once.
+    """
+    if sf_df.empty or pk_field not in sf_df.columns:
+        return pd.DataFrame(columns=sf_df.columns)
+
+    norm_series = sf_df[pk_field].astype(str).str.strip()
+    is_dup = norm_series.duplicated(keep=False)
+
+    return sf_df[is_dup].copy()
+
+
+def detect_unmatched_records(
+    source_pks: list[str],
+    sf_pks: set[str],
+) -> list[str]:
+    """Identify source primary keys that have no match in Salesforce.
+
+    Returns:
+        List of unmatched primary key values.
+    """
+    clean_sf_pks = {str(k).strip() for k in sf_pks if str(k).strip() and str(k).lower() != "nan"}
+    unmatched: list[str] = []
+    seen = set()
+
+    for pk in source_pks:
+        k = str(pk).strip()
+        if k and k.lower() != "nan" and k not in seen:
+            seen.add(k)
+            if k not in clean_sf_pks:
+                unmatched.append(k)
+
+    return unmatched
+
+
 def resolve_pk_and_fields_for_query(
     object_name: str,
     source_columns: list[str],
     sample_values: dict[str, list[str]] | None = None,
     sf_fields: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str, list[str]]:
-    """
-    Intelligently determine the primary key source column, target Salesforce API field,
-    and associated fields to query from Salesforce for live baseline data retrieval.
+    """Determine primary key and fields to query without heuristic guessing.
 
-    Args:
-        object_name: Target Salesforce object API name (e.g. 'sitetracker__Site__c')
-        source_columns: List of column names from the uploaded source spreadsheet
-        sample_values: Optional mapping of column names to sample value strings
-        sf_fields: Optional describe fields from Salesforce
-
-    Returns:
-        tuple of (source_pk_col, target_pk_field, fields_to_query)
+    1. Checks Mapping_file.xlsx authoritatively for primary key and mapped fields.
+    2. Checks for exact 'Id' or 'Record ID' column headers.
+    3. If sf_fields provided, augments with suggested mapped fields.
+    4. If not found, returns empty strings for PKs (never guesses or picks first column).
     """
     source_pk: str | None = None
     target_pk: str | None = None
     fields_to_query: list[str] = []
 
-    # 1. Check known Mapping_file.xlsx for configured primary keys and mapped fields
+    # 1. Authoritative resolution via Mapping_file.xlsx
     mapping_file = Path(settings.DATA_DIR) / "common" / "Mapping_file.xlsx"
     if not mapping_file.exists():
         mapping_file = Path("data/common/Mapping_file.xlsx")
@@ -333,74 +587,59 @@ def resolve_pk_and_fields_for_query(
     if mapping_file.exists():
         try:
             mf = pd.read_excel(mapping_file)
+            target_obj_canon = object_name
+            for k, v in CANONICAL_OBJECT_MAP.items():
+                if normalize_header(k) == normalize_header(object_name) or normalize_header(v) == normalize_header(object_name):
+                    target_obj_canon = k
+                    break
+
+            clean_source_cols = {normalize_header(c): c for c in source_columns}
+
             for _, row in mf.iterrows():
-                obj = str(row.get("Object Name", "")).strip().lower()
+                obj = str(row.get("Object Name", "")).strip()
                 src_c = str(row.get("Source File Column Name", "")).strip()
                 sf_api = str(row.get("API Name", "")).strip()
                 is_pk = str(row.get("Primary Key?", "")).strip().lower() in ("yes", "y", "true")
 
-                applies = False
-                obj_norm = object_name.lower()
-                if "site" in obj_norm and "site" in obj:
-                    applies = True
-                elif "bt_project" in obj_norm and "bt" in obj:
-                    applies = True
-                elif "project" in obj_norm and ("bt" not in obj and "project" in obj):
-                    applies = True
+                if normalize_header(obj) != normalize_header(target_obj_canon):
+                    continue
 
-                if applies and src_c in source_columns:
+                if normalize_header(src_c) in clean_source_cols:
+                    actual_src_col = clean_source_cols[normalize_header(src_c)]
                     if is_pk and not source_pk:
-                        source_pk = src_c
+                        source_pk = actual_src_col
                         target_pk = sf_api
                     elif sf_api and sf_api.lower() != "id" and sf_api not in fields_to_query:
                         fields_to_query.append(sf_api)
         except Exception as e:
-            logger.warning("Could not parse Mapping_file.xlsx for PK resolution: %s", e)
+            logger.error("Failed to read Mapping_file.xlsx: %s", e)
+            raise MappingError(f"Could not read mapping file: {e}") from e
 
-    # 2. Heuristic PK resolution if not resolved via Mapping_file.xlsx
+    # 2. Check for exact Id column
     if not source_pk:
-        # Check for explicit Salesforce ID columns
         for c in source_columns:
-            c_low = c.lower().strip()
-            if c_low in ("id", "record id", "record id (site)", "record_id", "sf_id", "salesforce_id"):
+            c_norm = normalize_header(c)
+            if c_norm in ("id", "record_id", "record_id_site", "salesforce_id", "sf_id") or c.strip().lower() in ("id", "record id", "record id (site)", "record_id", "sf_id", "salesforce id", "salesforce_id"):
                 source_pk = c
                 target_pk = "Id"
                 break
 
-    if not source_pk:
-        # Check for standard business identifiers
-        for c in source_columns:
-            c_clean = _clean_str(c)
-            if any(term in c_clean for term in ("cellid", "siteid", "projectref", "projectreference", "wespsid", "sitecode", "code", "ref")):
-                source_pk = c
-                target_pk = "Name"
-                break
-
-    if not source_pk and source_columns:
-        source_pk = source_columns[0]
-        # Check if sample values look like 15 or 18 character Salesforce IDs
-        first_vals = sample_values.get(source_pk, []) if sample_values else []
-        from salesforce.adhoc_fetcher import is_valid_salesforce_id
-        if first_vals and all(is_valid_salesforce_id(str(v).strip()) for v in first_vals[:5] if str(v).strip()):
-            target_pk = "Id"
-        else:
-            target_pk = "Name"
-
-    if not target_pk:
-        target_pk = "Name"
-
-    # 3. Discover additional fields to query via suggest_field_mappings if sf_fields provided
+    # 3. Discover mapped fields to query from sf_fields if available
     if sf_fields:
-        suggs = suggest_field_mappings(source_columns, sf_fields, source_pk_col=source_pk, target_pk_field=target_pk, object_name=object_name)
+        suggs = suggest_field_mappings(
+            source_columns,
+            sf_fields,
+            source_pk_col=source_pk,
+            target_pk_field=target_pk,
+            object_name=object_name,
+        )
         for s in suggs:
             if s.upload_enabled and s.target_field_api and s.target_field_api != target_pk and s.target_field_api.lower() != "id":
                 if s.target_field_api not in fields_to_query:
                     fields_to_query.append(s.target_field_api)
 
-    # Filter out target_pk and Id from fields_to_query (fetcher will automatically add Id and pk_field)
     fields_to_query = [f for f in fields_to_query if f != target_pk and f.lower() != "id"]
-
-    return source_pk, target_pk, fields_to_query
+    return source_pk or "", target_pk or "", fields_to_query
 
 
 class ManualLoadEngine:
@@ -533,6 +772,7 @@ class ManualLoadEngine:
         error_rows: list[dict[str, Any]] = []        # -> error_records.csv
         skipped_rows: list[dict[str, Any]] = []      # -> skipped_records.csv
         validation_rows: list[dict[str, Any]] = []   # -> validation_report.csv
+        duplicate_sf_rows: list[dict[str, Any]] = [] # -> duplicate_salesforce_records.csv
 
         date_error_count = 0
         type_error_count = 0
@@ -540,7 +780,7 @@ class ManualLoadEngine:
         for row_num, (_, src) in enumerate(valid_src.iterrows(), start=1):
             pr = src[pk_src]
 
-            # Duplicate Check
+            # Duplicate Check (Source file - First Occurrence Wins)
             if pr in seen_pks:
                 first_row = seen_pks[pr]
                 dup_entry = {
@@ -564,7 +804,7 @@ class ManualLoadEngine:
                     "Data_Types_OK": "N/A",
                     "Has_Changes": False,
                     "Final_Status": "DUPLICATE_SKIPPED",
-                    "Error_Details": f"Duplicate Primary Key (first occurrence at Row {first_row})",
+                    "Error_Details": f"Duplicate Primary Key in source (first occurrence at Row {first_row})",
                 })
                 continue
             else:
@@ -591,7 +831,34 @@ class ManualLoadEngine:
                 continue
 
             st_row = st_index.loc[pr]
-            if isinstance(st_row, pd.DataFrame):
+            # Detect Ambiguous Duplicate Matches in Salesforce (>1 record with same PK)
+            if isinstance(st_row, pd.DataFrame) and len(st_row) > 1:
+                for idx, (_, sf_r) in enumerate(st_row.iterrows(), start=1):
+                    duplicate_sf_rows.append({
+                        "Source_Row_Number": row_num,
+                        "Primary_Key": pr,
+                        "SF_Match_Index": idx,
+                        "Salesforce_Id": sf_r.get(sf_id_col, sf_r.get("Id", "")),
+                        "Reason": "AMBIGUOUS_SF_DUPLICATE",
+                    })
+                error_rows.append({
+                    "Row_Number": row_num,
+                    "Primary_Key": pr,
+                    "Id": "",
+                    "Errors": f"AMBIGUOUS_SF_DUPLICATE: Salesforce returned {len(st_row)} records matching key '{pr}'",
+                })
+                validation_rows.append({
+                    "Row_Number": row_num,
+                    "Primary_Key": pr,
+                    "PK_Valid": True,
+                    "Date_Fields_Valid": "N/A",
+                    "Data_Types_OK": "N/A",
+                    "Has_Changes": False,
+                    "Final_Status": "AMBIGUOUS_SF_DUPLICATE",
+                    "Error_Details": f"Salesforce returned {len(st_row)} records matching key '{pr}'",
+                })
+                continue
+            elif isinstance(st_row, pd.DataFrame):
                 st_row = st_row.iloc[0]
 
             if sf_id_col == pk_sf:
@@ -820,6 +1087,13 @@ class ManualLoadEngine:
         artifacts["run_summary"] = summary_path
         artifacts["audit_log"] = audit.log_file
 
+        # 10. duplicate_salesforce_records.csv (Ambiguous SF matches)
+        dup_sf_cols = ["Source_Row_Number", "Primary_Key", "SF_Match_Index", "Salesforce_Id", "Reason"]
+        dup_sf_df = pd.DataFrame(duplicate_sf_rows) if duplicate_sf_rows else pd.DataFrame(columns=dup_sf_cols)
+        dup_sf_path = self._out("duplicate_salesforce_records.csv")
+        dup_sf_df.to_csv(dup_sf_path, index=False)
+        artifacts["duplicate_salesforce_records"] = dup_sf_path
+
         audit.info(
             "Ad-Hoc delta processing completed",
             tag="VALIDATION",
@@ -829,6 +1103,7 @@ class ManualLoadEngine:
             Unchanged_Records=max(0, len(valid_src) - len(updates) - len(duplicate_rows) - len(skipped_rows) - len(error_rows)),
             Error_Rows=len(error_rows),
             Duplicate_PKs=len(duplicate_rows),
+            Duplicate_SF_Matches=len(duplicate_sf_rows),
         )
 
         unchanged_count = max(0, len(valid_src) - len(updates) - len(duplicate_rows) - len(skipped_rows) - len(error_rows))
@@ -845,6 +1120,7 @@ class ManualLoadEngine:
             skipped_pks=len(skipped_rows),
             error_rows=len(error_rows),
             artifacts=artifacts,
+            duplicate_sf_pks=len(duplicate_sf_rows),
         )
 
         self.logger.info(
