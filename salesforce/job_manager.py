@@ -142,11 +142,16 @@ def _ingest_worker(
     audit = AuditLogger(run_dir)
 
     # 1. Determine targets and inspect record counts
-    loader = MappingLoader(settings.MAPPING_FILE, report_name)
-    all_objects = loader.objects()
-
-    is_multi = not target_object or "All Objects" in target_object
-    target_objects = all_objects if is_multi else [target_object]
+    if target_object and target_object != "All Objects":
+        target_objects = [target_object]
+    else:
+        try:
+            loader = MappingLoader(settings.MAPPING_FILE, report_name)
+            all_objects = loader.objects()
+            is_multi = not target_object or "All Objects" in target_object
+            target_objects = all_objects if is_multi else [target_object]
+        except Exception:
+            target_objects = [target_object] if target_object else ["sitetracker__Site__c"]
 
     if is_rollback:
         audit.info(

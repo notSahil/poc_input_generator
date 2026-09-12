@@ -5,15 +5,18 @@ configure primary keys, auto-match and customize field mappings, review deltas,
 and push updates directly via Salesforce Bulk API 2.0 with 1-click rollback.
 """
 
+from datetime import datetime
 from io import BytesIO
 import logging
 from pathlib import Path
 import re
+import time
 from typing import Any
 import pandas as pd
 import streamlit as st
 
 from config import settings
+from core.config_loader import YamlConfigLoader
 from core.exceptions import SalesforceAPIError, SalesforceAuthError
 from core.manual_engine import (
     AdhocEngineConfig,
@@ -23,16 +26,31 @@ from core.manual_engine import (
     detect_target_object,
     suggest_field_mappings,
 )
+from core.mapping_loader import MappingLoader
 from salesforce.adhoc_fetcher import (
     fetch_adhoc_live_data,
     fetch_all_objects,
     fetch_object_fields,
 )
 from salesforce.auth import check_connection_status, get_active_profile, is_token_valid
-from salesforce.bulk_uploader import push_delta_to_sitetracker
+from salesforce.job_manager import (
+    clear_job_progress,
+    get_job_progress,
+    is_job_active,
+    start_background_ingest,
+)
 from ui.styles import render_kpi_card, render_pill
 
 logger = logging.getLogger(__name__)
+
+
+def _format_ist_time(timestamp: float | None = None) -> str:
+    """Format a timestamp into UK date + IST time (DD/MM/YYYY HH:MM:SS IST)."""
+    if timestamp is None:
+        dt = datetime.now()
+    else:
+        dt = datetime.fromtimestamp(timestamp)
+    return dt.strftime("%d/%m/%Y %H:%M:%S IST")
 
 
 def _init_manual_state():
@@ -43,6 +61,18 @@ def _init_manual_state():
         st.session_state.adhoc_source_df = None
     if "adhoc_source_filename" not in st.session_state:
         st.session_state.adhoc_source_filename = ""
+    if "adhoc_baseline_df" not in st.session_state:
+        st.session_state.adhoc_baseline_df = None
+    if "adhoc_baseline_filename" not in st.session_state:
+        st.session_state.adhoc_baseline_filename = ""
+    if "adhoc_baseline_is_live" not in st.session_state:
+        st.session_state.adhoc_baseline_is_live = False
+    if "adhoc_baseline_query_time" not in st.session_state:
+        st.session_state.adhoc_baseline_query_time = ""
+    if "adhoc_live_df" not in st.session_state:
+        st.session_state.adhoc_live_df = None
+    if "adhoc_selected_template" not in st.session_state:
+        st.session_state.adhoc_selected_template = None
     if "adhoc_objects" not in st.session_state:
         st.session_state.adhoc_objects = []
     if "adhoc_selected_obj" not in st.session_state:
@@ -167,61 +197,270 @@ def render(go_fn):
 # ==============================================================================
 
 def _render_step_1_upload():
-    st.markdown("### 1️⃣ Upload Source Spreadsheet")
-    st.caption("Upload any CSV or Excel file containing the records you want to insert or update in Salesforce.")
+    st.markdown("### 1️⃣ Input Data Selection & SOQL Live Data Fetch")
+    st.caption("Select a predefined report model or upload an ad-hoc CSV/Excel file, then fetch live cloud baseline data or upload an offline file.")
 
-    uploaded_file = st.file_uploader(
-        "Choose a file (CSV or Excel)",
-        type=["csv", "xlsx", "xls"],
-        key="adhoc_file_input",
-    )
+    # 1. Template / Quick-Select Selector
+    reports = YamlConfigLoader.list_reports()
+    report_names = [r.name for r in reports]
+    template_options = ["-- Custom / Ad-Hoc Object (Discover Any Object) --"] + report_names
 
-    if uploaded_file is not None:
-        try:
-            filename = uploaded_file.name
-            if filename.lower().endswith((".xlsx", ".xls")):
-                df = pd.read_excel(uploaded_file, dtype=str)
-            else:
-                try:
-                    df = pd.read_csv(uploaded_file, dtype=str, encoding="utf-8")
-                except UnicodeDecodeError:
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
+    col_tmpl, col_env_info = st.columns([2, 1])
+    with col_tmpl:
+        selected_tmpl = st.selectbox(
+            "📋 Quick-Load Predefined Report Model (Optional):",
+            template_options,
+            index=0,
+            key="adhoc_template_selector",
+            help="Select a configured report template (e.g. Master Site Listing) to automatically pre-configure target objects, primary keys, and field schemas.",
+        )
 
-            df = df.fillna("").astype(str)
-            st.session_state.adhoc_source_df = df
-            st.session_state.adhoc_source_filename = filename
-
-            # Auto-detect target Salesforce object from columns
-            detected_obj = detect_target_object(list(df.columns))
-            if detected_obj:
-                st.session_state.adhoc_selected_obj = detected_obj
-                st.session_state._adhoc_detected_obj = detected_obj
-
-            st.success(f"Loaded **{filename}** successfully ({len(df):,} rows, {len(df.columns)} columns)")
-
-            if st.session_state.get("_adhoc_detected_obj"):
-                st.info(f"💡 Auto-detected target object: **{st.session_state._adhoc_detected_obj}** based on spreadsheet columns.")
-
-            # Preview
-            with st.expander("👁️ Preview First 10 Rows", expanded=True):
-                st.dataframe(df.head(10), use_container_width=True)
-
-            st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
-            if st.button("Next: Select Object & Identifier ➔", type="primary", use_container_width=True):
-                st.session_state.adhoc_step = 1
-                st.rerun()
-
-        except Exception as e:
-            st.error(f"Failed to read uploaded file: {e}")
+    active_prof = get_active_profile()
+    is_auth, status_label = check_connection_status(profile=active_prof)
+    if active_prof == "partial":
+        env_label = "Partial Copy Sandbox"
+        env_color = "purple"
+    elif active_prof == "sandbox":
+        env_label = "Developer Sandbox"
+        env_color = "amber"
     else:
-        if st.session_state.adhoc_source_df is not None:
-            st.info(f"Using previously uploaded file: **{st.session_state.adhoc_source_filename}** ({len(st.session_state.adhoc_source_df):,} rows)")
-            with st.expander("👁️ Preview Current Data", expanded=False):
-                st.dataframe(st.session_state.adhoc_source_df.head(5), use_container_width=True)
-            if st.button("Next: Select Object & Identifier ➔", type="primary", use_container_width=True):
-                st.session_state.adhoc_step = 1
-                st.rerun()
+        env_label = "Production Org"
+        env_color = "blue"
+
+    with col_env_info:
+        status_dot = "● Connected" if is_auth else f"● {status_label}"
+        status_color = "#04844B" if is_auth else "#EA001E"
+        st.markdown(
+            f"""
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:8px 12px; margin-top:14px; text-align:right;">
+                <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase;">Connected Org</div>
+                <div style="font-weight:700; color:#032D60; font-size:0.85rem; display:flex; justify-content:flex-end; align-items:center; gap:6px; margin-top:2px;">
+                    {render_pill(env_label, env_color)}
+                    <span style="color:{status_color}; font-size:0.8rem; font-weight:600;">{status_dot}</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # If user selected a template, auto-populate template configuration
+    if selected_tmpl != "-- Custom / Ad-Hoc Object (Discover Any Object) --":
+        try:
+            yaml_cfg = YamlConfigLoader.load(selected_tmpl)
+            loader = MappingLoader(settings.MAPPING_FILE, selected_tmpl)
+            t_objs = loader.objects()
+            t_pks = loader.all_primary_keys()
+            if t_objs:
+                st.session_state.adhoc_selected_obj = t_objs[0]
+            if t_pks:
+                st.session_state.adhoc_target_pk = t_pks[0]
+            st.session_state.adhoc_selected_template = selected_tmpl
+        except Exception as e:
+            logger.warning("Could not pre-load template %s: %s", selected_tmpl, e)
+
+    # Show registered target object pill if set
+    cur_obj = st.session_state.get("adhoc_selected_obj")
+    if cur_obj:
+        st.markdown(
+            f"""
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between;">
+                <div style="font-size:0.85rem; font-weight:600; color:#475569;">Target Salesforce Object:</div>
+                <div>{render_pill(cur_obj, 'blue')}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Dual Card Layout
+    col_src_card, col_st_card = st.columns(2)
+
+    # Card 1: Source Spreadsheet
+    with col_src_card:
+        st.markdown(
+            """
+            <div class="slds-card">
+                <div class="slds-card-title">📄 Source Excel / CSV Input</div>
+                <div class="slds-card-subtitle">Spreadsheet containing site updates to push into Sitetracker.</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        uploaded_file = st.file_uploader(
+            "Upload Source Spreadsheet (CSV or Excel)",
+            type=["csv", "xlsx", "xls"],
+            key="adhoc_file_input",
+            help="Upload an updated data file (.csv, .xlsx, .xls) containing records to process.",
+        )
+        if uploaded_file is not None:
+            try:
+                filename = uploaded_file.name
+                if filename.lower().endswith((".xlsx", ".xls")):
+                    df = pd.read_excel(uploaded_file, dtype=str)
+                else:
+                    try:
+                        df = pd.read_csv(uploaded_file, dtype=str, encoding="utf-8")
+                    except UnicodeDecodeError:
+                        uploaded_file.seek(0)
+                        df = pd.read_csv(uploaded_file, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
+
+                df = df.fillna("").astype(str)
+                st.session_state.adhoc_source_df = df
+                st.session_state.adhoc_source_filename = filename
+
+                # Auto-detect target Salesforce object from columns if not already chosen
+                if not st.session_state.get("adhoc_selected_obj"):
+                    detected_obj = detect_target_object(list(df.columns))
+                    if detected_obj:
+                        st.session_state.adhoc_selected_obj = detected_obj
+                        st.session_state._adhoc_detected_obj = detected_obj
+
+            except Exception as e:
+                st.error(f"Failed to read uploaded file: {e}")
+
+        src_df = st.session_state.get("adhoc_source_df")
+        if src_df is not None:
+            fn = st.session_state.get("adhoc_source_filename", "Uploaded File")
+            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Active Source: {fn}', 'green')}</div>", unsafe_allow_html=True)
+            with st.expander(f"👁️ Preview Source Data ({fn})", expanded=False):
+                st.caption(f"📁 Previewing top {min(len(src_df), 100):,} of {len(src_df):,} rows • {len(src_df.columns)} columns")
+                st.dataframe(src_df.head(100), use_container_width=True)
+        else:
+            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill('Missing source file', 'amber')}</div>", unsafe_allow_html=True)
+            st.caption("Upload your spreadsheet above to begin.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Card 2: Sitetracker Baseline Data
+    with col_st_card:
+        st.markdown(
+            """
+            <div class="slds-card">
+                <div class="slds-card-title">🔄 Sitetracker Baseline Data</div>
+                <div class="slds-card-subtitle">Current records from Sitetracker used to compute deltas.</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        uploaded_st = st.file_uploader(
+            "Upload Sitetracker Baseline (CSV or Excel)",
+            type=["csv", "xlsx", "xls"],
+            key="adhoc_baseline_input",
+            help="Optional: Upload an offline baseline export file if not fetching live via SOQL.",
+        )
+        if uploaded_st is not None:
+            try:
+                fn_st = uploaded_st.name
+                if fn_st.lower().endswith((".xlsx", ".xls")):
+                    b_df = pd.read_excel(uploaded_st, dtype=str)
+                else:
+                    try:
+                        b_df = pd.read_csv(uploaded_st, dtype=str, encoding="utf-8")
+                    except UnicodeDecodeError:
+                        uploaded_st.seek(0)
+                        b_df = pd.read_csv(uploaded_st, dtype=str, encoding="latin1", engine="python", on_bad_lines="skip")
+                b_df = b_df.fillna("").astype(str)
+                st.session_state.adhoc_baseline_df = b_df
+                st.session_state.adhoc_baseline_filename = fn_st
+                st.session_state.adhoc_baseline_is_live = False
+                st.session_state.adhoc_baseline_query_time = _format_ist_time()
+            except Exception as e:
+                st.error(f"Failed to read baseline file: {e}")
+
+        b_df = st.session_state.get("adhoc_baseline_df")
+        if b_df is not None:
+            is_live = st.session_state.get("adhoc_baseline_is_live", False)
+            q_time = st.session_state.get("adhoc_baseline_query_time", _format_ist_time())
+            b_name = st.session_state.get("adhoc_baseline_filename", "Live SOQL Baseline")
+
+            if is_live:
+                st.markdown(
+                    f"""
+                    <div style="background:#F0FDF4; border:1px solid #86EFAC; border-radius:8px; padding:10px 12px; margin-bottom:10px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <span style="font-size:0.85rem; font-weight:700; color:#166534;">🌐 LIVE SITETRACKER (SOQL QUERY)</span>
+                            <span style="background:#DCFCE7; color:#166534; font-size:0.75rem; font-weight:600; padding:2px 8px; border-radius:10px;">● Live Cloud Data</span>
+                        </div>
+                        <div style="font-size:0.8rem; color:#15803D; margin-top:4px;">
+                            Direct query from <b>{env_label}</b> ({q_time})<br>
+                            Records: <b>{len(b_df):,}</b> • Columns: <b>{len(b_df.columns)}</b>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div style="background:#F8FAFC; border:1px solid #CBD5E1; border-radius:8px; padding:10px 12px; margin-bottom:10px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <span style="font-size:0.85rem; font-weight:700; color:#334155;">📁 OFFLINE SPREADSHEET FILE</span>
+                            <span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:600; padding:2px 8px; border-radius:10px;">📁 Disk File</span>
+                        </div>
+                        <div style="font-size:0.8rem; color:#475569; margin-top:4px;">
+                            Offline file: <code>{b_name}</code> (Loaded: {q_time})<br>
+                            Records: <b>{len(b_df):,}</b> • Columns: <b>{len(b_df.columns)}</b>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            with st.expander(f"👁️ Preview Sitetracker Data ({b_name})", expanded=False):
+                st.caption(f"📁 Previewing top {min(len(b_df), 100):,} of {len(b_df):,} rows • {len(b_df.columns)} columns")
+                st.dataframe(b_df.head(100), use_container_width=True)
+        else:
+            st.markdown(f"<div style='margin-bottom:8px;'>{render_pill('Missing baseline data', 'amber')}</div>", unsafe_allow_html=True)
+            st.caption("Upload baseline file above or fetch live via SOQL.")
+
+        if is_auth:
+            target_obj_for_fetch = st.session_state.get("adhoc_selected_obj") or "sitetracker__Site__c"
+            st.caption(f"ℹ️ Target Salesforce Object for SOQL: **{target_obj_for_fetch}**")
+
+            if st.button("🔄 Fetch Live Data from Sitetracker (SOQL)", key="btn_adhoc_fetch_live", type="primary"):
+                src_data = st.session_state.get("adhoc_source_df")
+                if src_data is None or src_data.empty:
+                    st.warning("⚠️ Please upload a source spreadsheet first so we can filter SOQL records by your primary keys.")
+                else:
+                    with st.spinner(f"Executing SOQL query against {env_label}..."):
+                        try:
+                            # Detect or use PK column
+                            cols = list(src_data.columns)
+                            pk_col = None
+                            for c in ["Record ID (Site)", "Site ID", "Id", "Site_ID__c", "External_Id__c"]:
+                                if c in cols:
+                                    pk_col = c
+                                    break
+                            if not pk_col:
+                                pk_col = cols[0]
+
+                            pk_values = src_data[pk_col].dropna().astype(str).str.strip().tolist()
+                            pk_target_field = "Id" if ("id" in pk_col.lower()) else "Site_ID__c"
+
+                            # Query live data
+                            live_df = fetch_adhoc_live_data(
+                                object_name=target_obj_for_fetch,
+                                fields=[],
+                                pk_field=pk_target_field,
+                                pk_values=pk_values,
+                                profile=active_prof,
+                            )
+                            st.session_state.adhoc_baseline_df = live_df
+                            st.session_state.adhoc_baseline_filename = f"{target_obj_for_fetch}_sitetracker_live.csv"
+                            st.session_state.adhoc_baseline_is_live = True
+                            st.session_state.adhoc_baseline_query_time = _format_ist_time()
+                            st.session_state.adhoc_live_df = live_df
+                            st.success(f"🎉 Successfully fetched {len(live_df):,} live records from Sitetracker ({env_label})!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to fetch live Sitetracker data: {e}")
+        else:
+            st.warning("Salesforce is not connected. Please log in to fetch live data.")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Next step buttons
+    st.markdown("<div style='margin-top: 24px;'></div>", unsafe_allow_html=True)
+    if st.session_state.adhoc_source_df is not None:
+        if st.button("Next: Select Object & Identifier ➔", type="primary", use_container_width=True):
+            st.session_state.adhoc_step = 1
+            st.rerun()
 
 
 # ==============================================================================
@@ -833,53 +1072,215 @@ def _render_step_4_execution():
             with open(val_path, "rb") as f:
                 d_col4.download_button("📋 Validation Report (.csv)", f.read(), file_name="validation_report.csv", mime="text/csv", use_container_width=True)
 
-        # Push to Salesforce (Bulk API 2.0)
+        # Push to Salesforce (Background Ingest Engine)
         st.markdown("---")
-        st.markdown("#### 🚀 Push to Sitetracker (Salesforce Bulk API 2.0)")
-        st.caption(f"Direct asynchronous upload to **{obj_name}** in **{active_prof.title()}**.")
+        st.markdown("#### 🚀 Push to Sitetracker")
+        st.caption(f"Direct cloud upload to **{obj_name}** in **{active_prof.title()}**.")
 
+        # Check background job status
+        job_info = get_job_progress(res.run_dir)
+        if job_info:
+            status = job_info.get("status", "RUNNING")
+            if status == "RUNNING":
+                is_rb = job_info.get("is_rollback", False)
+                eng_name = "Lightning REST Collections" if job_info.get("engine") == "composite" else "Bulk API 2.0"
+                title = f"⏪ Rollback in Progress ({eng_name})" if is_rb else f"🚀 Ingest in Progress ({eng_name})"
+                st.markdown(f"### {title}")
+                st.caption(f"Executing cloud update on **{obj_name}** in **{active_prof.title()}**.")
+
+                tot_recs = job_info.get("total_records_overall", res.changed_records)
+                proc_recs = job_info.get("processed_records_overall", 0)
+                succ_recs = job_info.get("successful_records_overall", 0)
+                fail_recs = job_info.get("failed_records_overall", 0)
+
+                prog_val = min(1.0, max(0.0, proc_recs / tot_recs)) if tot_recs > 0 else 0.0
+                st.progress(prog_val, text=f"Progress: {proc_recs:,} of {tot_recs:,} records ({int(prog_val * 100)}%)")
+
+                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                m_col1.metric("Total Records", f"{tot_recs:,}")
+                m_col2.metric("Processed", f"{proc_recs:,}")
+                m_col3.metric("Successful", f"{succ_recs:,}")
+                if fail_recs > 0:
+                    m_col4.metric("Failed", f"{fail_recs:,}")
+                else:
+                    try:
+                        s_dt = datetime.fromisoformat(job_info["start_time"])
+                        el_sec = int((datetime.now() - s_dt).total_seconds())
+                        m_col4.metric("Elapsed Time", f"{el_sec}s")
+                    except Exception:
+                        m_col4.metric("Elapsed Time", "N/A")
+
+                # In-flight chunk evaluation detail
+                stage = job_info.get("stage", "completed_chunk")
+                c_chunk = job_info.get("current_chunk", 0)
+                t_chunk = job_info.get("total_chunks", 0)
+                r_start = job_info.get("chunk_start", 0)
+                r_end = job_info.get("chunk_end", 0)
+
+                if t_chunk > 0:
+                    badge_color = "#EFF6FF" if is_rb else "#F0FDF4"
+                    border_color = "#93C5FD" if is_rb else "#86EFAC"
+                    text_color = "#1E40AF" if is_rb else "#166534"
+                    sub_color = "#1D4ED8" if is_rb else "#15803D"
+                    icon = "⏪" if is_rb else "⏳"
+                    st.markdown(
+                        f"""
+                        <div style="background:{badge_color}; border:1px solid {border_color}; border-radius:6px; padding:10px 14px; margin: 12px 0; font-size:0.9rem; color:{text_color}; display:flex; align-items:center; gap:8px;">
+                            <span>{icon}</span>
+                            <div><b>Active Chunk:</b> Evaluating Chunk <b>{c_chunk} of {t_chunk}</b> (Records {r_start} to {r_end} on <b>{obj_name}</b>)<br>
+                            <span style="font-size:0.8rem; color:{sub_color};">Salesforce Apex triggers & Sitetracker automation evaluating in cloud...</span></div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                col_ref_btn, col_ref_txt = st.columns([1, 3])
+                with col_ref_btn:
+                    if st.button("🔄 Refresh Status", key="btn_adhoc_refresh_running", type="secondary"):
+                        st.rerun()
+                with col_ref_txt:
+                    st.caption("ℹ️ Progress updates automatically every 1.5 seconds. Background worker continues even if you switch tabs.")
+
+                time.sleep(1.5)
+                st.rerun()
+                return
+
+            elif status in ("COMPLETED", "FAILED"):
+                is_rb = job_info.get("is_rollback", False)
+                if status == "COMPLETED":
+                    title = "⏪ Rollback Completed" if is_rb else "🎉 Ingest Completed"
+                    tot = job_info.get("total_records_overall", 0)
+                    succ = job_info.get("successful_records_overall", 0)
+                    fail = job_info.get("failed_records_overall", 0)
+                    if fail == 0:
+                        st.success(f"**{title}**! Successfully processed all {succ:,} records on **{obj_name}** with 0 errors! 🚀")
+                    else:
+                        st.warning(f"**{title}** completed with {succ:,} successes and {fail:,} failures on **{obj_name}**.")
+                        # Check for failure file
+                        o_meta = job_info.get("objects", {}).get(obj_name, {})
+                        if o_meta.get("failures_file"):
+                            fail_path = res.run_dir / o_meta["failures_file"]
+                            if fail_path.exists():
+                                st.error(f"Failures saved to `{fail_path.name}`:")
+                                fail_df = _safe_read_csv(fail_path)
+                                st.dataframe(fail_df, use_container_width=True)
+                else:
+                    title = "Rollback" if is_rb else "Ingest"
+                    st.error(f"❌ {title} job failed on server: {job_info.get('error_summary', 'Unknown error')}")
+
+                # Rollback Safety Net if not already a rollback
+                if not is_rb and rollback_path and rollback_path.exists():
+                    st.markdown("---")
+                    st.markdown("### ⏪ Emergency Rollback / Revert Safety Net")
+                    st.warning("⚠️ **Need to undo this upload?** You can revert all records back to their original Sitetracker values prior to this run.")
+
+                    with st.expander("🔍 Preview Rollback Records (Values to be restored)", expanded=False):
+                        df_rb = _safe_read_csv(rollback_path)
+                        st.caption(f"**{len(df_rb):,}** rollback records ready to restore")
+                        if not df_rb.empty:
+                            st.dataframe(df_rb, use_container_width=True)
+
+                    col_rb1, col_rb2 = st.columns([2, 1])
+                    with col_rb1:
+                        confirm_revert_comp = st.text_input(
+                            "Type REVERT to enable rollback",
+                            placeholder="REVERT",
+                            key="adhoc_confirm_completed_revert",
+                        )
+                    with col_rb2:
+                        st.write("")
+                        st.write("")
+                        revert_enabled = (confirm_revert_comp.strip() == "REVERT")
+                        if st.button("⏪ Execute Rollback Now", type="secondary", disabled=not revert_enabled, key="btn_adhoc_execute_revert"):
+                            start_background_ingest(
+                                run_dir=res.run_dir,
+                                report_name="Ad-Hoc Ingest",
+                                is_rollback=True,
+                                profile=active_prof,
+                                batch_size=50,
+                                target_object=obj_name,
+                                engine=job_info.get("engine", "composite"),
+                            )
+                            st.rerun()
+
+                st.markdown("---")
+                if st.button("🔄 Dismiss & Reset for New Ingest", key="btn_adhoc_clear_job_state", type="primary"):
+                    clear_job_progress(res.run_dir)
+                    st.rerun()
+                return
+
+        # If no active job, show controls to initiate Ingest
         if res.changed_records == 0:
             st.info("No changes to upload. All spreadsheet records already match Salesforce.")
-        else:
-            col_up, col_rb = st.columns([2, 1])
+            return
 
-            with col_up:
-                if st.button("🚀 Upload Changes to Sitetracker (Bulk API 2.0)", type="primary", use_container_width=True):
-                    with st.spinner(f"Uploading {res.changed_records} records to {obj_name}..."):
-                        try:
-                            upload_res = push_delta_to_sitetracker(
-                                csv_path=final_path,
-                                object_name=obj_name,
-                                is_rollback=False,
-                            )
-                            st.session_state.adhoc_bulk_result = upload_res
+        col_eng, col_batch = st.columns([1.5, 1])
+        with col_eng:
+            sel_engine = st.radio(
+                "🚀 Ingest Engine",
+                [
+                    "⚡ Lightning REST Collections (Fast: ~15-50s - Recommended for <2,500 records)",
+                    "📦 Bulk API 2.0 (Asynchronous Queue - For large datasets >2,000 records)"
+                ],
+                index=0,
+                key="adhoc_sel_ingest_engine",
+                help="Lightning REST Collections processes batches in 1-2 seconds per 50 records without queue delay. Bulk API 2.0 uses Salesforce cloud queues."
+            )
+            engine_key = "composite" if "Lightning" in sel_engine else "bulk2"
 
-                            if upload_res.all_succeeded:
-                                st.success(f"🎉 Successfully uploaded all {upload_res.successful_records} records to Salesforce! (Job ID: {upload_res.job_id})")
-                            else:
-                                st.warning(f"⚠️ Upload completed with {upload_res.successful_records} successes and {upload_res.failed_records} failures. (Job ID: {upload_res.job_id})")
-                                if upload_res.failures:
-                                    st.dataframe(pd.DataFrame(upload_res.failures), use_container_width=True)
+        with col_batch:
+            bulk_batch_size = st.select_slider(
+                "⚡ Apex Batch Size (Records per chunk)",
+                options=[5, 10, 15, 25, 50],
+                value=50 if engine_key == "composite" else 25,
+                key="adhoc_sel_batch_size",
+                help="Micro-batching prevents Apex 151 DML limit. Smaller batches (10-15) update progress every 20-30s. Larger batches (50) take ~1-2s in REST Composite."
+            )
+            st.caption("ℹ️ **Recommended**: 50 records/chunk for Lightning REST Collections.")
 
-                        except Exception as e:
-                            st.error(f"Bulk upload failed: {e}")
+        col_c1, col_c2 = st.columns([2, 1])
+        with col_c1:
+            confirm_phrase = st.text_input(
+                "Type CONFIRM to enable Ingest",
+                placeholder="CONFIRM",
+                key="adhoc_confirm_push",
+            )
 
-            with col_rb:
-                if st.button("🔙 1-Click Rollback / Revert", use_container_width=True, help="Reverts uploaded records back to their original Sitetracker values using the rollback file."):
-                    if not rollback_path or not rollback_path.exists():
-                        st.error("No rollback file available for this run.")
-                    else:
-                        with st.spinner("Executing 1-click rollback via Bulk API 2.0..."):
-                            try:
-                                rb_res = push_delta_to_sitetracker(
-                                    csv_path=rollback_path,
-                                    object_name=obj_name,
-                                    is_rollback=True,
-                                )
-                                st.session_state.adhoc_rollback_result = rb_res
-                                if rb_res.all_succeeded:
-                                    st.success(f"✅ Successfully rolled back all {rb_res.successful_records} records! Original values restored.")
-                                else:
-                                    st.warning(f"Rollback completed with {rb_res.failed_records} errors.")
-                            except Exception as e:
-                                st.error(f"Rollback failed: {e}")
+        with col_c2:
+            st.write("")
+            st.write("")
+            push_enabled = (confirm_phrase.strip() == "CONFIRM")
+            if st.button(f"🚀 Ingest Deltas to {obj_name}", type="primary", disabled=not push_enabled, key="btn_adhoc_execute_push"):
+                start_background_ingest(
+                    run_dir=res.run_dir,
+                    report_name="Ad-Hoc Ingest",
+                    is_rollback=False,
+                    profile=active_prof,
+                    batch_size=bulk_batch_size,
+                    target_object=obj_name,
+                    engine=engine_key,
+                )
+                st.rerun()
+
+        # Direct Rollback Option
+        if rollback_path and rollback_path.exists():
+            st.markdown("---")
+            with st.expander("🔙 1-Click Rollback / Revert Option", expanded=False):
+                st.caption(f"Revert all {res.changed_records} records back to their original Sitetracker values using `{rollback_path.name}`.")
+                col_rba, col_rbb = st.columns([2, 1])
+                with col_rba:
+                    rb_confirm = st.text_input("Type REVERT to trigger rollback", placeholder="REVERT", key="adhoc_direct_rb_confirm")
+                with col_rbb:
+                    st.write("")
+                    st.write("")
+                    if st.button("🔙 Execute 1-Click Rollback", type="secondary", disabled=(rb_confirm.strip() != "REVERT"), key="btn_adhoc_direct_rb"):
+                        start_background_ingest(
+                            run_dir=res.run_dir,
+                            report_name="Ad-Hoc Ingest",
+                            is_rollback=True,
+                            profile=active_prof,
+                            batch_size=bulk_batch_size,
+                            target_object=obj_name,
+                            engine=engine_key,
+                        )
+                        st.rerun()

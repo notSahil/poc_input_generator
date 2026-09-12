@@ -102,3 +102,44 @@ def test_job_manager_rollback_lifecycle(tmp_path):
         clear_job_progress(tmp_path)
         assert get_job_progress(tmp_path) is None
 
+
+def test_job_manager_adhoc_lifecycle(tmp_path):
+    final_file = tmp_path / "final_input_file.csv"
+    pd.DataFrame([{"Id": "a0p1", "Site_on_Master_Site_List__c": "Yes"}]).to_csv(final_file, index=False)
+
+    def mock_push(*args, **kwargs):
+        assert kwargs.get("object_name") == "sitetracker__Site__c"
+        return BulkUploadResult(
+            total_records=1,
+            successful_records=1,
+            failed_records=0,
+            job_id="MOCK_ADHOC_REST_JOB",
+            all_succeeded=True,
+        )
+
+    with patch("salesforce.composite_uploader.push_delta_via_composite", side_effect=mock_push):
+        start_background_ingest(
+            run_dir=tmp_path,
+            report_name="Ad-Hoc Ingest",
+            target_object="sitetracker__Site__c",
+            is_rollback=False,
+            engine="composite",
+        )
+
+        for _ in range(50):
+            prog = get_job_progress(tmp_path)
+            if prog and prog.get("status") == "COMPLETED":
+                break
+            time.sleep(0.1)
+
+        prog = get_job_progress(tmp_path)
+        assert prog is not None
+        assert prog["status"] == "COMPLETED"
+        assert prog["processed_records_overall"] == 1
+        assert prog["successful_records_overall"] == 1
+        assert is_job_active(tmp_path) is False
+
+        clear_job_progress(tmp_path)
+        assert get_job_progress(tmp_path) is None
+
+
