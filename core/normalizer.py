@@ -127,35 +127,68 @@ class DataNormalizer:
         return v_str, True
 
     @staticmethod
-    def read_spreadsheet(file_path, nrows: int | None = None) -> pd.DataFrame:
+    def read_spreadsheet(file_or_path, nrows: int | None = None) -> pd.DataFrame:
         """
         Universally read Excel (.xlsx, .xls) or CSV files into a DataFrame.
+        Supports file paths (str, Path) or file-like objects (e.g. Streamlit UploadedFile, io.BytesIO).
         All columns are converted to str and stripped of special characters.
         Handles both UTF-8 and Windows latin-1 / ANSI encodings gracefully.
         """
         from pathlib import Path
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {path}")
 
-        ext = path.suffix.lower()
-        if ext in (".xlsx", ".xls"):
-            try:
-                df = pd.read_excel(path, dtype=str, nrows=nrows)
-            except Exception:
-                df = pd.read_excel(path, nrows=nrows)
+        # Check if file_or_path is a file-like object (e.g. Streamlit UploadedFile, BytesIO)
+        if hasattr(file_or_path, "read"):
+            filename = getattr(file_or_path, "name", "")
+            ext = Path(filename).suffix.lower() if filename else ""
+
+            if hasattr(file_or_path, "seek"):
+                file_or_path.seek(0)
+
+            if ext in (".xlsx", ".xls"):
+                try:
+                    df = pd.read_excel(file_or_path, dtype=str, nrows=nrows)
+                except Exception:
+                    if hasattr(file_or_path, "seek"):
+                        file_or_path.seek(0)
+                    df = pd.read_excel(file_or_path, nrows=nrows)
+            else:
+                try:
+                    df = pd.read_csv(file_or_path, dtype=str, nrows=nrows, encoding="utf-8")
+                except UnicodeDecodeError:
+                    if hasattr(file_or_path, "seek"):
+                        file_or_path.seek(0)
+                    df = pd.read_csv(
+                        file_or_path,
+                        dtype=str,
+                        nrows=nrows,
+                        encoding="latin1",
+                        engine="python",
+                        on_bad_lines="skip",
+                    )
         else:
-            try:
-                df = pd.read_csv(path, dtype=str, nrows=nrows, encoding="utf-8")
-            except UnicodeDecodeError:
-                df = pd.read_csv(
-                    path,
-                    dtype=str,
-                    nrows=nrows,
-                    encoding="latin1",
-                    engine="python",
-                    on_bad_lines="skip"
-                )
+            path = Path(file_or_path)
+            if not path.exists():
+                raise FileNotFoundError(f"File not found: {path}")
+
+            ext = path.suffix.lower()
+            if ext in (".xlsx", ".xls"):
+                try:
+                    df = pd.read_excel(path, dtype=str, nrows=nrows)
+                except Exception:
+                    df = pd.read_excel(path, nrows=nrows)
+            else:
+                try:
+                    df = pd.read_csv(path, dtype=str, nrows=nrows, encoding="utf-8")
+                except UnicodeDecodeError:
+                    df = pd.read_csv(
+                        path,
+                        dtype=str,
+                        nrows=nrows,
+                        encoding="latin1",
+                        engine="python",
+                        on_bad_lines="skip",
+                    )
 
         df = DataNormalizer.normalize_columns(df)
         return df.fillna("").astype(str)
+

@@ -45,6 +45,34 @@ def test_read_spreadsheet_excel(tmp_path: Path):
     assert df.iloc[0]["A"] == "1"
 
 
+def test_read_spreadsheet_file_like_csv():
+    """Test reading from a file-like BytesIO object (simulating Streamlit UploadedFile for CSV)."""
+    import io
+    content = b"Col1,Col2\nVal1,Val2\n"
+    f = io.BytesIO(content)
+    f.name = "uploaded_file.csv"
+
+    df = DataNormalizer.read_spreadsheet(f)
+    assert list(df.columns) == ["Col1", "Col2"]
+    assert len(df) == 1
+    assert df.iloc[0]["Col1"] == "Val1"
+
+
+def test_read_spreadsheet_file_like_excel():
+    """Test reading from a file-like BytesIO object (simulating Streamlit UploadedFile for Excel)."""
+    import io
+    buffer = io.BytesIO()
+    pd.DataFrame([{"X": "10", "Y": "20"}]).to_excel(buffer, index=False)
+    buffer.seek(0)
+    buffer.name = "uploaded_file.xlsx"
+
+    df = DataNormalizer.read_spreadsheet(buffer)
+    assert list(df.columns) == ["X", "Y"]
+    assert len(df) == 1
+    assert df.iloc[0]["X"] == "10"
+
+
+
 def test_clean_payload_multi_object_isolation():
     """Verify clean_payload_for_salesforce isolates fields belonging to specific target objects."""
     # Simulate a payload that contains fields from BOTH BT Project and Project
