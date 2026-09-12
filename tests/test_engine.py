@@ -18,6 +18,8 @@ class TestInputFileEngine:
         assert result.valid_source_records == 3
         assert result.delta_records == 2  # SITE-001 and SITE-002 changed
         assert result.field_changes_count == 2
+        assert result.source_file_name == "source.xlsx"
+        assert result.sitetracker_file_name == "sitetracker.csv"
 
         # Verify output files exist
         assert (result.run_dir / "final_input_file.csv").exists()

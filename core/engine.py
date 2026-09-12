@@ -654,6 +654,8 @@ class InputFileEngine:
             success=True,
             report_name=self.report_name,
             run_dir=run_dir,
+            source_file_name=source_file.name,
+            sitetracker_file_name=st_file.name,
             total_source_records=len(src_df),
             valid_source_records=len(valid_src),
             delta_records=len(updates),

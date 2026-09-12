@@ -116,7 +116,7 @@ def render(go):
     # Top Metrics Banner
     m1, m2, m3 = st.columns(3)
     m1.metric("Total Recorded Runs", len(runs))
-    m2.metric("Most Recent Execution", f"{runs[0]['date']} {runs[0]['time']}")
+    m2.metric("Most Recent Execution", f"{runs[0]['date']} {runs[0]['time']} IST")
     m3.metric("Current Filter", selected_filter)
 
     st.markdown("---")
@@ -128,7 +128,7 @@ def render(go):
     chosen_run = next(r for r in runs if r["run_id"] == selected_run_id)
 
     # 3. Selected Run Details
-    st.subheader(f"🔍 Details: `{chosen_run['report']}` — {chosen_run['date']} {chosen_run['time']}")
+    st.subheader(f"🔍 Details: `{chosen_run['report']}` — {chosen_run['date']} {chosen_run['time']} IST")
 
     met = chosen_run["metrics"]
     c1, c2, c3, c4, c5 = st.columns(5)

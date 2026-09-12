@@ -1,11 +1,13 @@
 """Salesforce Bulk API 2.0 uploader for pushing delta input files directly to Sitetracker."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 import io
 import json
 import logging
 from pathlib import Path
+from typing import Any
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -125,6 +127,7 @@ def push_delta_to_sitetracker(
     is_rollback: bool = False,
     profile: str | None = None,
     batch_size: int = 25,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> BulkUploadResult:
     """
     Push a generated delta CSV to Sitetracker/Salesforce via Bulk API 2.0.
@@ -137,6 +140,7 @@ def push_delta_to_sitetracker(
         is_rollback: Whether this upload is a rollback operation (clears fields with #N/A).
         profile: Optional Salesforce profile name ('sandbox', 'partial', 'prod').
         batch_size: Number of records per Apex transaction context (default 25 to stay within 150 DML limit).
+        progress_callback: Optional callable receiving progress status dict per chunk.
 
     Returns:
         BulkUploadResult with job metrics and failure logs.
@@ -188,26 +192,58 @@ def push_delta_to_sitetracker(
         len(records), operation, clean_obj, batch_size
     )
 
-    # 3. Execute Bulk Operation with safe micro-batch chunking
-    try:
-        if operation == "update":
-            job_results = bulk_type.update(records=records, batch_size=batch_size)
-        elif operation == "upsert":
-            job_results = bulk_type.upsert(records=records, external_id_field="Id", batch_size=batch_size)
-        elif operation == "insert":
-            job_results = bulk_type.insert(records=records, batch_size=batch_size)
-        else:
-            raise ValueError(f"Unsupported Bulk 2.0 operation: {operation}")
-    except Exception as e:
-        logger.error("Bulk API 2.0 job submission failed for %s: %s", clean_obj, e)
-        return BulkUploadResult(
-            total_records=len(records),
-            successful_records=0,
-            failed_records=len(records),
-            job_id="JOB_SUBMISSION_FAILED",
-            all_succeeded=False,
-            error_summary=str(e),
-        )
+    # 3. Execute Bulk Operation with safe micro-batch chunking & real-time progress callbacks
+    effective_batch = batch_size if (batch_size and batch_size > 0) else len(records)
+    chunks = [records[i : i + effective_batch] for i in range(0, len(records), effective_batch)]
+    total_chunks = len(chunks)
+    job_results = []
+    processed_count = 0
+    success_count = 0
+    failed_count = 0
+
+    for chunk_idx, chunk in enumerate(chunks, 1):
+        chunk_start = (chunk_idx - 1) * effective_batch + 1
+        chunk_end = min(chunk_idx * effective_batch, len(records))
+        try:
+            if operation == "update":
+                res_list = bulk_type.update(records=chunk)
+            elif operation == "upsert":
+                res_list = bulk_type.upsert(records=chunk, external_id_field="Id")
+            elif operation == "insert":
+                res_list = bulk_type.insert(records=chunk)
+            else:
+                raise ValueError(f"Unsupported Bulk 2.0 operation: {operation}")
+
+            job_results.extend(res_list)
+            c_proc = sum(r.get("numberRecordsProcessed", 0) for r in res_list)
+            c_fail = sum(r.get("numberRecordsFailed", 0) for r in res_list)
+            c_succ = max(0, c_proc - c_fail)
+            processed_count += c_proc
+            failed_count += c_fail
+            success_count += c_succ
+        except Exception as e:
+            logger.error("Bulk API 2.0 job submission failed for %s chunk %d/%d: %s", clean_obj, chunk_idx, total_chunks, e)
+            job_results.append({
+                "numberRecordsTotal": len(chunk),
+                "numberRecordsProcessed": len(chunk),
+                "numberRecordsFailed": len(chunk),
+                "job_id": f"FAILED_CHUNK_{chunk_idx}",
+            })
+            processed_count += len(chunk)
+            failed_count += len(chunk)
+
+        if progress_callback:
+            progress_callback({
+                "stage": "completed_chunk",
+                "current_chunk": chunk_idx,
+                "total_chunks": total_chunks,
+                "chunk_start": chunk_start,
+                "chunk_end": chunk_end,
+                "chunk_size": len(chunk),
+                "processed_records": processed_count,
+                "successful_records": success_count,
+                "failed_records": failed_count,
+            })
 
     # Aggregate batch results across all chunks
     total_recs = sum(r.get("numberRecordsTotal", 0) for r in job_results)

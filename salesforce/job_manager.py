@@ -305,6 +305,7 @@ def _ingest_worker(
                     is_rollback=is_rollback,
                     profile=profile,
                     batch_size=batch_size,
+                    progress_callback=cb_func,
                 )
 
             object_meta[obj]["status"] = "COMPLETED" if res.all_succeeded else "COMPLETED_WITH_ERRORS"

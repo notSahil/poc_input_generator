@@ -1,11 +1,33 @@
 """Streamlit UI page for Data Load / Input File Generation with Dataloader.io guided pipeline."""
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import logging
 from pathlib import Path
 import shutil
 import streamlit as st
 import pandas as pd
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _format_ist_time(ts: float | datetime | None, include_tz: bool = True) -> str:
+    """Format a POSIX timestamp or datetime into India Standard Time (IST, UTC+05:30)."""
+    if ts is None:
+        return "N/A"
+    try:
+        if isinstance(ts, (int, float)):
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IST)
+        elif isinstance(ts, datetime):
+            if ts.tzinfo is None:
+                dt = ts.replace(tzinfo=timezone.utc).astimezone(IST)
+            else:
+                dt = ts.astimezone(IST)
+        else:
+            return str(ts)
+        suffix = " IST" if include_tz else ""
+        return dt.strftime(f"%d/%m/%Y %H:%M{suffix}")
+    except Exception:
+        return "N/A"
 
 from config import settings
 from core.config_loader import YamlConfigLoader
@@ -151,10 +173,13 @@ def _render_step_source(reports: list) -> bool:
 
     if selected_display == "-- Select Report --":
         st.session_state.selected_report = None
+        st.session_state.last_run_result = None
         st.info("💡 Please select a report model above to inspect data sources.")
         return False
 
     selected_report = report_options[selected_display]
+    if st.session_state.get("selected_report") != selected_report:
+        st.session_state.last_run_result = None
     st.session_state.selected_report = selected_report
 
     yaml_cfg = YamlConfigLoader.load(selected_report)
@@ -220,6 +245,7 @@ def _render_step_source(reports: list) -> bool:
             with open(save_dest, "wb") as f_out:
                 f_out.write(uploaded_src.getbuffer())
             src_files = [uploaded_src.name]
+            st.session_state.last_run_result = None
             st.success(f"✅ Loaded **{uploaded_src.name}** successfully!")
 
         if src_files:
@@ -267,6 +293,7 @@ def _render_step_source(reports: list) -> bool:
             with open(save_dest, "wb") as f_out:
                 f_out.write(uploaded_st.getbuffer())
             st_files = [uploaded_st.name]
+            st.session_state.last_run_result = None
             st.success(f"✅ Loaded **{uploaded_st.name}** successfully!")
 
         if st_files:
@@ -274,7 +301,7 @@ def _render_step_source(reports: list) -> bool:
             st_path = st_dir / active_st_file
             is_live_soql = active_st_file.endswith("_sitetracker_live.csv")
             try:
-                st_mtime = datetime.fromtimestamp(st_path.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
+                st_mtime = _format_ist_time(st_path.stat().st_mtime)
             except Exception:
                 st_mtime = "N/A"
 
@@ -338,6 +365,7 @@ def _render_step_source(reports: list) -> bool:
                             source_file=src_path,
                             profile=active_prof,
                         )
+                        st.session_state.last_run_result = None
                         st.success(f"✅ Fetched live records to `{saved_csv.name}`!")
                         st.rerun()
                     except MappingError as e:
@@ -536,7 +564,7 @@ def _render_step_delta(selected_report: str) -> bool:
         st_path = st_dir / active_st_file
         is_live_soql = active_st_file.endswith("_sitetracker_live.csv")
         try:
-            st_mtime = datetime.fromtimestamp(st_path.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
+            st_mtime = _format_ist_time(st_path.stat().st_mtime)
         except Exception:
             st_mtime = "N/A"
         src_label = src_files[0] if src_files else "uploaded spreadsheet"
@@ -602,8 +630,25 @@ def _render_step_delta(selected_report: str) -> bool:
                 st.error(f"❌ Unexpected engine failure: {e}")
                 logger.exception("Engine failed unexpectedly")
 
-    # Display KPI Metrics & Results if result exists
-    has_result = st.session_state.last_run_result is not None and st.session_state.last_run_result.report_name == selected_report
+    # Display KPI Metrics & Results if result exists and matches active files
+    res = st.session_state.last_run_result
+    is_stale = False
+    stale_reason = ""
+    if res is not None and res.report_name == selected_report:
+        curr_src = src_files[0] if src_files else ""
+        curr_st = st_files[0] if st_files else ""
+        if res.source_file_name and curr_src and res.source_file_name != curr_src:
+            is_stale = True
+            stale_reason = f"Active source spreadsheet changed from `{res.source_file_name}` to `{curr_src}`."
+        elif res.sitetracker_file_name and curr_st and res.sitetracker_file_name != curr_st:
+            is_stale = True
+            stale_reason = f"Active Sitetracker baseline changed from `{res.sitetracker_file_name}` to `{curr_st}`."
+
+    if is_stale:
+        st.warning(f"⚠️ **Deltas Out of Date**: {stale_reason} Please click **'🚀 Run Delta Comparison Engine'** above to compute deltas for your latest active files.")
+        has_result = False
+    else:
+        has_result = res is not None and res.report_name == selected_report
     if has_result:
         result = st.session_state.last_run_result
         st.markdown("<div style='margin-top: 18px;'></div>", unsafe_allow_html=True)
@@ -681,6 +726,21 @@ def _render_step_ingest(selected_report: str):
     result = st.session_state.last_run_result
     if result is None or result.report_name != selected_report:
         st.info("💡 Please execute the Delta Engine in Step 3 before reviewing and downloading output files.")
+        return
+
+    # Verify active files match the generated delta run
+    yaml_cfg_s4 = YamlConfigLoader.load(selected_report)
+    work_dir_s4 = settings.DATA_DIR / yaml_cfg_s4["folders"]["work_dir"]
+    src_dir_s4 = work_dir_s4 / yaml_cfg_s4["folders"]["source_dir"]
+    st_dir_s4 = work_dir_s4 / yaml_cfg_s4["folders"]["sitetracker_dir"]
+    src_files_s4 = [f.name for f in src_dir_s4.iterdir() if f.is_file() and not f.name.startswith(".")] if src_dir_s4.exists() else []
+    st_files_s4 = [f.name for f in st_dir_s4.iterdir() if f.is_file() and not f.name.startswith(".")] if st_dir_s4.exists() else []
+    curr_src_s4 = src_files_s4[0] if src_files_s4 else ""
+    curr_st_s4 = st_files_s4[0] if st_files_s4 else ""
+
+    if (result.source_file_name and curr_src_s4 and result.source_file_name != curr_src_s4) or \
+       (result.sitetracker_file_name and curr_st_s4 and result.sitetracker_file_name != curr_st_s4):
+        st.warning("⚠️ **Active files have changed since this delta run was calculated.** Please return to **Step 3 (Delta Comparison)** and re-run the Delta Engine to ensure you are uploading the latest data.")
         return
 
     # Direct Download Hub
@@ -970,7 +1030,10 @@ def _render_step_ingest(selected_report: str):
     st_files_step4 = [f.name for f in st_dir_step4.iterdir() if f.is_file() and not f.name.startswith(".")] if st_dir_step4.exists() else []
     if st_files_step4:
         is_live_soql_s4 = st_files_step4[0].endswith("_sitetracker_live.csv")
-        lbl_s4 = "🌐 Live Sitetracker SOQL" if is_live_soql_s4 else f"📁 Offline Disk File ({st_files_step4[0]})"
+        st_p_s4 = st_dir_step4 / st_files_step4[0]
+        st_mtime_s4 = _format_ist_time(st_p_s4.stat().st_mtime) if st_p_s4.exists() else ""
+        time_str_s4 = f" (Queried: {st_mtime_s4})" if (is_live_soql_s4 and st_mtime_s4) else (f" (Modified: {st_mtime_s4})" if st_mtime_s4 else "")
+        lbl_s4 = f"🌐 Live Sitetracker SOQL{time_str_s4}" if is_live_soql_s4 else f"📁 Offline Disk File ({st_files_step4[0]}{time_str_s4})"
         st.caption(f"ℹ️ **Baseline Source Used for Deltas**: `{lbl_s4}`")
 
     ALL_OBJECTS_OPTION = f"⚡ All Objects (Sequential Ingest: {', '.join(ingest_objects)})"

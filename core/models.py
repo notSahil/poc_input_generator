@@ -49,6 +49,10 @@ class RunResult:
     primary_key_sitetracker: str = ""
     field_mappings: list[tuple[str, str, str, str]] = field(default_factory=list)
 
+    # Active files used for this run
+    source_file_name: str = ""
+    sitetracker_file_name: str = ""
+
     # Error info (if success=False)
     error_message: str | None = None
 

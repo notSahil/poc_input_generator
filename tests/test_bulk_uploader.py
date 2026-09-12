@@ -154,15 +154,22 @@ def test_push_delta_batch_size_and_multi_chunk_aggregation(tmp_path):
     mock_sf = MagicMock()
     mock_bulk_obj = MagicMock()
     # Simulate two 25-record chunks
-    mock_bulk_obj.update.return_value = [
-        {"numberRecordsTotal": 25, "numberRecordsProcessed": 25, "numberRecordsFailed": 0, "job_id": "JOB_CHUNK_1"},
-        {"numberRecordsTotal": 25, "numberRecordsProcessed": 25, "numberRecordsFailed": 0, "job_id": "JOB_CHUNK_2"},
+    mock_bulk_obj.update.side_effect = [
+        [{"numberRecordsTotal": 25, "numberRecordsProcessed": 25, "numberRecordsFailed": 0, "job_id": "JOB_CHUNK_1"}],
+        [{"numberRecordsTotal": 25, "numberRecordsProcessed": 25, "numberRecordsFailed": 0, "job_id": "JOB_CHUNK_2"}],
     ]
     setattr(mock_sf.bulk2, "Site__c", mock_bulk_obj)
     setattr(mock_sf.bulk2, "sitetracker__Site__c", mock_bulk_obj)
 
+    cb_calls = []
     with patch("salesforce.bulk_uploader.get_sf_connection", return_value=mock_sf):
-        res = push_delta_to_sitetracker(test_csv, object_name="Site__c", operation="update", batch_size=25)
+        res = push_delta_to_sitetracker(
+            test_csv,
+            object_name="Site__c",
+            operation="update",
+            batch_size=25,
+            progress_callback=lambda p: cb_calls.append(p)
+        )
 
         assert res.total_records == 50
         assert res.successful_records == 50
@@ -170,10 +177,13 @@ def test_push_delta_batch_size_and_multi_chunk_aggregation(tmp_path):
         assert res.all_succeeded is True
         assert "JOB_CHUNK_1" in res.job_id
         assert "JOB_CHUNK_2" in res.job_id
-        # Verify batch_size=25 was forwarded
-        mock_bulk_obj.update.assert_called_once()
-        _, kwargs = mock_bulk_obj.update.call_args
-        assert kwargs.get("batch_size") == 25
+        # Verify chunked execution: 2 chunk calls of 25 records each
+        assert mock_bulk_obj.update.call_count == 2
+        # Verify progress callback invoked for both chunks
+        assert len(cb_calls) == 2
+        assert cb_calls[0]["current_chunk"] == 1
+        assert cb_calls[1]["current_chunk"] == 2
+        assert cb_calls[1]["processed_records"] == 50
 
 
 def test_push_delta_resilient_error_parsing_with_commas(tmp_path):
