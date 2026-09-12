@@ -57,6 +57,23 @@ class TestInputFileEngine:
         assert len(val_df) == 3  # 3 total source rows evaluated
         assert set(val_df["Final_Status"]) == {"SUCCESS", "SKIPPED"}
 
+    def test_engine_runs_with_api_named_columns(self, mock_environment):
+        """Verify engine successfully processes a source file with API field headers."""
+        source_dir = mock_environment["data_dir"] / "Test_Report" / "input" / "source"
+        for f in source_dir.glob("*"):
+            f.unlink()
+
+        df = pd.DataFrame([
+            {"Id": "a1e000000000001", "Site Reference": "SITE-001", "Target_Date__c": "15/09/2026", "Name": "Rollback Site"}
+        ])
+        df.to_csv(source_dir / "rollback_file.csv", index=False)
+
+        engine = InputFileEngine("Test Report")
+        result = engine.run()
+        assert result.success is True
+        assert result.total_source_records == 1
+        assert result.valid_source_records == 1
+
     def test_first_occurrence_wins_deduplication(self):
         engine = InputFileEngine("Master Site Listing")
         result = engine.run(skip_validation=True)

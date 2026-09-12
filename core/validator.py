@@ -54,11 +54,18 @@ class InputValidator:
         try:
             src_df = DataNormalizer.read_spreadsheet(src_file, nrows=10)
 
-            if pk_src not in src_df.columns:
+            # Check primary key column (support either source header name or API name)
+            pk_col_found = pk_src in src_df.columns
+            if not pk_col_found:
+                for s_col, _, a_col, _ in field_map:
+                    if s_col == pk_src and a_col and a_col in src_df.columns:
+                        pk_col_found = True
+                        break
+            if not pk_col_found:
                 errors.append(f"Source file missing primary key column: '{pk_src}'")
 
-            for src_col, _, _, _ in field_map:
-                if src_col not in src_df.columns:
+            for src_col, _, api_col, _ in field_map:
+                if src_col not in src_df.columns and (not api_col or api_col not in src_df.columns):
                     errors.append(
                         f"Source file missing mapped column: '{src_col}'. "
                         f"Available: {list(src_df.columns)}"

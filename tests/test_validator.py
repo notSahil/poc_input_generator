@@ -43,3 +43,21 @@ class TestInputValidator:
         assert result.is_valid is True
         assert len(result.errors) == 0
 
+    def test_source_file_with_api_names_passes(self, mock_environment):
+        """Verify that a source file using Salesforce API field names (like rollback_file.csv) passes validation."""
+        import pandas as pd
+        source_dir = mock_environment["data_dir"] / "Test_Report" / "input" / "source"
+        for f in source_dir.glob("*"):
+            f.unlink()
+
+        # Write CSV with API names instead of source column names
+        df = pd.DataFrame([
+            {"Id": "a1e000000000001", "Site Reference": "SITE-001", "Target_Date__c": "2026-09-12", "Name": "Updated Site"}
+        ])
+        df.to_csv(source_dir / "rollback_file.csv", index=False)
+
+        validator = InputValidator("Test Report")
+        result = validator.validate_all()
+        assert result.is_valid is True
+        assert len(result.errors) == 0
+

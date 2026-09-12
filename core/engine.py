@@ -113,6 +113,17 @@ class InputFileEngine:
             Target_Objects=", ".join(mapping.objects()) if mapping.objects() else "Default",
         )
 
+        # Self-healing column header aliasing: if source file contains Salesforce API names
+        # (e.g. from an exported rollback_file.csv or raw SOQL export), alias them to source column names.
+        for s_col, _, a_col, _ in field_map:
+            if s_col not in src_df.columns and a_col and a_col in src_df.columns:
+                src_df[s_col] = src_df[a_col]
+        if pk_src not in src_df.columns:
+            for s_col, _, a_col, _ in field_map:
+                if s_col == pk_src and a_col and a_col in src_df.columns:
+                    src_df[pk_src] = src_df[a_col]
+                    break
+
         for col in self.text_case_columns:
             if col in src_df.columns:
                 src_df[col] = src_df[col].apply(DataNormalizer.normalize_text_case)
