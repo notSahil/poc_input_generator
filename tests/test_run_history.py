@@ -1,7 +1,7 @@
 """Unit tests for Run History discovery."""
 
 from pathlib import Path
-from ui.run_history import parse_run_summary, scan_all_runs
+from ui.run_history import parse_run_summary, scan_all_runs, scan_guided_runs, scan_manual_runs
 
 
 def test_parse_run_summary(tmp_path):
@@ -77,5 +77,40 @@ def test_scan_all_runs_discovers_manual_runs(tmp_path, monkeypatch):
     matching = next(r for r in runs if r["report"] == "Ad-Hoc: sitetracker__Site__c")
     assert matching["metrics"]["total"] == "25"
     assert matching["metrics"]["updates"] == "10"
+
+
+def test_scan_guided_runs():
+    runs = scan_guided_runs()
+    assert isinstance(runs, list)
+    for r in runs:
+        assert r["type"] == "Guided Report"
+
+
+def test_scan_manual_runs_filter(tmp_path, monkeypatch):
+    from config import settings
+    # Create fake manual runs for two objects
+    site_dir = tmp_path / "manual_runs" / "sitetracker__Site__c" / "2026-09-12" / "run_10-00-00"
+    site_dir.mkdir(parents=True, exist_ok=True)
+    (site_dir / "run_summary.txt").write_text("Total Source Rows: 10\n", encoding="utf-8")
+
+    proj_dir = tmp_path / "manual_runs" / "BT_Project__c" / "2026-09-12" / "run_11-00-00"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    (proj_dir / "run_summary.txt").write_text("Total Source Rows: 20\n", encoding="utf-8")
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path)
+
+    # Filter for Site only
+    site_runs = scan_manual_runs(object_filter="sitetracker__Site__c")
+    assert len(site_runs) == 1
+    assert site_runs[0]["object_name"] == "sitetracker__Site__c"
+
+    # Filter for Project only
+    proj_runs = scan_manual_runs(object_filter="BT_Project__c")
+    assert len(proj_runs) == 1
+    assert proj_runs[0]["object_name"] == "BT_Project__c"
+
+    # All Objects
+    all_manual = scan_manual_runs(object_filter="All Objects")
+    assert len(all_manual) == 2
 
 
