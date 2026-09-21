@@ -269,13 +269,38 @@ def scan_guided_runs(report_filter: str | None = None) -> list[dict]:
                     summary_file = run_dir / "run_summary.txt"
                     metrics = parse_run_summary(summary_file)
                     matching_archive = archive_dir / date_dir.name / run_dir.name
+                    time_fmt = run_dir.name.replace("run_", "").replace("-", ":")
+                    tot_rows = metrics.get("total", "N/A")
+                    upd_rows = metrics.get("updates", "N/A")
+
+                    prog_f = run_dir / "ingest_progress.json"
+                    cloud_info = ""
+                    if prog_f.exists():
+                        try:
+                            p_data = json.loads(prog_f.read_text(encoding="utf-8"))
+                            if p_data.get("status") in ("COMPLETED", "COMPLETED_WITH_ERRORS"):
+                                succ_c = p_data.get("successful_records_overall", 0)
+                                cloud_info = f" • 🚀 {succ_c:,} cloud synced"
+                            elif p_data.get("status") == "RUNNING":
+                                cloud_info = " • 🔄 Uploading..."
+                        except Exception:
+                            pass
+
+                    label_parts = [f"📥 {r.name}", f"{date_dir.name} {time_fmt}"]
+                    if tot_rows != "N/A":
+                        label_parts.append(f"📄 {tot_rows} rows")
+                    if upd_rows != "N/A":
+                        label_parts.append(f"✅ {upd_rows} updates")
+
+                    display_label = " • ".join(label_parts) + cloud_info
 
                     runs.append({
                         "report": r.name,
                         "type": "Guided Report",
                         "date": date_dir.name,
-                        "time": run_dir.name.replace("run_", "").replace("-", ":"),
-                        "run_id": f"📥 {r.name} • {date_dir.name} {run_dir.name.replace('run_', '')}",
+                        "time": time_fmt,
+                        "run_id": display_label,
+                        "raw_run_id": run_dir.name,
                         "run_dir": run_dir,
                         "archive_dir": matching_archive if matching_archive.exists() else None,
                         "summary_file": summary_file,
