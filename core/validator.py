@@ -66,13 +66,25 @@ class InputValidator:
             if not pk_col_found:
                 errors.append(f"Source file missing primary key column: '{pk_src}' (or '{pk_st}')")
 
+            matched_mapped_count = 0
             for src_col, st_col, api_col, _ in field_map:
+                if src_col == pk_src:
+                    continue
                 matched_col = DataNormalizer.resolve_source_column(src_df.columns, src_col, st_col, api_col)
-                if not matched_col:
-                    errors.append(
-                        f"Source file missing mapped column: '{src_col}' (or '{st_col}'). "
-                        f"Available: {list(src_df.columns)}"
+                if matched_col:
+                    matched_mapped_count += 1
+                else:
+                    warnings.append(
+                        f"Mapped column '{src_col}' (or '{st_col}') not found in source file — "
+                        f"will be safely skipped (cloud values will remain untouched)."
                     )
+
+            if matched_mapped_count == 0:
+                errors.append(
+                    f"No mapped data fields found in source file besides the primary key '{pk_src}'. "
+                    f"At least one mapped field must be present to compute deltas. "
+                    f"Available columns in source: {list(src_df.columns)}"
+                )
 
             # Sample primary key check
             resolved_pk = pk_col_found if pk_col_found else pk_src

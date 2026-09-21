@@ -61,3 +61,40 @@ class TestInputValidator:
         assert result.is_valid is True
         assert len(result.errors) == 0
 
+    def test_partial_mapped_columns_allowed_with_warnings(self, mock_environment):
+        """Verify that missing non-PK mapped columns produce warnings but pass validation."""
+        import pandas as pd
+        source_dir = mock_environment["data_dir"] / "Test_Report" / "input" / "source"
+        for f in source_dir.glob("*"):
+            f.unlink()
+
+        # Only provide Primary Key and Target Date, omit Site Name
+        df = pd.DataFrame([
+            {"Site Reference": "SITE-001", "Target Date": "2026-09-12"}
+        ])
+        df.to_excel(source_dir / "partial_source.xlsx", index=False)
+
+        validator = InputValidator("Test Report")
+        result = validator.validate_all()
+        assert result.is_valid is True
+        assert len(result.errors) == 0
+        assert any("will be safely skipped" in w for w in result.warnings)
+
+    def test_missing_all_mapped_columns_fails(self, mock_environment):
+        """Verify that providing only the Primary Key with 0 mapped columns fails validation."""
+        import pandas as pd
+        source_dir = mock_environment["data_dir"] / "Test_Report" / "input" / "source"
+        for f in source_dir.glob("*"):
+            f.unlink()
+
+        # Only provide Primary Key
+        df = pd.DataFrame([
+            {"Site Reference": "SITE-001"}
+        ])
+        df.to_excel(source_dir / "pk_only.xlsx", index=False)
+
+        validator = InputValidator("Test Report")
+        result = validator.validate_all()
+        assert result.is_valid is False
+        assert any("No mapped data fields found in source file besides the primary key" in e for e in result.errors)
+

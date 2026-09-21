@@ -151,6 +151,25 @@ class TestInputFileEngine:
         rb_003 = rb_df[rb_df["Site Reference"] == "SITE-003"].iloc[0]
         assert rb_003["Name"] == "Birmingham Hub"
 
+    def test_rollback_and_final_payloads_have_all_mapped_schema_columns(self, mock_environment):
+        """Verify that rollback_file.csv and final_input_file.csv always preserve all mapped columns even when only one field changes."""
+        src_path = mock_environment["data_dir"] / "Test_Report" / "input" / "source" / "source.xlsx"
+        df_src = pd.read_excel(src_path)
+        df_src.loc[df_src["Site Reference"] == "SITE-001", "Target Date"] = "2026-12-31"
+        df_src.loc[df_src["Site Reference"] == "SITE-001", "Site Name"] = "London Central"
+        df_src.to_excel(src_path, index=False)
+
+        engine = InputFileEngine("Test Report")
+        result = engine.run()
+
+        assert result.success is True
+        rb_df = pd.read_csv(result.run_dir / "rollback_file.csv", dtype=str)
+        final_df = pd.read_csv(result.run_dir / "final_input_file.csv", dtype=str)
+
+        for col in ["Id", "Site Reference", "Name", "Target_Date__c"]:
+            assert col in rb_df.columns, f"Expected {col} in rollback_file.csv columns: {list(rb_df.columns)}"
+            assert col in final_df.columns, f"Expected {col} in final_input_file.csv columns: {list(final_df.columns)}"
+
 
 
 

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 import streamlit as st
@@ -12,6 +13,115 @@ from core.config_loader import YamlConfigLoader
 from ui.components import render_back_button, render_download_with_confirmation, render_footer, render_header
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_read_csv(f_path: Path, **kwargs) -> pd.DataFrame:
+    """Read a CSV safely, returning an empty DataFrame if file is missing or corrupt."""
+    try:
+        if f_path.exists() and f_path.stat().st_size > 0:
+            return pd.read_csv(f_path, **kwargs)
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+def _render_rollback_safety_net(
+    r_dir: Path,
+    report_name: str,
+    key_prefix: str,
+    selected_run_id: str,
+    target_object: str | None = None,
+) -> None:
+    """Render an authoritative 1-Click Rollback / Revert Safety Net card in Run History."""
+    rb_single = r_dir / "rollback_file.csv"
+    multi_rb_files = sorted(r_dir.glob("rollback_file_*.csv"))
+
+    has_rb = (rb_single.exists() and len(_safe_read_csv(rb_single)) > 0) or any(
+        len(_safe_read_csv(f)) > 0 for f in multi_rb_files
+    )
+    if not has_rb:
+        return
+
+    st.markdown("---")
+    st.markdown("### ⏪ Emergency Rollback / Revert Safety Net")
+    st.warning(
+        "⚠️ **Safety Net**: Revert modified records from this run back to their exact original "
+        "pre-change Sitetracker values in Salesforce."
+    )
+
+    # Active or completed job progress check
+    prog_f = r_dir / "ingest_progress.json"
+    if prog_f.exists():
+        try:
+            p_data = json.loads(prog_f.read_text(encoding="utf-8"))
+            if p_data.get("status") == "RUNNING" and p_data.get("is_rollback", False):
+                tot = max(1, p_data.get("total_records_overall", 1))
+                proc = p_data.get("processed_records_overall", 0)
+                pct = min(1.0, proc / tot)
+                st.info(f"🔄 **Rollback Revert in Progress on Server**: Restoring {proc:,} of {tot:,} records ({int(pct * 100)}%)...")
+                st.progress(pct)
+                time.sleep(1.5)
+                st.rerun()
+                return
+            elif p_data.get("status") in ("COMPLETED", "COMPLETED_WITH_ERRORS") and p_data.get("is_rollback", False):
+                succ = p_data.get("successful_records_overall", 0)
+                tot = p_data.get("total_records_overall", 0)
+                st.success(f"✅ **Rollback Previously Completed**: Reverted {succ:,} of {tot:,} records back to pre-change values in Salesforce.")
+        except Exception:
+            pass
+
+    # Inspect rollback records breakdown
+    with st.expander("🔍 Inspect Rollback Payloads (Values to be restored)", expanded=False):
+        if multi_rb_files:
+            rb_tabs = st.tabs([f"⏪ {f.stem.replace('rollback_file_', '').replace('_', ' ')}" for f in multi_rb_files])
+            for f, tab in zip(multi_rb_files, rb_tabs):
+                with tab:
+                    df_rb = _safe_read_csv(f, dtype=str)
+                    clean_target = f.stem.replace('rollback_file_', '').replace('_', ' ')
+                    st.caption(f"**{len(df_rb):,}** rollback records ready for **{clean_target}**")
+                    if not df_rb.empty:
+                        st.dataframe(df_rb.head(50), use_container_width=True)
+        elif rb_single.exists():
+            df_rb = _safe_read_csv(rb_single, dtype=str)
+            st.caption(f"**{len(df_rb):,}** rollback records ready to restore")
+            if not df_rb.empty:
+                st.dataframe(df_rb.head(50), use_container_width=True)
+
+    col_c1, col_c2 = st.columns([2, 1])
+    with col_c1:
+        revert_confirm_text = st.text_input(
+            "Type REVERT to enable rollback:",
+            placeholder="REVERT",
+            key=f"hist_revert_input_{key_prefix}_{selected_run_id}",
+        )
+    with col_c2:
+        st.write("")
+        st.write("")
+        revert_active = (revert_confirm_text.strip() == "REVERT")
+        btn_label = "⏪ Execute Rollback for All Objects" if multi_rb_files else "⏪ Execute Rollback Now"
+        if st.button(
+            btn_label,
+            type="secondary",
+            disabled=not revert_active,
+            key=f"hist_revert_btn_{key_prefix}_{selected_run_id}",
+            use_container_width=True,
+        ):
+            from salesforce.job_manager import start_background_ingest
+            from salesforce.auth import get_active_profile
+            prof = get_active_profile()
+            start_background_ingest(
+                run_dir=r_dir,
+                report_name=report_name,
+                is_rollback=True,
+                profile=prof,
+                batch_size=15,
+                target_object=target_object,
+                engine="composite",
+            )
+            st.session_state.active_job_run_dir = r_dir
+            st.toast("⏪ Rollback initiated in server background thread! Tracking progress...")
+            time.sleep(0.5)
+            st.rerun()
 
 
 def parse_run_summary(summary_path: Path) -> dict:
@@ -405,6 +515,27 @@ def _render_run_details(chosen_run: dict, key_prefix: str):
                     key=f"hist_{key_prefix}_{fn}_{selected_run_id}"
                 )
 
+    # Multi-Object dedicated payloads (e.g. Apollo 10G)
+    multi_rb_files = sorted(r_dir.glob("rollback_file_*.csv"))
+    multi_final_files = sorted(r_dir.glob("final_input_file_*.csv"))
+    if multi_rb_files or multi_final_files:
+        st.markdown("###### 📦 Multi-Object Dedicated Payloads")
+        all_multi = [(f, f"🔙 Rollback: {f.stem.replace('rollback_file_', '').replace('_', ' ')}") for f in multi_rb_files] + \
+                    [(f, f"📥 Final: {f.stem.replace('final_input_file_', '').replace('_', ' ')}") for f in multi_final_files]
+        chunk_size = 4
+        for row_idx in range(0, len(all_multi), chunk_size):
+            chunk = all_multi[row_idx : row_idx + chunk_size]
+            m_cols = st.columns(len(chunk))
+            for i, (f_path, label) in enumerate(chunk):
+                render_download_with_confirmation(
+                    m_cols[i], label, f_path,
+                    download_filename=f"{clean_rep}_{f_path.name}",
+                    key=f"hist_{key_prefix}_{f_path.stem}_{selected_run_id}"
+                )
+
+    # Emergency 1-Click Rollback / Revert Safety Net
+    _render_rollback_safety_net(r_dir, chosen_run["report"], key_prefix, selected_run_id)
+
     # Post-Update Live Reconciliation Summary (if available)
     _render_post_audit_summary(r_dir, key_prefix, selected_run_id)
 
@@ -573,6 +704,15 @@ def _render_manual_run_details(chosen_run: dict, key_prefix: str = "manual"):
                     download_filename=f"{clean_rep}_{fn}",
                     key=f"hist_{key_prefix}_{fn}_{selected_run_id}"
                 )
+
+    # Emergency 1-Click Rollback / Revert Safety Net
+    _render_rollback_safety_net(
+        r_dir,
+        chosen_run.get("report", chosen_run.get("object_name", "Manual")),
+        key_prefix,
+        selected_run_id,
+        target_object=chosen_run.get("target_object") or chosen_run.get("object_name"),
+    )
 
     # Post-Update Live Reconciliation Summary (if available)
     _render_post_audit_summary(r_dir, key_prefix, selected_run_id)
