@@ -7,12 +7,15 @@ import io
 import json
 import logging
 from pathlib import Path
+import re
+import time
 from typing import Any
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import settings
 from core.mapping_loader import MappingLoader
+from salesforce.csv_sanitizer import is_valid_salesforce_id, sanitize_failure_csv
 from salesforce.sf_client import get_sf_connection
 
 logger = logging.getLogger(__name__)
@@ -29,6 +32,9 @@ class BulkUploadResult:
     failures_csv_path: Path | None = None
     error_summary: str | None = None
     failures: list[dict] = field(default_factory=list)
+    successes_csv_path: Path | None = None
+    successes: list[dict] = field(default_factory=list)
+
 
 
 def clean_payload_for_salesforce(
@@ -95,7 +101,10 @@ def clean_payload_for_salesforce(
                 if val_str == "#N/A":
                     return "#N/A"
                 try:
-                    dt = pd.to_datetime(val_str, dayfirst=True)
+                    if re.match(r"^\d{4}-\d{2}-\d{2}", val_str):
+                        dt = pd.to_datetime(val_str, dayfirst=False)
+                    else:
+                        dt = pd.to_datetime(val_str, dayfirst=True)
                     return dt.strftime("%Y-%m-%d")
                 except Exception:
                     return val_str
@@ -200,20 +209,44 @@ def push_delta_to_sitetracker(
     processed_count = 0
     success_count = 0
     failed_count = 0
+    failures_list: list[dict[str, Any]] = []
 
     for chunk_idx, chunk in enumerate(chunks, 1):
         chunk_start = (chunk_idx - 1) * effective_batch + 1
         chunk_end = min(chunk_idx * effective_batch, len(records))
-        try:
-            if operation == "update":
-                res_list = bulk_type.update(records=chunk)
-            elif operation == "upsert":
-                res_list = bulk_type.upsert(records=chunk, external_id_field="Id")
-            elif operation == "insert":
-                res_list = bulk_type.insert(records=chunk)
-            else:
-                raise ValueError(f"Unsupported Bulk 2.0 operation: {operation}")
 
+        max_chunk_retries = 3
+        chunk_success = False
+        res_list = []
+        last_chunk_err = None
+
+        for attempt in range(1, max_chunk_retries + 1):
+            try:
+                if operation == "update":
+                    res_list = bulk_type.update(records=chunk)
+                elif operation == "upsert":
+                    res_list = bulk_type.upsert(records=chunk, external_id_field="Id")
+                elif operation == "insert":
+                    res_list = bulk_type.insert(records=chunk)
+                else:
+                    raise ValueError(f"Unsupported Bulk 2.0 operation: {operation}")
+                chunk_success = True
+                break
+            except Exception as e:
+                last_chunk_err = e
+                logger.warning(
+                    "Bulk API 2.0 chunk %d/%d attempt %d/%d failed: %s. Re-authenticating connection...",
+                    chunk_idx, total_chunks, attempt, max_chunk_retries, e
+                )
+                if attempt < max_chunk_retries:
+                    time.sleep(1 * attempt)
+                    try:
+                        sf = get_sf_connection(profile=profile)
+                        bulk_type = getattr(sf.bulk2, clean_obj)
+                    except Exception as reauth_err:
+                        logger.error("Failed to re-authenticate during chunk retry: %s", reauth_err)
+
+        if chunk_success:
             job_results.extend(res_list)
             c_proc = sum(r.get("numberRecordsProcessed", 0) for r in res_list)
             c_fail = sum(r.get("numberRecordsFailed", 0) for r in res_list)
@@ -221,8 +254,8 @@ def push_delta_to_sitetracker(
             processed_count += c_proc
             failed_count += c_fail
             success_count += c_succ
-        except Exception as e:
-            logger.error("Bulk API 2.0 job submission failed for %s chunk %d/%d: %s", clean_obj, chunk_idx, total_chunks, e)
+        else:
+            logger.error("Bulk API 2.0 chunk %d/%d failed permanently: %s", chunk_idx, total_chunks, last_chunk_err)
             job_results.append({
                 "numberRecordsTotal": len(chunk),
                 "numberRecordsProcessed": len(chunk),
@@ -231,6 +264,12 @@ def push_delta_to_sitetracker(
             })
             processed_count += len(chunk)
             failed_count += len(chunk)
+            for r in chunk:
+                failures_list.append({
+                    "sf__Id": r.get("Id", "UNKNOWN_ID"),
+                    "sf__Error": f"CHUNK_SUBMISSION_ERROR: {last_chunk_err}",
+                    "sf__Fields": "",
+                })
 
         if progress_callback:
             progress_callback({
@@ -253,33 +292,112 @@ def push_delta_to_sitetracker(
     primary_job_id = ", ".join(job_ids) if job_ids else "UNKNOWN_JOB"
     success_recs = max(0, processed_recs - failed_recs)
 
-    # 4. Handle record-level failures across all chunk jobs
-    failures_csv_path = None
-    failures_list = []
-    if failed_recs > 0:
-        failures_csv_path = csv_file.parent / "bulk_upload_failures.csv"
-        aggregated_fail_content = []
+    # Build ID-to-primary-key lookup for Dataloader.io audit reporting
+    pk_col_found = None
+    if report_name:
+        try:
+            loader = MappingLoader(settings.MAPPING_FILE, report_name)
+            pk_src, _ = loader.primary_keys()
+            if pk_src in df.columns:
+                pk_col_found = pk_src
+        except Exception:
+            pass
+
+    candidate_pks = [
+        pk_col_found, "Project Reference", "Project Ref", "Primary_Key", "TM Cell ID",
+        "Site ID", "Site_ID__c", "Cell ID", "Site Reference",
+    ]
+    pk_cols = [c for c in candidate_pks if c and c in df.columns]
+
+    id_to_pk: dict[str, str] = {}
+    for r in df.to_dict("records"):
+        r_id = str(r.get("Id", "")).strip()
+        if r_id:
+            for pk_c in pk_cols:
+                if pk_c in r and str(r[pk_c]).strip():
+                    id_to_pk[r_id] = str(r[pk_c]).strip()
+                    break
+
+    # 4. Handle record-level successes and failures across all chunk jobs
+    successes_csv_path = None
+    successes_list: list[dict] = []
+    if success_recs > 0:
+        succ_dfs: list[pd.DataFrame] = []
         for j_id in job_ids:
-            if not j_id:
+            if not j_id or str(j_id).startswith("FAILED_CHUNK_"):
+                continue
+            try:
+                succ_content = bulk_type.get_successful_records(j_id)
+                if succ_content:
+                    s_df = pd.read_csv(io.StringIO(succ_content), dtype=str, on_bad_lines="warn", engine="python")
+                    if "sf__Id" in s_df.columns:
+                        s_df["Primary_Key"] = s_df["sf__Id"].map(id_to_pk).fillna("")
+                        s_df["Record_Id"] = s_df["sf__Id"]
+                        s_df["Id"] = s_df["sf__Id"]
+                    succ_dfs.append(s_df)
+            except Exception as e:
+                logger.warning("Could not retrieve Bulk API 2.0 success details for job %s: %s", j_id, e)
+
+        if succ_dfs:
+            try:
+                combined_succ_df = pd.concat(succ_dfs, ignore_index=True)
+                successes_csv_path = csv_file.parent / "salesforce_success_records.csv"
+                succ_export_df = combined_succ_df.drop(columns=[c for c in ("Id", "sf__Id") if c in combined_succ_df.columns], errors="ignore")
+                cols = ["Record_Id", "Primary_Key"] + [c for c in succ_export_df.columns if c not in ("Record_Id", "Primary_Key")]
+                succ_export_df = succ_export_df[cols]
+                succ_export_df.to_csv(successes_csv_path, index=False)
+                successes_list = combined_succ_df.fillna("").to_dict("records")
+                logger.info("Saved %d success records to %s", len(successes_list), successes_csv_path)
+            except Exception as e:
+                logger.error("Failed to write salesforce_success_records.csv: %s", e)
+
+    failures_csv_path = None
+    if failed_recs > 0:
+        failures_csv_path = csv_file.parent / "salesforce_error_records.csv"
+        legacy_failures_path = csv_file.parent / "bulk_upload_failures.csv"
+        fail_dfs: list[pd.DataFrame] = []
+        if failures_list:
+            f_init = pd.DataFrame(failures_list)
+            if "sf__Id" in f_init.columns:
+                f_init["Primary_Key"] = f_init["sf__Id"].map(id_to_pk).fillna("")
+                f_init["Record_Id"] = f_init["sf__Id"]
+            fail_dfs.append(f_init)
+
+        for j_id in job_ids:
+            if not j_id or str(j_id).startswith("FAILED_CHUNK_"):
                 continue
             try:
                 failed_csv_content = bulk_type.get_failed_records(j_id)
                 if failed_csv_content:
-                    aggregated_fail_content.append(failed_csv_content.strip())
-                    # Parse failures into list of dicts for UI preview safely (using python engine to handle commas in error strings)
+                    sanitized_csv = sanitize_failure_csv(failed_csv_content)
                     fail_df = pd.read_csv(
-                        io.StringIO(failed_csv_content),
+                        io.StringIO(sanitized_csv),
                         dtype=str,
-                        on_bad_lines="skip",
+                        on_bad_lines="warn",
                         engine="python"
                     )
-                    failures_list.extend(fail_df.to_dict("records"))
+                    if "sf__Id" in fail_df.columns:
+                        valid_mask = fail_df["sf__Id"].astype(str).apply(is_valid_salesforce_id)
+                        if valid_mask.any():
+                            fail_df = fail_df[valid_mask].copy()
+                        fail_df["Primary_Key"] = fail_df["sf__Id"].map(id_to_pk).fillna("")
+                        fail_df["Record_Id"] = fail_df["sf__Id"]
+
+                    fail_dfs.append(fail_df)
+                    failures_list.extend(fail_df.fillna("").to_dict("records"))
             except Exception as e:
                 logger.warning("Could not retrieve Bulk API 2.0 failure details for job %s: %s", j_id, e)
 
-        if aggregated_fail_content:
+        if fail_dfs:
             try:
-                failures_csv_path.write_text("\n".join(aggregated_fail_content), encoding="utf-8")
+                combined_fail_df = pd.concat(fail_dfs, ignore_index=True)
+                # Legacy internal file retains sf__Id for backwards compatibility
+                combined_fail_df.to_csv(legacy_failures_path, index=False)
+                # User-facing file has single clean Record_Id column
+                clean_fail_df = combined_fail_df.drop(columns=[c for c in ("Id", "sf__Id") if c in combined_fail_df.columns], errors="ignore")
+                cols = ["Record_Id", "Primary_Key"] + [c for c in clean_fail_df.columns if c not in ("Record_Id", "Primary_Key")]
+                clean_fail_df = clean_fail_df[cols]
+                clean_fail_df.to_csv(failures_csv_path, index=False)
                 logger.warning(
                     "%d records failed in Bulk API 2.0 upload. Saved failure details to %s",
                     failed_recs, failures_csv_path
@@ -299,7 +417,8 @@ def push_delta_to_sitetracker(
         "successful_records": success_recs,
         "failed_records": failed_recs,
         "all_succeeded": (failed_recs == 0),
-        "failures_file": str(failures_csv_path.name) if failures_csv_path else None
+        "successes_file": str(successes_csv_path.name) if successes_csv_path else None,
+        "failures_file": str(failures_csv_path.name) if failures_csv_path else None,
     }
     audit_path = csv_file.parent / "bulk_upload_audit.json"
     try:
@@ -315,7 +434,9 @@ def push_delta_to_sitetracker(
         job_id=primary_job_id,
         all_succeeded=(failed_recs == 0),
         failures_csv_path=failures_csv_path,
-        failures=failures_list
+        failures=failures_list,
+        successes_csv_path=successes_csv_path,
+        successes=successes_list,
     )
 
 

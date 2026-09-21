@@ -1,8 +1,9 @@
 """Data normalization utilities."""
 
+from collections.abc import Iterable
+from datetime import datetime
 import re
 import warnings
-from datetime import datetime
 import pandas as pd
 
 
@@ -17,6 +18,50 @@ class DataNormalizer:
             .str.strip()
         )
         return df
+
+    @staticmethod
+    def resolve_source_column(
+        candidates: Iterable[str],
+        s_col: str,
+        st_col: str | None = None,
+        api_col: str | None = None,
+    ) -> str | None:
+        """Resolve which column in `candidates` matches a mapped field.
+
+        Search hierarchy:
+        1. Exact match for `s_col` (Source File Column Name from mapping)
+        2. Exact match for `st_col` (Sitetracker Field Name from mapping)
+        3. Exact match for `api_col` (Salesforce API Name from mapping)
+        4. Case-insensitive / whitespace-stripped match for `s_col`
+        5. Case-insensitive / whitespace-stripped match for `st_col`
+        6. Case-insensitive / whitespace-stripped match for `api_col`
+
+        Returns the exact candidate string from `candidates` if matched, else None.
+        """
+        cand_list = [str(c).strip() for c in candidates if pd.notna(c) and str(c).strip() and str(c).strip().lower() != "nan"]
+        cand_set = set(cand_list)
+
+        # 1. Exact matches in priority order
+        if s_col and str(s_col).strip() in cand_set:
+            return str(s_col).strip()
+        if st_col and str(st_col).strip() in cand_set:
+            return str(st_col).strip()
+        if api_col and str(api_col).strip() in cand_set:
+            return str(api_col).strip()
+
+        # 2. Case-insensitive / whitespace-stripped matches in priority order
+        s_clean = str(s_col).strip().lower() if s_col else ""
+        st_clean = str(st_col).strip().lower() if st_col else ""
+        api_clean = str(api_col).strip().lower() if api_col else ""
+
+        for target in (s_clean, st_clean, api_clean):
+            if not target or target == "nan":
+                continue
+            for c in cand_list:
+                if c.lower() == target:
+                    return c
+
+        return None
 
     @staticmethod
     def normalize_value(v) -> str:
@@ -55,7 +100,10 @@ class DataNormalizer:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", UserWarning)
-                dt = pd.to_datetime(v_str, errors="raise", dayfirst=True)
+                if re.match(r"^\d{4}-\d{2}-\d{2}", v_str):
+                    dt = pd.to_datetime(v_str, errors="raise", dayfirst=False)
+                else:
+                    dt = pd.to_datetime(v_str, errors="raise", dayfirst=True)
             return dt.strftime("%d/%m/%Y"), True
         except Exception:
             return "", False

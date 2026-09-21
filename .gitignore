@@ -21,6 +21,10 @@ data/**/runs/
 data/**/archive/
 data/**/backup/
 data/common/mapping_history/
+*.db
+*.db-wal
+*.db-shm
+
 
 # OS junk
 .DS_Store

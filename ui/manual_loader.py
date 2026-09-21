@@ -112,20 +112,36 @@ def _init_manual_state():
         st.session_state.adhoc_unmatched_list = []
 
 
-def _safe_read_csv(path: Path | None) -> pd.DataFrame:
+def _safe_read_csv(path: Path | str | None, **kwargs) -> pd.DataFrame:
     """Safely read a CSV file, returning an empty DataFrame if empty or missing."""
     if not path:
         return pd.DataFrame()
     p = Path(path)
-    if not p.exists() or p.stat().st_size == 0:
+    if not p.exists():
         return pd.DataFrame()
     try:
-        return pd.read_csv(p, dtype=str, keep_default_na=False, encoding="utf-8", on_bad_lines="skip")
+        if p.stat().st_size == 0:
+            return pd.DataFrame()
+    except Exception:
+        pass
+
+    csv_kwargs = {
+        "dtype": str,
+        "keep_default_na": False,
+        "encoding": "utf-8",
+        "on_bad_lines": "skip",
+    }
+    csv_kwargs.update(kwargs)
+
+    try:
+        return pd.read_csv(p, **csv_kwargs)
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
     except UnicodeDecodeError:
         try:
-            return pd.read_csv(p, dtype=str, keep_default_na=False, encoding="latin1", engine="python", on_bad_lines="skip")
+            csv_kwargs["encoding"] = "latin1"
+            csv_kwargs["engine"] = "python"
+            return pd.read_csv(p, **csv_kwargs)
         except Exception:
             return pd.DataFrame()
     except Exception:
@@ -157,8 +173,16 @@ def render(go_fn):
         env_color = "blue"
 
     with col_env:
-        status_dot = "● Connected" if is_auth else f"● {status_label}"
-        status_color = "#04844B" if is_auth else "#EA001E"
+        label = "Connected" if status_label in ("Connected", "Connected (Cached)") else status_label
+        status_dot = f"● {label}" if is_auth else f"● {status_label}"
+        if is_auth:
+            status_color = "#04844B"
+        elif status_label == "Disconnected":
+            status_color = "#64748B"
+        elif status_label == "Offline":
+            status_color = "#D97706"
+        else:
+            status_color = "#EA001E"
         st.markdown(
             f"""
             <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:10px 14px; text-align:right;">
@@ -205,6 +229,7 @@ def render(go_fn):
         _render_screen_2_mapping()
     elif cur_step == 2:
         _render_screen_3_validation()
+    elif cur_step == 3:
         _render_screen_4_results()
 
 
@@ -216,7 +241,24 @@ def _render_screen_1_upload():
     st.markdown("### 1️⃣ Target Object & File Upload")
     st.caption("Select your target Salesforce object and upload your source data spreadsheet (.csv, .xlsx, or .xls).")
 
+    try:
+        from pathlib import Path
+        from core import job_store
+        from salesforce.job_manager import is_job_active
+        job_store.init_db()
+        for aj in job_store.get_active_jobs():
+            if is_job_active(Path(aj["run_dir"])):
+                st.info(f"⚡ **Active Ingest in Progress**: A background upload for **{aj['report_name']}** is running on the server.")
+                if st.button("👁️ Re-attach to Live Progress ➔", key=f"reattach_ml_{aj['id']}", type="primary"):
+                    st.session_state.active_monitor_job_id = aj["id"]
+                    st.session_state.page = "live_monitor"
+                    st.rerun()
+                break
+    except Exception:
+        pass
+
     active_prof = get_active_profile()
+
     if not is_token_valid(profile=active_prof):
         st.error(f"Not authenticated with Salesforce ({active_prof}). Please log in via the Data Export page first.")
         return
@@ -983,6 +1025,86 @@ def _render_screen_4_results():
                             st.error(f"Failures saved to `{fail_path.name}`:")
                             fail_df = _safe_read_csv(fail_path)
                             st.dataframe(fail_df, use_container_width=True)
+
+                # Dataloader.io Results Downloads
+                m_succ_p = res.run_dir / "salesforce_success_records.csv"
+                m_err_p = res.run_dir / "salesforce_error_records.csv"
+                if m_succ_p.exists() or m_err_p.exists():
+                    col_m_s, col_m_e = st.columns(2)
+                    with col_m_s:
+                        if m_succ_p.exists():
+                            with open(m_succ_p, "rb") as msf:
+                                st.download_button(
+                                    "📥 Download Success Records (.csv)",
+                                    msf.read(),
+                                    file_name="salesforce_success_records.csv",
+                                    mime="text/csv",
+                                    use_container_width=True,
+                                    key="manual_dl_succ",
+                                )
+                    with col_m_e:
+                        if m_err_p.exists():
+                            with open(m_err_p, "rb") as mef:
+                                st.download_button(
+                                    "📥 Download Error Records (.csv)",
+                                    mef.read(),
+                                    file_name="salesforce_error_records.csv",
+                                    mime="text/csv",
+                                    use_container_width=True,
+                                    key="manual_dl_err",
+                                )
+
+                # Tier 2: Post-Update Live Verification Report
+                m_rep_p = res.run_dir / "post_update_validation_report.csv"
+                m_disc_p = res.run_dir / "post_update_discrepancies.csv"
+                if m_rep_p.exists():
+                    st.markdown("---")
+                    st.markdown("### 🔍 Post-Update Live Audit & Reconciliation")
+                    st.caption("Verifies whether submitted updates actually persisted or were altered by internal Apex triggers, locked fields, or validation rules.")
+                    m_pv_df = _safe_read_csv(m_rep_p, dtype=str)
+                    if not m_pv_df.empty:
+                        m_tot = len(m_pv_df)
+                        m_ver = len(m_pv_df[m_pv_df["Status"] == "VERIFIED_MATCH"])
+                        m_mut = len(m_pv_df[m_pv_df["Status"] == "TRIGGER_MUTATION"])
+                        m_stale = len(m_pv_df[m_pv_df["Status"].isin(["UNMODIFIED_STALE", "NULL_WIPE_FAILED"])])
+                        m_notf = len(m_pv_df[m_pv_df["Status"] == "RECORD_NOT_FOUND"])
+                        m_pct = round((m_ver / m_tot * 100), 1) if m_tot > 0 else 100.0
+
+                        mc1, mc2, mc3, mc4 = st.columns(4)
+                        mc1.metric("Fields Audited", f"{m_tot:,}")
+                        mc2.metric("Verified Match", f"{m_pct}%", delta=f"{m_ver} verified")
+                        mc3.metric("Trigger Overwrites", f"{m_mut}", delta="- Alarmed" if m_mut > 0 else None, delta_color="inverse")
+                        mc4.metric("Stale / Not Saved", f"{m_stale + m_notf}", delta="- Failed" if (m_stale + m_notf) > 0 else None, delta_color="inverse")
+
+                        if m_disc_p and m_disc_p.exists():
+                            m_disc_df = _safe_read_csv(m_disc_p, dtype=str)
+                            if not m_disc_df.empty:
+                                with st.expander(f"⚠️ View Discrepancies ({len(m_disc_df)} fields mutated or un-saved)", expanded=True):
+                                    st.warning("The following fields in Salesforce differ from what was submitted. They may have been overwritten by Sitetracker managed package triggers or validation rules.")
+                                    st.dataframe(m_disc_df, use_container_width=True)
+
+                        c_m_pv1, c_m_pv2 = st.columns(2)
+                        with c_m_pv1:
+                            with open(m_rep_p, "rb") as f_mrep:
+                                st.download_button(
+                                    "📄 Full Post-Audit Report (.csv)",
+                                    f_mrep.read(),
+                                    file_name="post_update_validation_report.csv",
+                                    mime="text/csv",
+                                    use_container_width=True,
+                                    key="manual_dl_pv_full",
+                                )
+                        with c_m_pv2:
+                            if m_disc_p and m_disc_p.exists():
+                                with open(m_disc_p, "rb") as f_mdisc:
+                                    st.download_button(
+                                        "⚠️ Discrepancies Only (.csv)",
+                                        f_mdisc.read(),
+                                        file_name="post_update_discrepancies.csv",
+                                        mime="text/csv",
+                                        use_container_width=True,
+                                        key="manual_dl_pv_disc",
+                                    )
             else:
                 title = "Rollback" if is_rb else "Ingest"
                 st.error(f"❌ {title} job failed on server: {job_info.get('error_summary', 'Unknown error')}")
@@ -1083,6 +1205,21 @@ def _render_screen_4_results():
     if audit_p and Path(audit_p).exists():
         with open(audit_p, "rb") as f:
             d8.download_button("📄 Audit Log (.log)", f.read(), file_name="audit.log", mime="text/plain", use_container_width=True)
+
+    # Cloud Ingest & Post-Audit Artifacts
+    cloud_files = [
+        ("salesforce_success_records.csv", "🟢 Cloud Successes (.csv)"),
+        ("salesforce_error_records.csv", "🔴 Cloud Failures (.csv)"),
+        ("post_update_validation_report.csv", "🔍 Post-Audit Full (.csv)"),
+        ("post_update_discrepancies.csv", "⚠️ Discrepancies (.csv)"),
+    ]
+    present_cloud = [(fn, lbl, res.run_dir / fn) for fn, lbl in cloud_files if (res.run_dir / fn).exists()]
+    if present_cloud:
+        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+        c_cols = st.columns(len(present_cloud))
+        for i, (fn, lbl, cp) in enumerate(present_cloud):
+            with open(cp, "rb") as cf:
+                c_cols[i].download_button(lbl, cf.read(), file_name=fn, mime="text/csv", use_container_width=True, key=f"manual_hub_{fn}")
 
     # 1-Click Rollback Safety Net
     if rollback_p and rollback_p.exists() and job_info and job_info.get("status") == "COMPLETED" and not job_info.get("is_rollback"):

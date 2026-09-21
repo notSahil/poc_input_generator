@@ -21,8 +21,15 @@ warnings.filterwarnings("ignore", message="Parsing dates", category=UserWarning)
 
 
 class InputFileEngine:
-    def __init__(self, report_name: str, *, insert_nulls: bool = False):
+    def __init__(
+        self,
+        report_name: str,
+        *,
+        insert_nulls: bool = False,
+        custom_mapping_df: pd.DataFrame | None = None,
+    ):
         self.report_name = report_name
+        self.custom_mapping_df = custom_mapping_df
         self.logger = logging.getLogger(f"core.engine.{report_name}")
         self.yaml_cfg = YamlConfigLoader.load(report_name)
         self.insert_nulls = insert_nulls or self.yaml_cfg.get("behavior", {}).get("insert_nulls", False)
@@ -67,7 +74,7 @@ class InputFileEngine:
 
         # 1. Validation check
         if not skip_validation:
-            validator = InputValidator(self.report_name)
+            validator = InputValidator(self.report_name, custom_mapping_df=self.custom_mapping_df)
             val_result = validator.validate_all()
             if not val_result.is_valid:
                 raise ValidationError("Input validation failed", errors=val_result.errors)
@@ -98,7 +105,7 @@ class InputFileEngine:
             return run_dir / name
 
         # 4. Load mapping
-        mapping = MappingLoader(settings.MAPPING_FILE, self.report_name)
+        mapping = MappingLoader(settings.MAPPING_FILE, self.report_name, custom_df=self.custom_mapping_df)
         mapping.load()
         pk_src, pk_st = mapping.primary_keys()
         field_map = mapping.field_mapping()
@@ -113,16 +120,23 @@ class InputFileEngine:
             Target_Objects=", ".join(mapping.objects()) if mapping.objects() else "Default",
         )
 
-        # Self-healing column header aliasing: if source file contains Salesforce API names
-        # (e.g. from an exported rollback_file.csv or raw SOQL export), alias them to source column names.
-        for s_col, _, a_col, _ in field_map:
-            if s_col not in src_df.columns and a_col and a_col in src_df.columns:
-                src_df[s_col] = src_df[a_col]
+        # Self-healing column header aliasing: if source file contains Sitetracker field names,
+        # case variations, or Salesforce API names, alias them to expected source column names.
+        for s_col, st_col, a_col, _ in field_map:
+            if s_col not in src_df.columns:
+                matched = DataNormalizer.resolve_source_column(src_df.columns, s_col, st_col, a_col)
+                if matched and matched in src_df.columns and matched != s_col:
+                    src_df[s_col] = src_df[matched]
         if pk_src not in src_df.columns:
-            for s_col, _, a_col, _ in field_map:
-                if s_col == pk_src and a_col and a_col in src_df.columns:
-                    src_df[pk_src] = src_df[a_col]
-                    break
+            matched_pk = DataNormalizer.resolve_source_column(src_df.columns, pk_src, pk_st, None)
+            if not matched_pk:
+                for s_col, st_col, a_col, _ in field_map:
+                    if s_col == pk_src:
+                        matched_pk = DataNormalizer.resolve_source_column(src_df.columns, s_col, st_col, a_col)
+                        if matched_pk:
+                            break
+            if matched_pk and matched_pk in src_df.columns and matched_pk != pk_src:
+                src_df[pk_src] = src_df[matched_pk]
 
         for col in self.text_case_columns:
             if col in src_df.columns:

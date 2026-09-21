@@ -113,6 +113,74 @@ def cmd_scaffold(args):
     scaffold(args.name)
 
 
+def cmd_scheduler(args):
+    """Handle scheduler CLI subcommands."""
+    from core import job_store, scheduler
+
+    job_store.init_db()
+
+    action = args.sched_action
+
+    if action == "list":
+        schedules = job_store.list_schedules()
+        print(f"\n⏰ Configured Task Schedules ({len(schedules)} found):\n")
+        if not schedules:
+            print("   No schedules configured. Create one in the UI or via API.")
+            return
+
+        print(f"{'Name':<24} | {'Report':<18} | {'Profile':<8} | {'Type / Freq':<16} | {'Next Run (UK)':<20} | {'Status':<8} | {'Last Result'}")
+        print("-" * 115)
+        for s in schedules:
+            active_str = "🟢 Active" if s["is_active"] else "⏸ Paused"
+            type_str = f"📌 One-Off" if s["schedule_type"] == "one_off" else f"🔄 {s.get('frequency', 'daily').title()}"
+            last_stat = s.get("last_run_status") or "Never Run"
+            next_run = s.get("next_run_at", "N/A")[:16].replace("T", " ")
+            print(f"{s['name']:<24} | {s['report_name']:<18} | {s['profile']:<8} | {type_str:<16} | {next_run:<20} | {active_str:<8} | {last_stat}")
+        print("")
+
+    elif action == "run-due":
+        print("\n🔍 Checking for due scheduled tasks...")
+        results = scheduler.run_due_tasks()
+        if not results:
+            print("   No scheduled tasks are currently due.")
+        else:
+            print(f"\n✅ Executed {len(results)} task(s):")
+            for r in results:
+                print(f"   - Schedule ID: {r.get('schedule_id')} | Status: {r.get('status')}")
+
+    elif action == "run-now":
+        sched_id = args.id
+        print(f"\n🚀 Triggering immediate execution for schedule ID: {sched_id}...")
+        res = scheduler.execute_scheduled_task(sched_id)
+        print(f"   - Status: {res.get('status')}")
+        if "total_records" in res:
+            print(f"   - Total records: {res.get('total_records')} | Updated: {res.get('successful_records')}")
+        if "error" in res:
+            print(f"   - Error: {res.get('error')}")
+
+    elif action == "pause":
+        job_store.update_schedule(args.id, is_active=0)
+        print(f"\n⏸ Schedule {args.id} paused.")
+
+    elif action == "resume":
+        job_store.update_schedule(args.id, is_active=1)
+        print(f"\n▶ Schedule {args.id} resumed.")
+
+    elif action == "delete":
+        if job_store.delete_schedule(args.id):
+            print(f"\n🗑 Schedule {args.id} deleted.")
+        else:
+            print(f"\n❌ Schedule {args.id} not found.")
+
+    elif action == "daemon":
+        print("\n⏰ Starting Sitetracker Data Hub Scheduler Daemon (Ctrl+C to stop)...")
+        job_store.mark_interrupted_on_startup()
+        try:
+            scheduler.start_scheduler_loop(poll_interval=args.interval)
+        except KeyboardInterrupt:
+            print("\nScheduler daemon stopped by user.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Sitetracker Input File Generator — Production CLI",
@@ -142,6 +210,30 @@ def main():
     p_scaffold.add_argument("name", help="Name of the new report to create")
     p_scaffold.set_defaults(func=cmd_scaffold)
 
+    # Command: scheduler
+    p_sched = subparsers.add_parser("scheduler", help="Manage and execute automated background schedules")
+    sched_sub = p_sched.add_subparsers(dest="sched_action", required=True, help="Scheduler actions")
+
+    sched_sub.add_parser("list", help="List all configured schedules and their next run times")
+    sched_sub.add_parser("run-due", help="Run all due schedules immediately (ideal for cron)")
+
+    p_s_now = sched_sub.add_parser("run-now", help="Trigger a schedule immediately by ID")
+    p_s_now.add_argument("--id", required=True, help="Schedule UUID")
+
+    p_s_pause = sched_sub.add_parser("pause", help="Pause a schedule")
+    p_s_pause.add_argument("--id", required=True, help="Schedule UUID")
+
+    p_s_resume = sched_sub.add_parser("resume", help="Resume a paused schedule")
+    p_s_resume.add_argument("--id", required=True, help="Schedule UUID")
+
+    p_s_del = sched_sub.add_parser("delete", help="Delete a schedule")
+    p_s_del.add_argument("--id", required=True, help="Schedule UUID")
+
+    p_s_daemon = sched_sub.add_parser("daemon", help="Run foreground scheduler loop for systemd")
+    p_s_daemon.add_argument("--interval", type=int, default=60, help="Polling interval in seconds (default: 60)")
+
+    p_sched.set_defaults(func=cmd_scheduler)
+
     args = parser.parse_args()
     setup_logging(level="WARNING")  # Keep CLI clean by default
 
@@ -150,3 +242,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -11,13 +11,25 @@ logger = logging.getLogger(__name__)
 
 
 class MappingLoader:
-    def __init__(self, mapping_file: str | Path | None = None, report_name: str = ""):
+    def __init__(
+        self,
+        mapping_file: str | Path | None = None,
+        report_name: str = "",
+        custom_df: pd.DataFrame | None = None,
+    ):
         self.mapping_file = Path(mapping_file) if mapping_file else settings.MAPPING_FILE
         self.report_name = report_name
-        self.mapping_df: pd.DataFrame | None = None
+        if custom_df is not None:
+            self.mapping_df: pd.DataFrame | None = custom_df.copy()
+            self.mapping_df.columns = self.mapping_df.columns.astype(str).str.strip()
+        else:
+            self.mapping_df = None
 
     def load(self) -> pd.DataFrame:
-        """Load mapping rows for the current report from the Excel mapping file."""
+        """Load mapping rows for the current report from the Excel mapping file (or return custom_df)."""
+        if self.mapping_df is not None:
+            return self.mapping_df
+
         if not self.mapping_file.exists():
             raise MappingFileNotFoundError(f"Mapping file not found at: {self.mapping_file}")
 

@@ -232,4 +232,102 @@ def test_refresh_access_token_uses_profile_credentials(tmp_path, monkeypatch):
         assert call_payload["refresh_token"] == "refresh_tok_abc"
 
 
+def test_check_connection_status_network_timeout_fallback(tmp_path, monkeypatch):
+    """If live ping times out but token is mathematically valid on disk, return Connected (Cached)."""
+    import requests
+    from unittest.mock import patch
+    from salesforce.auth import check_connection_status, save_manual_token
+
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "PROFILE_FILE", tmp_path / ".sf_profile.json")
+
+    save_manual_token("valid_access_token_123", "https://test.salesforce.com", profile="partial")
+
+    with patch("requests.get", side_effect=requests.exceptions.Timeout("Connection timed out")):
+        is_conn, status = check_connection_status("partial", force_check=True)
+        assert is_conn is True
+        assert status == "Connected (Cached)"
+
+
+def test_check_connection_status_auto_refreshes_with_profile_credentials(tmp_path, monkeypatch):
+    """When ping returns 401, check_connection_status uses profile credentials to refresh token."""
+    from unittest.mock import MagicMock, patch
+    from salesforce.auth import check_connection_status, save_profile_credentials, save_token
+
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "PROFILE_FILE", tmp_path / ".sf_profile.json")
+    monkeypatch.setattr(settings, "SF_CLIENT_ID", "")
+    monkeypatch.setattr(settings, "SF_CLIENT_SECRET", "")
+
+    save_profile_credentials("partial", "client_p1", "secret_p1", "https://test.salesforce.com")
+    save_token({
+        "access_token": "expired_tok_1",
+        "refresh_token": "valid_refresh_tok",
+        "instance_url": "https://test.salesforce.com",
+    }, profile="partial")
+
+    mock_resp_401 = MagicMock()
+    mock_resp_401.status_code = 401
+
+    mock_resp_200 = MagicMock()
+    mock_resp_200.status_code = 200
+    mock_resp_200.json.return_value = {"user_id": "005...", "username": "refreshed@test.com"}
+
+    mock_refresh_post = MagicMock()
+    mock_refresh_post.status_code = 200
+    mock_refresh_post.json.return_value = {
+        "access_token": "brand_new_access_tok_456",
+        "instance_url": "https://test.salesforce.com",
+        "refresh_token": "valid_refresh_tok",
+    }
+
+    with patch("requests.get", side_effect=[mock_resp_401, mock_resp_200]), \
+         patch("requests.post", return_value=mock_refresh_post):
+        is_conn, status = check_connection_status("partial", force_check=True)
+        assert is_conn is True
+        assert status == "Connected"
+
+
+def test_salesforce_client_auto_refresh_on_401(tmp_path, monkeypatch):
+    """SalesforceClient transparently refreshes expired token on 401 and retries."""
+    from unittest.mock import MagicMock, patch
+    from salesforce.auth import save_profile_credentials, save_token
+    from salesforce.client import SalesforceClient
+
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "PROFILE_FILE", tmp_path / ".sf_profile.json")
+    monkeypatch.setattr(settings, "SF_CLIENT_ID", "")
+    monkeypatch.setattr(settings, "SF_CLIENT_SECRET", "")
+
+    save_profile_credentials("partial", "client_p1", "secret_p1", "https://test.salesforce.com")
+    save_token({
+        "access_token": "stale_token",
+        "refresh_token": "valid_refresh_tok",
+        "instance_url": "https://test.salesforce.com",
+    }, profile="partial")
+
+    client = SalesforceClient(profile="partial")
+
+    mock_get_401 = MagicMock()
+    mock_get_401.status_code = 401
+
+    mock_get_200 = MagicMock()
+    mock_get_200.status_code = 200
+    mock_get_200.json.return_value = {"sub": "user_id_123"}
+
+    mock_refresh_post = MagicMock()
+    mock_refresh_post.status_code = 200
+    mock_refresh_post.json.return_value = {
+        "access_token": "fresh_token_789",
+        "instance_url": "https://test.salesforce.com",
+    }
+
+    with patch("requests.get", side_effect=[mock_get_401, mock_get_200]) as mock_get, \
+         patch("requests.post", return_value=mock_refresh_post):
+        result = client.get("/services/oauth2/userinfo")
+        assert result["sub"] == "user_id_123"
+        assert mock_get.call_count == 2
+
+
+
 

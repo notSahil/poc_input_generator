@@ -78,3 +78,97 @@ def test_push_delta_via_composite_partial_failures(tmp_path):
         assert "Document required" in res.failures[0]["sf__Error"]
         assert res.failures_csv_path is not None
         assert res.failures_csv_path.exists()
+
+
+def test_composite_uploader_omits_unchanged_fields(tmp_path):
+    """Verify that empty/None fields are OMITTED from the JSON payload
+    to prevent Salesforce from wiping existing values (ADR 27)."""
+    # Simulate pd.DataFrame column alignment: Row 1 has Field_A, Row 2 has Field_B.
+    # After CSV round-trip, each row has an empty cell for the other's field.
+    csv_file = tmp_path / "final_input_file.csv"
+    df = pd.DataFrame([
+        {"Id": "a1e001", "Field_A__c": "val_a", "Field_B__c": ""},
+        {"Id": "a1e002", "Field_A__c": "", "Field_B__c": "val_b"},
+    ])
+    df.to_csv(csv_file, index=False)
+
+    mock_sf = MagicMock()
+    captured_payloads = []
+    def capture_restful(path, method, json, **kwargs):
+        captured_payloads.append(json)
+        return [{"id": r["Id"], "success": True, "errors": []} for r in json["records"]]
+    mock_sf.restful.side_effect = capture_restful
+
+    with patch("salesforce.composite_uploader.get_sf_connection", return_value=mock_sf):
+        push_delta_via_composite(
+            csv_path=csv_file, object_name="BT Project", report_name=None,
+        )
+
+    sent_records = captured_payloads[0]["records"]
+
+    # Record 1: must have Field_A__c, must NOT have Field_B__c
+    rec1 = sent_records[0]
+    assert rec1["Id"] == "a1e001"
+    assert rec1["Field_A__c"] == "val_a"
+    assert "Field_B__c" not in rec1, "Empty field should be omitted, not sent as null"
+
+    # Record 2: must have Field_B__c, must NOT have Field_A__c
+    rec2 = sent_records[1]
+    assert rec2["Id"] == "a1e002"
+    assert rec2["Field_B__c"] == "val_b"
+    assert "Field_A__c" not in rec2, "Empty field should be omitted, not sent as null"
+
+
+def test_composite_uploader_respects_explicit_null_wipes(tmp_path):
+    """Verify that #N/A values are correctly sent as null (JSON null)
+    to explicitly clear fields in Salesforce."""
+    csv_file = tmp_path / "final_input_file.csv"
+    df = pd.DataFrame([
+        {"Id": "a1e001", "Ran_Priority__c": "#N/A", "Order_Placed__c": "2022-07-27"},
+    ])
+    df.to_csv(csv_file, index=False)
+
+    mock_sf = MagicMock()
+    captured_payloads = []
+    def capture_restful(path, method, json, **kwargs):
+        captured_payloads.append(json)
+        return [{"id": r["Id"], "success": True, "errors": []} for r in json["records"]]
+    mock_sf.restful.side_effect = capture_restful
+
+    with patch("salesforce.composite_uploader.get_sf_connection", return_value=mock_sf):
+        push_delta_via_composite(
+            csv_path=csv_file, object_name="BT Project", report_name="Apollo 10G",
+        )
+
+    rec = captured_payloads[0]["records"][0]
+    assert rec["Id"] == "a1e001"
+    assert rec["Ran_Priority__c"] is None, "#N/A must become JSON null to wipe field"
+    assert rec["Order_Placed__c"] == "2022-07-27", "Non-#N/A value must be preserved"
+
+
+def test_composite_uploader_rollback_preserves_null_wipes(tmp_path):
+    """Verify that rollback operations send empty fields as null
+    to restore the original blank/null state in Salesforce."""
+    csv_file = tmp_path / "rollback_file.csv"  # 'rollback' in name triggers is_rb
+    df = pd.DataFrame([
+        {"Id": "a1e001", "Ran_Priority__c": "NOKIA", "Order_Placed__c": ""},
+    ])
+    df.to_csv(csv_file, index=False)
+
+    mock_sf = MagicMock()
+    captured_payloads = []
+    def capture_restful(path, method, json, **kwargs):
+        captured_payloads.append(json)
+        return [{"id": r["Id"], "success": True, "errors": []} for r in json["records"]]
+    mock_sf.restful.side_effect = capture_restful
+
+    with patch("salesforce.composite_uploader.get_sf_connection", return_value=mock_sf):
+        push_delta_via_composite(
+            csv_path=csv_file, object_name="BT Project", report_name="Apollo 10G",
+        )
+
+    rec = captured_payloads[0]["records"][0]
+    assert rec["Id"] == "a1e001"
+    assert rec["Ran_Priority__c"] == "NOKIA", "Non-empty rollback value must be preserved"
+    assert "Order_Placed__c" in rec, "Empty rollback field must be included to restore null"
+    assert rec["Order_Placed__c"] is None, "Empty rollback field must be sent as null"

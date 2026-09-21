@@ -72,9 +72,19 @@ def sanitize_session_token(token_raw: str) -> str:
 # CREDENTIALS CONFIGURATION
 # ==================================================
 
-def is_oauth_configured() -> bool:
+def get_profile_credentials(profile: str | None = None) -> tuple[str, str]:
+    """Get client ID and client secret for profile, falling back to global settings."""
+    prof = profile or get_active_profile()
+    creds = load_profile_credentials(prof)
+    client_id = creds.get("client_id") or settings.SF_CLIENT_ID or ""
+    client_secret = creds.get("client_secret") or settings.SF_CLIENT_SECRET or ""
+    return client_id.strip(), client_secret.strip()
+
+
+def is_oauth_configured(profile: str | None = None) -> bool:
     """Check if Client ID and Secret are configured."""
-    return bool(settings.SF_CLIENT_ID and settings.SF_CLIENT_SECRET)
+    cid, csec = get_profile_credentials(profile)
+    return bool(cid and csec)
 
 
 def save_env_credentials(
@@ -426,14 +436,14 @@ def is_token_valid(profile: str | None = None, check_live: bool = False) -> bool
 def check_connection_status(
     profile: str | None = None,
     force_check: bool = False,
-    timeout: float = 2.5
+    timeout: float = 5.0
 ) -> tuple[bool, str]:
     """
     Dynamically verify Salesforce connection status.
 
     Returns:
         tuple: (is_connected: bool, status_label: str)
-        status_label can be 'Connected', 'Disconnected', 'Session Expired', or 'Offline'.
+        status_label can be 'Connected', 'Connected (Cached)', 'Disconnected', 'Session Expired', or 'Offline'.
     """
     prof = profile or get_active_profile()
 
@@ -474,7 +484,8 @@ def check_connection_status(
 
     if is_timestamp_expired:
         refresh_tok = token.get("refresh_token")
-        if refresh_tok and settings.SF_CLIENT_ID and settings.SF_CLIENT_SECRET:
+        cid, csec = get_profile_credentials(prof)
+        if refresh_tok and cid and csec:
             try:
                 logger.info("Token expired by timestamp. Attempting auto-refresh for %s...", prof)
                 token = refresh_access_token(refresh_tok, profile=prof)
@@ -486,7 +497,7 @@ def check_connection_status(
             _CONNECTION_STATUS_CACHE[prof] = (now, False, "Session Expired")
             return False, "Session Expired"
 
-    # 4. Fast live ping to Salesforce userinfo endpoint
+    # 4. Live ping to Salesforce userinfo endpoint
     headers = {
         "Authorization": f"Bearer {token['access_token']}",
         "Content-Type": "application/json"
@@ -500,7 +511,8 @@ def check_connection_status(
         elif resp.status_code in (401, 403):
             # Attempt auto-refresh if refresh token is present
             refresh_tok = token.get("refresh_token")
-            if refresh_tok and settings.SF_CLIENT_ID and settings.SF_CLIENT_SECRET:
+            cid, csec = get_profile_credentials(prof)
+            if refresh_tok and cid and csec:
                 try:
                     logger.info("Session returned %s. Attempting auto-refresh for %s...", resp.status_code, prof)
                     new_token = refresh_access_token(refresh_tok, profile=prof)
@@ -520,10 +532,16 @@ def check_connection_status(
             return False, "Offline"
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as net_err:
         logger.warning("Network connection check failed for %s: %s", prof, net_err)
+        if is_token_valid(prof):
+            _CONNECTION_STATUS_CACHE[prof] = (now, True, "Connected (Cached)")
+            return True, "Connected (Cached)"
         _CONNECTION_STATUS_CACHE[prof] = (now, False, "Offline")
         return False, "Offline"
     except Exception as e:
         logger.warning("Unexpected error during connection check: %s", e)
+        if is_token_valid(prof):
+            _CONNECTION_STATUS_CACHE[prof] = (now, True, "Connected (Cached)")
+            return True, "Connected (Cached)"
         _CONNECTION_STATUS_CACHE[prof] = (now, False, "Offline")
         return False, "Offline"
 
@@ -587,13 +605,12 @@ def exchange_code_for_token(
 def refresh_access_token(refresh_token_str: str, profile: str | None = None) -> dict:
     """Exchange a stored refresh token for a fresh access token."""
     prof = profile or get_active_profile()
-    creds = load_profile_credentials(prof)
-    client_id = creds.get("client_id") or settings.SF_CLIENT_ID
-    client_secret = creds.get("client_secret") or settings.SF_CLIENT_SECRET
+    client_id, client_secret = get_profile_credentials(prof)
 
     if not client_id or not client_secret:
         raise RuntimeError("Missing Salesforce Client ID or Secret in settings, .env, or profile credentials")
 
+    creds = load_profile_credentials(prof)
     base_url = creds.get("login_url") or settings.SF_LOGIN_URL
     if prof in ("sandbox", "partial") and "login.salesforce.com" in base_url:
         base_url = "https://test.salesforce.com"

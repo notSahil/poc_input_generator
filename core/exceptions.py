@@ -53,3 +53,17 @@ class SalesforceAPIError(InputGeneratorError):
     def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+class SchedulerError(InputGeneratorError):
+    """Error during task scheduler configuration or execution."""
+    pass
+
+
+class ConcurrencyLockError(InputGeneratorError):
+    """A conflicting job is already executing for the same resource."""
+    def __init__(self, message: str, resource_key: str, existing_job_id: str | None = None):
+        super().__init__(message)
+        self.resource_key = resource_key
+        self.existing_job_id = existing_job_id
+

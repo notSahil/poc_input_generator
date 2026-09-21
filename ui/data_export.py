@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import streamlit as st
 
 from config import settings
+from core.exceptions import SalesforceAuthError
 from salesforce.auth import (
     clear_saved_credentials,
     clear_token,
@@ -298,11 +299,18 @@ def render(go):
     # ==================================================
     try:
         user_info = get_user_info(profile=active_profile)
-    except Exception as e_auth:
+    except SalesforceAuthError as e_auth:
         logger.warning("Salesforce session expired or invalid token (%s). Auto-clearing token...", e_auth)
         clear_token(profile=active_profile)
         st.warning("⚠️ Salesforce session has expired or the token is invalid. Please connect again.")
         st.rerun()
+    except Exception as e_net:
+        logger.warning("Transient network/API error retrieving user info (%s). Preserving token.", e_net)
+        user_info = {
+            "preferred_username": token.get("username", "Salesforce User"),
+            "organization_id": "N/A"
+        }
+        st.info(f"ℹ️ Could not query live userinfo endpoint ({e_net}). Session token is preserved.")
 
     org_data = {}
     user_record = {}

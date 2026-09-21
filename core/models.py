@@ -84,3 +84,34 @@ class ReportInfo:
     has_sitetracker: bool = False
     source_file: str | None = None
     sitetracker_file: str | None = None
+
+
+@dataclass
+class PostUpdateFieldResult:
+    """Detailed result of a single field comparison after Salesforce update."""
+    record_id: str
+    primary_key: str
+    object_name: str
+    api_field: str
+    field_label: str
+    old_value: str
+    expected_value: str
+    live_value: str
+    status: str  # 'VERIFIED_MATCH', 'TRIGGER_MUTATION', 'UNMODIFIED_STALE', 'NULL_WIPE_FAILED', 'RECORD_NOT_FOUND'
+    notes: str = ""
+
+
+@dataclass
+class PostUpdateValidationResult:
+    """Aggregated results of post-update verification across all records and fields."""
+    total_records_audited: int = 0
+    total_fields_checked: int = 0
+    verified_fields_count: int = 0
+    trigger_mutation_count: int = 0
+    stale_count: int = 0
+    not_found_count: int = 0
+    all_verified: bool = True
+    report_csv_path: Path | None = None
+    discrepancies_csv_path: Path | None = None
+    discrepancies: list[PostUpdateFieldResult] = field(default_factory=list)
+

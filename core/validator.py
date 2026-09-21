@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 
 
 class InputValidator:
-    def __init__(self, report_name: str):
+    def __init__(self, report_name: str, *, custom_mapping_df: pd.DataFrame | None = None):
         self.report_name = report_name
+        self.custom_mapping_df = custom_mapping_df
         self.yaml_cfg = YamlConfigLoader.load(report_name)
 
         folders = self.yaml_cfg["folders"]
@@ -42,7 +43,7 @@ class InputValidator:
 
         # 3. Load mapping
         try:
-            mapping = MappingLoader(settings.MAPPING_FILE, self.report_name)
+            mapping = MappingLoader(settings.MAPPING_FILE, self.report_name, custom_df=self.custom_mapping_df)
             mapping.load()
             pk_src, pk_st = mapping.primary_keys()
             field_map = mapping.field_mapping()
@@ -54,28 +55,31 @@ class InputValidator:
         try:
             src_df = DataNormalizer.read_spreadsheet(src_file, nrows=10)
 
-            # Check primary key column (support either source header name or API name)
-            pk_col_found = pk_src in src_df.columns
+            # Check primary key column (supports source name, Sitetracker name, API name, or case variations)
+            pk_col_found = DataNormalizer.resolve_source_column(src_df.columns, pk_src, pk_st, None)
             if not pk_col_found:
-                for s_col, _, a_col, _ in field_map:
-                    if s_col == pk_src and a_col and a_col in src_df.columns:
-                        pk_col_found = True
-                        break
+                for s_col, st_col, a_col, _ in field_map:
+                    if s_col == pk_src:
+                        pk_col_found = DataNormalizer.resolve_source_column(src_df.columns, s_col, st_col, a_col)
+                        if pk_col_found:
+                            break
             if not pk_col_found:
-                errors.append(f"Source file missing primary key column: '{pk_src}'")
+                errors.append(f"Source file missing primary key column: '{pk_src}' (or '{pk_st}')")
 
-            for src_col, _, api_col, _ in field_map:
-                if src_col not in src_df.columns and (not api_col or api_col not in src_df.columns):
+            for src_col, st_col, api_col, _ in field_map:
+                matched_col = DataNormalizer.resolve_source_column(src_df.columns, src_col, st_col, api_col)
+                if not matched_col:
                     errors.append(
-                        f"Source file missing mapped column: '{src_col}'. "
+                        f"Source file missing mapped column: '{src_col}' (or '{st_col}'). "
                         f"Available: {list(src_df.columns)}"
                     )
 
             # Sample primary key check
-            if pk_src in src_df.columns:
-                empty_pk = src_df[pk_src].isna().sum() + (src_df[pk_src].astype(str).str.strip() == "").sum()
+            resolved_pk = pk_col_found if pk_col_found else pk_src
+            if resolved_pk in src_df.columns:
+                empty_pk = src_df[resolved_pk].isna().sum() + (src_df[resolved_pk].astype(str).str.strip() == "").sum()
                 if empty_pk > 0:
-                    warnings.append(f"{empty_pk} sample rows in source file have empty primary key '{pk_src}'")
+                    warnings.append(f"{empty_pk} sample rows in source file have empty primary key '{resolved_pk}'")
         except Exception as e:
             errors.append(f"Failed to read source file: {e}")
 
@@ -106,14 +110,15 @@ class InputValidator:
 
         # 6. Check date format parseability (sample)
         if "src_df" in locals():
-            for src_col, _, _, dtype in field_map:
-                if dtype == "date" and src_col in src_df.columns:
-                    sample = src_df[src_col].dropna().head(5)
+            for src_col, st_col, api_col, dtype in field_map:
+                resolved_col = DataNormalizer.resolve_source_column(src_df.columns, src_col, st_col, api_col)
+                if dtype == "date" and resolved_col and resolved_col in src_df.columns:
+                    sample = src_df[resolved_col].dropna().head(5)
                     for val in sample:
                         _, ok = DataNormalizer.normalize_date_uk(val)
                         if not ok:
                             warnings.append(
-                                f"Date column '{src_col}' has unparseable sample value: '{val}'"
+                                f"Date column '{resolved_col}' has unparseable sample value: '{val}'"
                             )
 
         return ValidationResult(

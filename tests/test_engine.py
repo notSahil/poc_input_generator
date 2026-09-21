@@ -74,21 +74,30 @@ class TestInputFileEngine:
         assert result.total_source_records == 1
         assert result.valid_source_records == 1
 
-    def test_first_occurrence_wins_deduplication(self):
-        engine = InputFileEngine("Master Site Listing")
+    def test_first_occurrence_wins_deduplication(self, mock_environment):
+        # Arrange: create duplicate row in source.xlsx for SITE-001
+        src_path = mock_environment["data_dir"] / "Test_Report" / "input" / "source" / "source.xlsx"
+        df_src = pd.read_excel(src_path)
+        dup_row = df_src.iloc[0:1].copy()
+        dup_row["Site Name"] = "London Central Duplicate"
+        df_src = pd.concat([df_src, dup_row], ignore_index=True)
+        df_src.to_excel(src_path, index=False)
+
+        engine = InputFileEngine("Test Report")
         result = engine.run(skip_validation=True)
 
         assert result.success is True
         final_df = pd.read_csv(result.run_dir / "final_input_file.csv", dtype=str)
         dup_df = pd.read_csv(result.run_dir / "duplicate_primary_keys.csv", dtype=str)
 
-        # First occurrence of 10006 was processed and included
-        assert "10006" in final_df["TM Cell ID"].values
+        # First occurrence of SITE-001 was processed and included
+        assert "SITE-001" in final_df["Site Reference"].values
 
-        # Second occurrence of 10006 was quarantined
+        # Second occurrence of SITE-001 was quarantined
         assert len(dup_df) == 1
-        assert dup_df.iloc[0]["Primary_Key"] == "10006"
+        assert dup_df.iloc[0]["Primary_Key"] == "SITE-001"
         assert dup_df.iloc[0]["Status"] == "DUPLICATE_SKIPPED"
+
 
     def test_insert_nulls_disabled_by_default_preserves_values(self, mock_environment):
         """Arrange-Act-Assert: When source cell is blank, safe mode (insert_nulls=False) ignores it."""

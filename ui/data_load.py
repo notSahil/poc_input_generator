@@ -151,9 +151,12 @@ def _render_step_source(reports: list) -> bool:
         env_color = "blue"
 
     if is_auth:
-        status_dot = '<span style="color:#04844B; font-size:0.8rem; font-weight:600;">● Connected</span>'
+        label = "Connected" if status_label in ("Connected", "Connected (Cached)") else status_label
+        status_dot = f'<span style="color:#04844B; font-size:0.8rem; font-weight:600;">● {label}</span>'
     elif status_label == "Disconnected":
         status_dot = '<span style="color:#64748B; font-size:0.8rem; font-weight:600;">○ Disconnected</span>'
+    elif status_label == "Offline":
+        status_dot = '<span style="color:#D97706; font-size:0.8rem; font-weight:600;">● Offline</span>'
     else:
         status_dot = f'<span style="color:#EA001E; font-size:0.8rem; font-weight:600;">● {status_label}</span>'
 
@@ -250,6 +253,49 @@ def _render_step_source(reports: list) -> bool:
 
         if src_files:
             st.markdown(f"<div style='margin-bottom:8px;'>{render_pill(f'Active Source: {src_files[0]}', 'green')}</div>", unsafe_allow_html=True)
+            # Early Header Check: Detect if uploaded source file is missing required Primary Key or mapped fields
+            try:
+                sf_path = src_dir / src_files[0]
+                sample_src_df = DataNormalizer.read_spreadsheet(sf_path, nrows=5)
+                s_cols = list(sample_src_df.columns.astype(str).str.strip())
+                m_loader = MappingLoader(settings.MAPPING_FILE, selected_report)
+                m_df = m_loader.load()
+                pk_src_col, pk_st_col = m_loader.primary_keys()
+                field_map = m_loader.field_mapping()
+
+                matched_pk = DataNormalizer.resolve_source_column(s_cols, pk_src_col, pk_st_col, None)
+                if not matched_pk:
+                    for s_c, s_st, s_api, _ in field_map:
+                        if s_c == pk_src_col:
+                            matched_pk = DataNormalizer.resolve_source_column(s_cols, s_c, s_st, s_api)
+                            if matched_pk:
+                                break
+
+                unresolved_fields = [
+                    s_c for s_c, s_st, s_api, _ in field_map
+                    if not DataNormalizer.resolve_source_column(s_cols, s_c, s_st, s_api)
+                ]
+
+                if not matched_pk:
+                    st.warning(
+                        f"⚠️ **Source File Header Mismatch**: Uploaded file `{src_files[0]}` does not contain the expected Primary Key **`{pk_src_col}`** (or `{pk_st_col}`) for {selected_report}.\n\n"
+                        f"• **Found in File ({len(s_cols)} cols)**: `{', '.join(s_cols[:6])}`...\n"
+                        f"• **Missing Mapped Fields ({len(unresolved_fields)})**: `{', '.join(unresolved_fields[:6])}`...\n\n"
+                        f"👉 *You can proceed to Step 2 to customize mappings / ignore fields, or upload the matching file.*"
+                    )
+                elif unresolved_fields:
+                    st.warning(
+                        f"⚠️ **Partial Column Match**: Primary key `{matched_pk}` was found, but {len(unresolved_fields)} mapped fields are missing from `{src_files[0]}`:\n\n"
+                        f"• **Missing Fields**: `{', '.join(unresolved_fields[:6])}`...\n\n"
+                        f"👉 *You can proceed to Step 2 to map them to other columns or skip them.*"
+                    )
+                elif matched_pk != pk_src_col:
+                    st.info(
+                        f"ℹ️ **Sitetracker Export Format Detected**: Headers match Sitetracker field names (e.g. Primary Key **`{matched_pk}`**). All {len(field_map)} mapped fields resolved and auto-aliased seamlessly."
+                    )
+            except Exception:
+                pass
+
             with st.expander(f"👁️ Preview Source Data ({src_files[0]})", expanded=False):
                 try:
                     sf_path = src_dir / src_files[0]
@@ -387,20 +433,52 @@ def _render_step_mapping(selected_report: str):
     st.markdown("### 2️⃣ Visual Field Mapping & Schema Validation")
     st.caption("Verify how source spreadsheet columns map to Sitetracker API fields and data types.")
 
+    custom_map_key = f"custom_mapping_{selected_report}"
+    is_customized = custom_map_key in st.session_state and st.session_state[custom_map_key] is not None
+
     try:
         mapping_loader = MappingLoader(settings.MAPPING_FILE, selected_report)
-        mapping_df = mapping_loader.load()
+        template_df = mapping_loader.load()
         report_objects = mapping_loader.objects()
         pks = mapping_loader.all_primary_keys()
     except Exception as e:
         st.warning(f"Could not load mapping for '{selected_report}': {e}")
-        mapping_df = pd.DataFrame()
+        template_df = pd.DataFrame()
         report_objects = []
         pks = []
 
-    if mapping_df.empty:
+    if template_df.empty:
         st.info("No field mappings defined yet for this report. You can configure them in the Mapping Editor.")
         return
+
+    # Use active custom mapping if present, otherwise template
+    mapping_df = st.session_state[custom_map_key] if is_customized else template_df
+
+    # Discover columns in active uploaded source spreadsheet (if available)
+    src_cols: list[str] = []
+    try:
+        cfg = YamlConfigLoader.load(selected_report)
+        src_dir = settings.DATA_DIR / cfg["folders"]["work_dir"] / cfg["folders"]["source_dir"]
+        src_files = [f.name for f in src_dir.iterdir() if f.is_file() and not f.name.startswith(".")] if src_dir.exists() else []
+        if src_files:
+            s_df = DataNormalizer.read_spreadsheet(src_dir / src_files[0], nrows=5)
+            src_cols = [str(c).strip() for c in s_df.columns]
+    except Exception:
+        pass
+
+    # Custom mapping active banner with 1-click Reset
+    if is_customized:
+        c_ban1, c_ban2 = st.columns([3, 1])
+        with c_ban1:
+            st.info("✏️ **Custom Field Mapping Active (Session Override)**: Using your modified field mappings for this run.")
+        with c_ban2:
+            if st.button("🔄 Reset to Defaults", key=f"btn_banner_reset_map_{selected_report}", use_container_width=True):
+                st.session_state[custom_map_key] = None
+                for idx in template_df.index:
+                    w_key = f"sel_src_col_{selected_report}_{idx}"
+                    if w_key in st.session_state:
+                        del st.session_state[w_key]
+                st.rerun()
 
     # High level mapping health metrics
     total_fields = len(mapping_df)
@@ -458,57 +536,188 @@ def _render_step_mapping(selected_report: str):
                 filtered_df = mapping_df[mapping_df["Object Name"].astype(str).str.strip().str.lower() == selected_filter.strip().lower()]
             st.markdown(f"<div style='margin-top:28px; font-size:0.85rem; color:#64748B;'>Showing <b>{len(filtered_df)}</b> of <b>{len(mapping_df)}</b> fields</div>", unsafe_allow_html=True)
 
-    # Dataloader-style Visual Mapping List
-    st.markdown(
-        """
-        <div class="mapping-header">
-            <div>Source Column (Spreadsheet)</div>
-            <div style="text-align: center;">Mapping & Rule</div>
-            <div style="text-align: right;">Sitetracker Target Field & Object</div>
-        </div>
-        <div class="mapping-list">
-        """,
-        unsafe_allow_html=True
-    )
+    # =========================================================
+    # UNIFIED INTERACTIVE FIELD MAPPING TABLE (DATALOADER STYLE)
+    # =========================================================
+    st.markdown("---")
+    st.markdown("#### 🗺️ Interactive Field Mapping & Customization")
 
-    src_col_name = "Source File Column Name" if "Source File Column Name" in mapping_df.columns else mapping_df.columns[0]
-    st_col_name = "Sitetracker Field Name" if "Sitetracker Field Name" in mapping_df.columns else (mapping_df.columns[1] if len(mapping_df.columns) > 1 else src_col_name)
-    type_col_name = "Data Type" if "Data Type" in mapping_df.columns else None
+    if src_cols:
+        src_file_label = f" (`{src_files[0]}`)" if src_files else ""
+        st.caption(
+            f"Columns from your uploaded spreadsheet{src_file_label} are auto-matched below. "
+            "You can customize dropdown mappings or choose `[-- Skip / Do Not Update --]` to exclude fields on the fly."
+        )
+    else:
+        st.caption(
+            "ℹ️ *Upload a source spreadsheet in Step 1 to populate the column dropdowns and auto-match headers.*"
+        )
 
-    for _, row in filtered_df.iterrows():
-        src_val = str(row.get(src_col_name, ""))
-        tgt_val = str(row.get(st_col_name, ""))
-        row_obj = str(row.get("Object Name", "")).strip() if "Object Name" in row and pd.notna(row["Object Name"]) else ""
-        is_pk = str(row.get("Primary Key?", "")).strip().upper() in ("YES", "Y", "TRUE")
-        dtype = str(row.get(type_col_name, "TEXT")).upper() if type_col_name else "TEXT"
+    # Top Toolbar: Counts + Action Buttons
+    col_tb1, col_tb2, col_tb3 = st.columns([2.6, 1.2, 1.2])
+    with col_tb1:
+        st.markdown(
+            f"<div style='padding-top:6px; font-size:0.9rem; color:#334155;'>"
+            f"Configuring <b>{len(filtered_df)}</b> of <b>{len(template_df)}</b> target fields"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+    with col_tb2:
+        btn_apply = st.button(
+            "💾 Apply Mapping",
+            key=f"btn_apply_map_{selected_report}",
+            type="primary",
+            use_container_width=True,
+            help="Apply and lock this mapping configuration for this session"
+        )
+    with col_tb3:
+        btn_reset = st.button(
+            "🔄 Reset Defaults",
+            key=f"btn_toolbar_reset_map_{selected_report}",
+            use_container_width=True,
+            help="Reset all field mappings back to auto-detected defaults"
+        )
 
+    # Handle Reset Defaults action
+    if btn_reset:
+        st.session_state[custom_map_key] = None
+        for idx in template_df.index:
+            w_key = f"sel_src_col_{selected_report}_{idx}"
+            if w_key in st.session_state:
+                del st.session_state[w_key]
+        st.rerun()
+
+    # Table Header
+    hdr_c1, hdr_c2, hdr_c3, hdr_c4 = st.columns([3.2, 1.1, 3.7, 2.0])
+    with hdr_c1:
+        st.markdown("<span style='font-size:0.8rem; font-weight:700; color:#475569; text-transform:uppercase;'>Sitetracker Target Field & Object</span>", unsafe_allow_html=True)
+    with hdr_c2:
+        st.markdown("<span style='font-size:0.8rem; font-weight:700; color:#475569; text-transform:uppercase;'>Data Type</span>", unsafe_allow_html=True)
+    with hdr_c3:
+        st.markdown("<span style='font-size:0.8rem; font-weight:700; color:#475569; text-transform:uppercase;'>Source Column (Your File)</span>", unsafe_allow_html=True)
+    with hdr_c4:
+        st.markdown("<span style='font-size:0.8rem; font-weight:700; color:#475569; text-transform:uppercase;'>Match Status</span>", unsafe_allow_html=True)
+
+    st.markdown("<hr style='margin: 4px 0 12px 0; border: none; border-bottom: 2px solid #E2E8F0;'>", unsafe_allow_html=True)
+
+    # Render interactive mapping rows
+    for idx, r in filtered_df.iterrows():
+        tgt_field = str(r.get("Sitetracker Field Name", "")).strip()
+        orig_src = str(r.get("Source File Column Name", "")).strip()
+        api_name = str(r.get("API Name", "")).strip() if "API Name" in r and pd.notna(r["API Name"]) else ""
+        is_pk = str(r.get("Primary Key?", "")).strip().upper() in ("YES", "Y", "TRUE")
+        obj_tag = str(r.get("Object Name", "")).strip() if "Object Name" in r and pd.notna(r["Object Name"]) else ""
+
+        # Data type badge
+        dtype_val = r.get("Data Type", "TEXT")
+        dtype = str(dtype_val).strip().upper() if pd.notna(dtype_val) and str(dtype_val).strip().upper() != "NAN" else "TEXT"
         badge_color = "green" if "DATE" in dtype else ("blue" if "ID" in dtype or "KEY" in dtype else "purple")
         rule_pill = render_pill(dtype, badge_color)
 
-        pk_badge = f'<span style="margin-right:6px;">{render_pill("🔑 PRIMARY KEY", "amber")}</span>' if is_pk else ""
-        obj_badge = f'<span style="margin-left:6px;">{render_pill(row_obj, "blue")}</span>' if row_obj else ""
+        pk_badge = f'<span style="margin-left:6px;">{render_pill("🔑 PRIMARY KEY", "amber")}</span>' if is_pk else ""
+        obj_pill = f'<span style="color:#64748B; font-size:0.8rem; font-weight:500;">Object: {obj_tag}</span>' if obj_tag else ""
 
-        st.markdown(
-            f"""
-            <div class="mapping-item">
-                <div>
-                    <div class="mapping-source-col">{pk_badge}{src_val}</div>
-                    <div class="mapping-source-sample">Source Input Header</div>
-                </div>
-                <div class="mapping-arrow-col">
-                    <div>{rule_pill}</div>
-                    <div style="font-size:0.75rem; color:#94A3B8;">➔</div>
-                </div>
-                <div class="mapping-target-col">
-                    <div class="mapping-target-field">{tgt_val}{obj_badge}</div>
-                    <div style="font-size:0.75rem; color:#64748B;">API Target Field</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        # Dropdown options for this row
+        if is_pk:
+            row_options = src_cols if src_cols else [orig_src]
+        else:
+            row_options = ["-- Skip / Do Not Update --"] + src_cols if src_cols else ["-- Skip / Do Not Update --", orig_src]
 
-    st.markdown("</div>", unsafe_allow_html=True)
+        # Determine default / active column choice
+        curr_mapped = str(mapping_df.loc[idx, "Source File Column Name"]).strip() if idx in mapping_df.index else orig_src
+        matched_choice = DataNormalizer.resolve_source_column(src_cols, curr_mapped, tgt_field, api_name)
+        if not matched_choice and curr_mapped != orig_src:
+            matched_choice = DataNormalizer.resolve_source_column(src_cols, orig_src, tgt_field, api_name)
+
+        w_key = f"sel_src_col_{selected_report}_{idx}"
+        if is_customized and curr_mapped in row_options:
+            default_target = curr_mapped
+        elif matched_choice and matched_choice in row_options:
+            default_target = matched_choice
+        elif orig_src in row_options:
+            default_target = orig_src
+        else:
+            default_target = row_options[0]
+
+        sel_idx = row_options.index(default_target) if default_target in row_options else 0
+
+        # Row Layout
+        row_c1, row_c2, row_c3, row_c4 = st.columns([3.2, 1.1, 3.7, 2.0])
+        with row_c1:
+            st.markdown(f"**{tgt_field}**{pk_badge}<br>{obj_pill}", unsafe_allow_html=True)
+        with row_c2:
+            st.markdown(f"<div style='margin-top:6px;'>{rule_pill}</div>", unsafe_allow_html=True)
+        with row_c3:
+            chosen_col = st.selectbox(
+                f"Map to Column for {tgt_field}",
+                options=row_options,
+                index=sel_idx,
+                key=w_key,
+                label_visibility="collapsed"
+            )
+        with row_c4:
+            if chosen_col == "-- Skip / Do Not Update --":
+                status_badge = render_pill("⏭ Skipped", "default")
+            elif src_cols and chosen_col not in src_cols:
+                status_badge = render_pill("⚠️ Missing in File", "amber")
+            elif chosen_col == orig_src:
+                status_badge = render_pill("✅ Exact Match", "green")
+            elif matched_choice and chosen_col == matched_choice:
+                status_badge = render_pill("✅ Auto-Matched", "blue")
+            else:
+                status_badge = render_pill("✏️ Custom Mapped", "purple")
+            st.markdown(f"<div style='margin-top:6px;'>{status_badge}</div>", unsafe_allow_html=True)
+
+        st.markdown("<div style='border-bottom: 1px solid #F1F5F9; margin: 4px 0 8px 0;'></div>", unsafe_allow_html=True)
+
+    # Bottom Apply Bar for convenience
+    if len(filtered_df) > 5:
+        b_col1, b_col2 = st.columns([3.8, 1.2])
+        with b_col2:
+            btn_apply_bottom = st.button(
+                "💾 Apply Mapping",
+                key=f"btn_apply_map_bottom_{selected_report}",
+                type="primary",
+                use_container_width=True,
+                help="Apply and lock this mapping configuration for this session"
+            )
+            if btn_apply_bottom:
+                btn_apply = True
+
+    # Handle Apply Mapping action
+    if btn_apply:
+        custom_rows = []
+        pk_missing = False
+        for idx, r in template_df.iterrows():
+            w_key = f"sel_src_col_{selected_report}_{idx}"
+            is_pk = str(r.get("Primary Key?", "")).strip().upper() in ("YES", "Y", "TRUE")
+
+            # If row was rendered in UI, get user selection; otherwise preserve existing mapping
+            if w_key in st.session_state:
+                chosen = st.session_state[w_key]
+            elif idx in mapping_df.index:
+                chosen = str(mapping_df.loc[idx, "Source File Column Name"]).strip()
+            else:
+                chosen = str(r.get("Source File Column Name", "")).strip()
+
+            if chosen == "-- Skip / Do Not Update --":
+                if is_pk:
+                    pk_missing = True
+                continue
+
+            r_copy = r.copy()
+            r_copy["Source File Column Name"] = chosen
+            custom_rows.append(r_copy)
+
+        if pk_missing:
+            st.error("❌ Primary Key column cannot be skipped! Please select a valid source column.")
+        elif not custom_rows:
+            st.error("❌ Cannot apply empty mapping. At least one field must be mapped.")
+        else:
+            new_cust_df = pd.DataFrame(custom_rows).reset_index(drop=True)
+            st.session_state[custom_map_key] = new_cust_df
+            st.success("✅ Custom mapping applied for this session!")
+            st.rerun()
 
     # Detailed Table inspection in expander
     with st.expander("📋 View Complete Mapping Table & Rules", expanded=False):
@@ -518,7 +727,8 @@ def _render_step_mapping(selected_report: str):
     st.markdown("#### 🔍 Pre-Flight Validation Check")
     if st.button("Run Pre-Flight Validation Check", key="btn_preflight_val"):
         try:
-            validator = InputValidator(selected_report)
+            active_cust_df = st.session_state.get(custom_map_key)
+            validator = InputValidator(selected_report, custom_mapping_df=active_cust_df)
             val_res = validator.validate_all()
 
             if val_res.is_valid:
@@ -611,7 +821,12 @@ def _render_step_delta(selected_report: str) -> bool:
     if run_delta:
         with st.spinner("Executing comparison engine & validating rows..."):
             try:
-                engine = InputFileEngine(selected_report, insert_nulls=st.session_state.insert_nulls_toggle)
+                custom_map = st.session_state.get(f"custom_mapping_{selected_report}")
+                engine = InputFileEngine(
+                    selected_report,
+                    insert_nulls=st.session_state.insert_nulls_toggle,
+                    custom_mapping_df=custom_map,
+                )
                 result = engine.run()
                 st.session_state.last_run_result = result
                 st.success("✅ Delta processing completed successfully!")
@@ -923,6 +1138,86 @@ def _render_step_ingest(selected_report: str):
                                 st.error(f"[{obj_name}] Failures saved to `{fail_path.name}`:")
                                 fail_df = _safe_read_csv(fail_path, dtype=str)
                                 st.dataframe(fail_df, use_container_width=True)
+
+                    # Dataloader.io Results Downloads
+                    d_succ_p = result.run_dir / "salesforce_success_records.csv"
+                    d_err_p = result.run_dir / "salesforce_error_records.csv"
+                    if d_succ_p.exists() or d_err_p.exists():
+                        col_dl_s, col_dl_e = st.columns(2)
+                        with col_dl_s:
+                            if d_succ_p.exists():
+                                with open(d_succ_p, "rb") as sf:
+                                    st.download_button(
+                                        "📥 Download Success Records (.csv)",
+                                        sf.read(),
+                                        file_name="salesforce_success_records.csv",
+                                        mime="text/csv",
+                                        use_container_width=True,
+                                        key=f"dl_succ_{obj_name}",
+                                    )
+                        with col_dl_e:
+                            if d_err_p.exists():
+                                with open(d_err_p, "rb") as ef:
+                                    st.download_button(
+                                        "📥 Download Error Records (.csv)",
+                                        ef.read(),
+                                        file_name="salesforce_error_records.csv",
+                                        mime="text/csv",
+                                        use_container_width=True,
+                                        key=f"dl_err_{obj_name}",
+                                    )
+
+                # Tier 2: Post-Update Live Verification Report
+                pv_rep_path = result.run_dir / "post_update_validation_report.csv"
+                pv_disc_path = result.run_dir / "post_update_discrepancies.csv"
+                if pv_rep_path.exists():
+                    st.markdown("---")
+                    st.markdown("### 🔍 Post-Update Live Audit & Reconciliation")
+                    st.caption("Verifies whether submitted updates actually persisted or were altered by internal Apex triggers, locked fields, or workflow rules.")
+                    pv_df = _safe_read_csv(pv_rep_path, dtype=str)
+                    if not pv_df.empty:
+                        tot_fields = len(pv_df)
+                        ver_cnt = len(pv_df[pv_df["Status"] == "VERIFIED_MATCH"])
+                        mut_cnt = len(pv_df[pv_df["Status"] == "TRIGGER_MUTATION"])
+                        stale_cnt = len(pv_df[pv_df["Status"].isin(["UNMODIFIED_STALE", "NULL_WIPE_FAILED"])])
+                        not_fnd = len(pv_df[pv_df["Status"] == "RECORD_NOT_FOUND"])
+                        pct_ver = round((ver_cnt / tot_fields * 100), 1) if tot_fields > 0 else 100.0
+
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("Fields Audited", f"{tot_fields:,}")
+                        m2.metric("Verified Match", f"{pct_ver}%", delta=f"{ver_cnt} verified")
+                        m3.metric("Trigger Overwrites", f"{mut_cnt}", delta="- Alarmed" if mut_cnt > 0 else None, delta_color="inverse")
+                        m4.metric("Stale / Not Saved", f"{stale_cnt + not_fnd}", delta="- Failed" if (stale_cnt + not_fnd) > 0 else None, delta_color="inverse")
+
+                        if pv_disc_path and pv_disc_path.exists():
+                            disc_df = _safe_read_csv(pv_disc_path, dtype=str)
+                            if not disc_df.empty:
+                                with st.expander(f"⚠️ View Discrepancies ({len(disc_df)} fields mutated or un-saved)", expanded=True):
+                                    st.warning("The following fields in Salesforce differ from what was submitted. They may have been overwritten by Sitetracker managed package triggers or validation rules.")
+                                    st.dataframe(disc_df, use_container_width=True)
+
+                        col_pv1, col_pv2 = st.columns(2)
+                        with col_pv1:
+                            with open(pv_rep_path, "rb") as f_rep:
+                                st.download_button(
+                                    "📄 Full Post-Audit Report (.csv)",
+                                    f_rep.read(),
+                                    file_name="post_update_validation_report.csv",
+                                    mime="text/csv",
+                                    use_container_width=True,
+                                    key="dl_pv_full",
+                                )
+                        with col_pv2:
+                            if pv_disc_path and pv_disc_path.exists():
+                                with open(pv_disc_path, "rb") as f_disc:
+                                    st.download_button(
+                                        "⚠️ Discrepancies Only (.csv)",
+                                        f_disc.read(),
+                                        file_name="post_update_discrepancies.csv",
+                                        mime="text/csv",
+                                        use_container_width=True,
+                                        key="dl_pv_disc",
+                                    )
             else:
                 title = "Rollback" if is_rb else "Ingest"
                 st.error(f"❌ {title} job failed on server: {job_info.get('error_summary', 'Unknown error')}")
@@ -1232,7 +1527,24 @@ def render(go):
     current_step = st.session_state.data_load_step
 
     if current_step == 0:
+        try:
+            from pathlib import Path
+            from core import job_store
+            from salesforce.job_manager import is_job_active
+            job_store.init_db()
+            for aj in job_store.get_active_jobs():
+                if is_job_active(Path(aj["run_dir"])):
+                    st.info(f"⚡ **Active Ingest in Progress**: A background upload for **{aj['report_name']}** is currently running on the server.")
+                    if st.button("👁️ Re-attach to Live Progress ➔", key=f"reattach_dl_{aj['id']}", type="primary"):
+                        st.session_state.active_monitor_job_id = aj["id"]
+                        go("live_monitor")
+                        st.rerun()
+                    break
+        except Exception:
+            pass
+
         has_selection = _render_step_source(reports)
+
         nav = render_step_navigation(
             current_step=0,
             total_steps=4,

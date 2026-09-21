@@ -268,10 +268,52 @@ def scan_all_runs(report_filter: str | None = None) -> list[dict]:
     return all_runs
 
 
+def _render_post_audit_summary(r_dir: Path, key_prefix: str, selected_run_id: str):
+    """Render Tier 2 post-update live reconciliation metrics & discrepancies if available."""
+    pv_rep_f = r_dir / "post_update_validation_report.csv"
+    pv_disc_f = r_dir / "post_update_discrepancies.csv"
+    if not pv_rep_f.exists():
+        return
+
+    try:
+        pv_df = pd.read_csv(pv_rep_f, dtype=str)
+        if pv_df.empty or "Status" not in pv_df.columns:
+            return
+
+        st.markdown("---")
+        st.markdown("##### 🔍 Post-Update Ground-Truth Audit & Reconciliation")
+        st.caption("Live SOQL verification comparing submitted field values against actual Salesforce records.")
+        pv_tot = len(pv_df)
+        pv_ver = len(pv_df[pv_df["Status"] == "VERIFIED_MATCH"])
+        pv_mut = len(pv_df[pv_df["Status"] == "TRIGGER_MUTATION"])
+        pv_stale = len(pv_df[pv_df["Status"].isin(["UNMODIFIED_STALE", "NULL_WIPE_FAILED"])])
+        pv_notf = len(pv_df[pv_df["Status"] == "RECORD_NOT_FOUND"])
+        pv_pct = round((pv_ver / pv_tot * 100), 1) if pv_tot > 0 else 100.0
+
+        pvc1, pvc2, pvc3, pvc4 = st.columns(4)
+        pvc1.metric("Fields Audited", f"{pv_tot:,}")
+        pvc2.metric("Verified Match", f"{pv_pct}%", delta=f"{pv_ver} verified")
+        pvc3.metric("Trigger Overwrites", f"{pv_mut}", delta="- Alarmed" if pv_mut > 0 else None, delta_color="inverse")
+        pvc4.metric("Stale / Not Saved", f"{pv_stale + pv_notf}", delta="- Failed" if (pv_stale + pv_notf) > 0 else None, delta_color="inverse")
+
+        if pv_disc_f.exists():
+            try:
+                disc_df = pd.read_csv(pv_disc_f, dtype=str)
+                if not disc_df.empty:
+                    with st.expander(f"⚠️ View Post-Audit Discrepancies ({len(disc_df)} fields altered or un-saved)", expanded=False):
+                        st.warning("The following fields in Salesforce differ from what was submitted. They may have been overwritten by Sitetracker managed package triggers or validation rules.")
+                        st.dataframe(disc_df, use_container_width=True)
+            except Exception as e_disc:
+                logger.debug("Could not read post-update discrepancies: %s", e_disc)
+    except Exception as e_pv:
+        logger.debug("Failed to render post-audit summary in run history: %s", e_pv)
+
+
 def _render_run_details(chosen_run: dict, key_prefix: str):
     """Render details, KPI metrics, file downloads, and audit logs for a guided report run."""
     st.subheader(f"🔍 Details: `{chosen_run['report']}` — {chosen_run['date']} {chosen_run['time']} IST")
 
+    r_dir = chosen_run["run_dir"]
     met = chosen_run["metrics"]
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Total Rows", met["total"])
@@ -280,11 +322,26 @@ def _render_run_details(chosen_run: dict, key_prefix: str):
     c4.metric("⏭️ Skipped", met["skipped"])
     c5.metric("🔀 Duplicates", met["duplicates"])
 
+    # Cloud Ingestion Telemetry Banner if an upload was performed
+    prog_f = r_dir / "ingest_progress.json"
+    if prog_f.exists():
+        try:
+            p_data = json.loads(prog_f.read_text(encoding="utf-8"))
+            if p_data.get("status") in ("COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"):
+                succ_cnt = p_data.get("successful_records_overall", 0)
+                fail_cnt = p_data.get("failed_records_overall", 0)
+                tot_cnt = p_data.get("total_records_overall", 0)
+                if fail_cnt > 0:
+                    st.warning(f"🚀 **Cloud Salesforce Upload**: **{succ_cnt:,}** succeeded, **{fail_cnt:,}** failed out of **{tot_cnt:,}** records in Salesforce.")
+                else:
+                    st.success(f"🚀 **Cloud Salesforce Upload**: All **{succ_cnt:,} / {tot_cnt:,}** records successfully updated in Salesforce.")
+        except Exception:
+            pass
+
     # File Download Center
     st.markdown("##### 📥 Generated Output Files")
     btn_c1, btn_c2, btn_c3, btn_c4, btn_c5 = st.columns(5)
 
-    r_dir = chosen_run["run_dir"]
     clean_rep = chosen_run["report"].replace(":", "_").replace(" ", "_")
     selected_run_id = chosen_run.get("raw_run_id", chosen_run["run_id"])
 
@@ -323,25 +380,36 @@ def _render_run_details(chosen_run: dict, key_prefix: str):
         key=f"hist_{key_prefix}_val_{selected_run_id}"
     )
 
-    # Extra diagnostics & duplicate files if present
+    # Extra diagnostics, cloud transactions & post-audit files if present
     extra_files = [
+        ("salesforce_success_records.csv", "🟢 Cloud Successes"),
+        ("salesforce_error_records.csv", "🔴 Cloud Failures"),
+        ("post_update_validation_report.csv", "🔍 Post-Audit Report"),
+        ("post_update_discrepancies.csv", "⚠️ Discrepancies"),
         ("field_level_changes.csv", "🔍 Field Changes"),
         ("duplicate_primary_keys.csv", "🔀 Source Duplicates"),
         ("duplicate_salesforce_records.csv", "⚠️ SF Duplicates"),
         ("skipped_records.csv", "⏭️ Skipped Records"),
+        ("bulk_upload_failures.csv", "💥 Legacy Cloud Failures"),
     ]
     present_extras = [(fn, label, r_dir / fn) for fn, label in extra_files if (r_dir / fn).exists()]
     if present_extras:
-        extra_cols = st.columns(len(present_extras))
-        for i, (fn, label, f_path) in enumerate(present_extras):
-            render_download_with_confirmation(
-                extra_cols[i], label, f_path,
-                download_filename=f"{clean_rep}_{fn}",
-                key=f"hist_{key_prefix}_{fn}_{selected_run_id}"
-            )
+        chunk_size = 4
+        for row_idx in range(0, len(present_extras), chunk_size):
+            chunk = present_extras[row_idx : row_idx + chunk_size]
+            extra_cols = st.columns(len(chunk))
+            for i, (fn, label, f_path) in enumerate(chunk):
+                render_download_with_confirmation(
+                    extra_cols[i], label, f_path,
+                    download_filename=f"{clean_rep}_{fn}",
+                    key=f"hist_{key_prefix}_{fn}_{selected_run_id}"
+                )
+
+    # Post-Update Live Reconciliation Summary (if available)
+    _render_post_audit_summary(r_dir, key_prefix, selected_run_id)
 
     # Archived Inputs
-    a_dir = chosen_run["archive_dir"]
+    a_dir = chosen_run.get("archive_dir")
     if a_dir and a_dir.exists():
         st.markdown("##### 📁 Archived Inputs Used for this Run")
         arch_files = [f for f in a_dir.iterdir() if f.is_file() and not f.name.startswith(".")]
@@ -356,8 +424,8 @@ def _render_run_details(chosen_run: dict, key_prefix: str):
                 )
 
     # Full Run Summary Text
-    sum_f = chosen_run["summary_file"]
-    if sum_f.exists():
+    sum_f = chosen_run.get("summary_file")
+    if sum_f and sum_f.exists():
         with st.expander("📄 View Run Summary Log", expanded=False):
             with open(sum_f, "r", encoding="utf-8") as f:
                 st.text(f.read())
@@ -426,6 +494,22 @@ def _render_manual_run_details(chosen_run: dict, key_prefix: str = "manual"):
     c4.metric("⏭️ Skipped", met.get("skipped", "N/A"))
     c5.metric("🔀 Duplicates", met.get("duplicates", "N/A"))
 
+    # Cloud Ingestion Telemetry Banner if an upload was performed
+    prog_f = r_dir / "ingest_progress.json"
+    if prog_f.exists():
+        try:
+            p_data = json.loads(prog_f.read_text(encoding="utf-8"))
+            if p_data.get("status") in ("COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"):
+                succ_cnt = p_data.get("successful_records_overall", 0)
+                fail_cnt = p_data.get("failed_records_overall", 0)
+                tot_cnt = p_data.get("total_records_overall", 0)
+                if fail_cnt > 0:
+                    st.warning(f"🚀 **Cloud Salesforce Upload**: **{succ_cnt:,}** succeeded, **{fail_cnt:,}** failed out of **{tot_cnt:,}** records in Salesforce.")
+                else:
+                    st.success(f"🚀 **Cloud Salesforce Upload**: All **{succ_cnt:,} / {tot_cnt:,}** records successfully updated in Salesforce.")
+        except Exception:
+            pass
+
     # 3. Output Files Download Center
     st.markdown("##### 📥 Generated Output Files")
     btn_c1, btn_c2, btn_c3, btn_c4, btn_c5 = st.columns(5)
@@ -465,22 +549,33 @@ def _render_manual_run_details(chosen_run: dict, key_prefix: str = "manual"):
         key=f"hist_{key_prefix}_val_{selected_run_id}"
     )
 
-    # Extra diagnostics & duplicate files if present
+    # Extra diagnostics, cloud transactions & post-audit files if present
     extra_files = [
+        ("salesforce_success_records.csv", "🟢 Cloud Successes"),
+        ("salesforce_error_records.csv", "🔴 Cloud Failures"),
+        ("post_update_validation_report.csv", "🔍 Post-Audit Report"),
+        ("post_update_discrepancies.csv", "⚠️ Discrepancies"),
         ("field_level_changes.csv", "🔍 Field Changes"),
         ("duplicate_primary_keys.csv", "🔀 Source Duplicates"),
         ("duplicate_salesforce_records.csv", "⚠️ SF Duplicates"),
         ("skipped_records.csv", "⏭️ Skipped Records"),
+        ("bulk_upload_failures.csv", "💥 Legacy Cloud Failures"),
     ]
     present_extras = [(fn, label, r_dir / fn) for fn, label in extra_files if (r_dir / fn).exists()]
     if present_extras:
-        extra_cols = st.columns(len(present_extras))
-        for i, (fn, label, f_path) in enumerate(present_extras):
-            render_download_with_confirmation(
-                extra_cols[i], label, f_path,
-                download_filename=f"{clean_rep}_{fn}",
-                key=f"hist_{key_prefix}_{fn}_{selected_run_id}"
-            )
+        chunk_size = 4
+        for row_idx in range(0, len(present_extras), chunk_size):
+            chunk = present_extras[row_idx : row_idx + chunk_size]
+            extra_cols = st.columns(len(chunk))
+            for i, (fn, label, f_path) in enumerate(chunk):
+                render_download_with_confirmation(
+                    extra_cols[i], label, f_path,
+                    download_filename=f"{clean_rep}_{fn}",
+                    key=f"hist_{key_prefix}_{fn}_{selected_run_id}"
+                )
+
+    # Post-Update Live Reconciliation Summary (if available)
+    _render_post_audit_summary(r_dir, key_prefix, selected_run_id)
 
     # 4. Archived Source File
     a_dir = chosen_run.get("archive_dir")
@@ -498,8 +593,8 @@ def _render_manual_run_details(chosen_run: dict, key_prefix: str = "manual"):
                 )
 
     # 5. Full Run Summary Log
-    sum_f = chosen_run["summary_file"]
-    if sum_f.exists():
+    sum_f = chosen_run.get("summary_file")
+    if sum_f and sum_f.exists():
         with st.expander("📄 View Execution Summary Log", expanded=False):
             with open(sum_f, "r", encoding="utf-8") as f:
                 st.text(f.read())

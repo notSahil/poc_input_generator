@@ -282,16 +282,15 @@ def fetch_sitetracker_data(
 
             mapping = MappingLoader(settings.MAPPING_FILE, report_name)
             mapping.load()
-            src_pk, _ = mapping.primary_keys()
+            src_pk, st_pk = mapping.primary_keys()
 
-            pk_col = None
-            if src_pk in src_df.columns:
-                pk_col = src_pk
-            else:
-                for c in src_df.columns:
-                    if str(c).strip().lower() == str(src_pk).strip().lower():
-                        pk_col = c
-                        break
+            pk_col = DataNormalizer.resolve_source_column(src_df.columns, src_pk, st_pk, None)
+            if not pk_col:
+                for s_col, s_st, s_api, _ in mapping.field_mapping():
+                    if s_col == src_pk:
+                        pk_col = DataNormalizer.resolve_source_column(src_df.columns, s_col, s_st, s_api)
+                        if pk_col:
+                            break
 
             if pk_col:
                 seen_pk: set[str] = set()
@@ -301,13 +300,13 @@ def fetch_sitetracker_data(
                         seen_pk.add(s)
                         clean_pks.append(s)
                 logger.info(
-                    "Extracted %d unique primary key values from source file '%s' (column: '%s')",
-                    len(clean_pks), src_path.name, src_pk,
+                    "Extracted %d unique primary key values from source file '%s' (column: '%s', matched from '%s')",
+                    len(clean_pks), src_path.name, pk_col, src_pk,
                 )
             else:
                 logger.warning(
-                    "Primary key column '%s' not found in source file '%s'. Available: %s",
-                    src_pk, src_path.name, list(src_df.columns),
+                    "Primary key column '%s' (or '%s') not found in source file '%s'. Available: %s",
+                    src_pk, st_pk, src_path.name, list(src_df.columns),
                 )
         except Exception as e_src:
             logger.warning("Could not extract primary keys from source file '%s': %s", src_path, e_src)

@@ -52,6 +52,28 @@ class TestNormalizeDateUK:
         assert ok is True
         assert fmt == "15/03/2024"
 
+    def test_iso_date_day_le_12_does_not_swap_month_and_day(self):
+        # 2019-07-06 is July 6th -> UK format must be 06/07/2019, NOT 07/06/2019
+        fmt, ok = DataNormalizer.normalize_date_uk("2019-07-06")
+        assert ok is True
+        assert fmt == "06/07/2019"
+
+        # 2019-04-09 is April 9th -> UK format must be 09/04/2019, NOT 04/09/2019
+        fmt2, ok2 = DataNormalizer.normalize_date_uk("2019-04-09")
+        assert ok2 is True
+        assert fmt2 == "09/04/2019"
+
+        # 2019-12-04 is December 4th -> UK format must be 04/12/2019, NOT 12/04/2019
+        fmt3, ok3 = DataNormalizer.normalize_date_uk("2019-12-04")
+        assert ok3 is True
+        assert fmt3 == "04/12/2019"
+
+    def test_iso_date_matches_uk_spreadsheet_date(self):
+        # Sitetracker ISO vs Contractor UK date strings must normalize to identical strings
+        st_val, _ = DataNormalizer.normalize_date_uk("2019-07-06")
+        src_val, _ = DataNormalizer.normalize_date_uk("06/07/2019")
+        assert st_val == src_val == "06/07/2019"
+
     def test_timestamp_object(self):
         dt = pd.Timestamp("2024-03-15")
         fmt, ok = DataNormalizer.normalize_date_uk(dt)

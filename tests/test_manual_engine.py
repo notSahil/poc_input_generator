@@ -727,3 +727,12 @@ class TestDuplicateDetectionAndSafety:
             raise PrimaryKeyNotFoundError("No primary key mapping was found and no match key was selected.")
         assert "No primary key mapping" in str(exc_info.value)
 
+    def test_safe_read_csv_with_kwargs(self, tmp_path):
+        from ui.manual_loader import _safe_read_csv
+        csv_p = tmp_path / "test.csv"
+        csv_p.write_text("A,B\n01,02\n", encoding="utf-8")
+        df = _safe_read_csv(csv_p, dtype=str)
+        assert not df.empty
+        assert df.iloc[0]["A"] == "01"
+
+

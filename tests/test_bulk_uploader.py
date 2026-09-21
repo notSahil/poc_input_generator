@@ -214,3 +214,150 @@ def test_push_delta_resilient_error_parsing_with_commas(tmp_path):
         assert len(res.failures) == 1
         assert "Too many DML statements" in res.failures[0]["sf__Error"]
 
+
+def test_push_delta_preserves_all_failures_with_unescaped_quotes(tmp_path):
+    """Verify that failures with unescaped internal quotes are not dropped."""
+    test_csv = tmp_path / "final_input_file.csv"
+    df = pd.DataFrame([
+        {"Id": "a0i8e000000NzWCAA0", "WES_PSID__c": "BW-SAFE-004"},
+        {"Id": "a0iTe000008aH5mIAE", "WES_PSID__c": "BTWD-TOOLONG-999"},
+    ])
+    df.to_csv(test_csv, index=False)
+
+    mock_sf = MagicMock()
+    mock_bulk_obj = MagicMock()
+    mock_bulk_obj.update.return_value = [
+        {"numberRecordsTotal": 2, "numberRecordsProcessed": 2, "numberRecordsFailed": 2, "job_id": "JOB_FAIL_QUOTES"}
+    ]
+    # Simulate raw CSV where row 1 has unescaped quotes in validation formula
+    mock_bulk_obj.get_failed_records.return_value = (
+        'sf__Id,sf__Error,WES_PSID__c,Id\n'
+        'a0i8e000000NzWCAA0,"FIELD_CUSTOM_VALIDATION_EXCEPTION:Formula "Actual_Date_Cant_Updated" Invalid:--",BW-SAFE-004,a0i8e000000NzWCAA0\n'
+        'a0iTe000008aH5mIAE,"STRING_TOO_LONG: Value too long",BTWD-TOOLONG-999,a0iTe000008aH5mIAE\n'
+    )
+    setattr(mock_sf.bulk2, "Project", mock_bulk_obj)
+    setattr(mock_sf.bulk2, "sitetracker__Project__c", mock_bulk_obj)
+
+    with patch("salesforce.bulk_uploader.get_sf_connection", return_value=mock_sf):
+        res = push_delta_to_sitetracker(test_csv, object_name="Project", operation="update", batch_size=25)
+
+        assert res.total_records == 2
+        assert res.failed_records == 2
+        assert res.all_succeeded is False
+        assert len(res.failures) == 2
+        assert res.failures[0]["sf__Id"] == "a0i8e000000NzWCAA0"
+        assert "Actual_Date_Cant_Updated" in res.failures[0]["sf__Error"]
+        assert res.failures[1]["sf__Id"] == "a0iTe000008aH5mIAE"
+
+
+def test_push_delta_preserves_multiline_apex_failures(tmp_path):
+    """Verify that multiline Apex stack traces are stitched and not dropped as phantom rows."""
+    test_csv = tmp_path / "final_input_file.csv"
+    df = pd.DataFrame([
+        {"Id": "a1e4J000000RTohQAG", "Status__c": "Active"},
+        {"Id": "a1e8e000000kjz7AAA", "Status__c": "Active"},
+    ])
+    df.to_csv(test_csv, index=False)
+
+    mock_sf = MagicMock()
+    mock_bulk_obj = MagicMock()
+    mock_bulk_obj.update.return_value = [
+        {"numberRecordsTotal": 2, "numberRecordsProcessed": 2, "numberRecordsFailed": 2, "job_id": "JOB_FAIL_MULTILINE"}
+    ]
+    # Simulate multiline stack trace without quotes
+    mock_bulk_obj.get_failed_records.return_value = (
+        "sf__Id,sf__Error,Status__c,Id\n"
+        "a1e4J000000RTohQAG,CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY:BTProjectTrigger: execution of AfterUpdate\n"
+        "caused by: System.DmlException: Insert failed.\n"
+        "Class.BT_Project_Trigger_Handler: line 84:--,Active,a1e4J000000RTohQAG\n"
+        "a1e8e000000kjz7AAA,Normal error message,Active,a1e8e000000kjz7AAA\n"
+    )
+    setattr(mock_sf.bulk2, "BT_Project", mock_bulk_obj)
+    setattr(mock_sf.bulk2, "BT_Project__c", mock_bulk_obj)
+
+    with patch("salesforce.bulk_uploader.get_sf_connection", return_value=mock_sf):
+        res = push_delta_to_sitetracker(test_csv, object_name="BT_Project", operation="update", batch_size=25)
+
+        assert res.total_records == 2
+        assert res.failed_records == 2
+        assert res.all_succeeded is False
+        assert len(res.failures) == 2
+        assert res.failures[0]["sf__Id"] == "a1e4J000000RTohQAG"
+        assert "execution of AfterUpdate" in res.failures[0]["sf__Error"]
+        assert "System.DmlException" in res.failures[0]["sf__Error"]
+        assert res.failures[1]["sf__Id"] == "a1e8e000000kjz7AAA"
+
+
+def test_push_delta_chunk_retry_and_reauth_on_session_expiry(tmp_path):
+    """Verify that if a chunk fails with expired session/auth error, it re-authenticates and retries successfully."""
+    from simple_salesforce.exceptions import SalesforceExpiredSession
+
+    test_csv = tmp_path / "final_input_file.csv"
+    df = pd.DataFrame([{"Id": "a123", "Status__c": "Active"}])
+    df.to_csv(test_csv, index=False)
+
+    mock_sf_1 = MagicMock()
+    mock_bulk_1 = MagicMock()
+    mock_bulk_1.update.side_effect = SalesforceExpiredSession(
+        url="https://sf.com",
+        status=401,
+        resource_name="Site__c",
+        content=b"Session expired"
+    )
+    setattr(mock_sf_1.bulk2, "Site__c", mock_bulk_1)
+    setattr(mock_sf_1.bulk2, "sitetracker__Site__c", mock_bulk_1)
+
+    mock_sf_2 = MagicMock()
+    mock_bulk_2 = MagicMock()
+    mock_bulk_2.update.return_value = [
+        {"numberRecordsTotal": 1, "numberRecordsProcessed": 1, "numberRecordsFailed": 0, "job_id": "RETRY_SUCCESS_JOB"}
+    ]
+    setattr(mock_sf_2.bulk2, "Site__c", mock_bulk_2)
+    setattr(mock_sf_2.bulk2, "sitetracker__Site__c", mock_bulk_2)
+
+    with patch("salesforce.bulk_uploader.get_sf_connection", side_effect=[mock_sf_1, mock_sf_2]) as mock_get_conn, \
+         patch("time.sleep") as mock_sleep:
+        res = push_delta_to_sitetracker(test_csv, object_name="Site__c", operation="update", batch_size=25)
+
+        # Verified that connection was fetched initially, and re-authenticated on chunk failure
+        assert mock_get_conn.call_count == 2
+        assert mock_sleep.call_count == 1
+        assert res.total_records == 1
+        assert res.successful_records == 1
+        assert res.failed_records == 0
+        assert res.all_succeeded is True
+        assert res.job_id == "RETRY_SUCCESS_JOB"
+
+
+def test_push_delta_chunk_permanent_failure_captures_error(tmp_path):
+    """Verify that if all retry attempts fail for a chunk, it captures the error in failures_list and does not query get_failed_records for fake IDs."""
+    test_csv = tmp_path / "final_input_file.csv"
+    df = pd.DataFrame([{"Id": "a123", "Status__c": "Active"}])
+    df.to_csv(test_csv, index=False)
+
+    mock_sf = MagicMock()
+    mock_bulk_obj = MagicMock()
+    mock_bulk_obj.update.side_effect = ConnectionResetError("Connection closed by peer")
+    setattr(mock_sf.bulk2, "Site__c", mock_bulk_obj)
+    setattr(mock_sf.bulk2, "sitetracker__Site__c", mock_bulk_obj)
+
+    with patch("salesforce.bulk_uploader.get_sf_connection", return_value=mock_sf), \
+         patch("time.sleep"):
+        res = push_delta_to_sitetracker(test_csv, object_name="Site__c", operation="update", batch_size=25)
+
+        assert res.total_records == 1
+        assert res.successful_records == 0
+        assert res.failed_records == 1
+        assert res.all_succeeded is False
+        assert "FAILED_CHUNK_1" in res.job_id
+        assert len(res.failures) == 1
+        assert res.failures[0]["sf__Id"] == "a123"
+        assert "CHUNK_SUBMISSION_ERROR" in res.failures[0]["sf__Error"]
+        # Make sure get_failed_records was NOT called on FAILED_CHUNK_1
+        mock_bulk_obj.get_failed_records.assert_not_called()
+        # Failures CSV should exist
+        assert res.failures_csv_path is not None
+        assert res.failures_csv_path.exists()
+
+
+
