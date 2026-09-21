@@ -124,6 +124,14 @@ def _render_rollback_safety_net(
             st.rerun()
 
 
+def _format_count(val: str | int) -> str:
+    """Format numeric string or integer with commas (e.g. 19856 -> 19,856)."""
+    try:
+        return f"{int(val):,}"
+    except (ValueError, TypeError):
+        return str(val)
+
+
 def parse_run_summary(summary_path: Path) -> dict:
     """Extract quick metrics from a run_summary.txt file."""
     metrics = {
@@ -275,24 +283,37 @@ def scan_guided_runs(report_filter: str | None = None) -> list[dict]:
 
                     prog_f = run_dir / "ingest_progress.json"
                     cloud_info = ""
+                    cloud_synced = False
                     if prog_f.exists():
                         try:
                             p_data = json.loads(prog_f.read_text(encoding="utf-8"))
-                            if p_data.get("status") in ("COMPLETED", "COMPLETED_WITH_ERRORS"):
+                            p_status = p_data.get("status")
+                            if p_status in ("COMPLETED", "COMPLETED_WITH_ERRORS"):
                                 succ_c = p_data.get("successful_records_overall", 0)
-                                cloud_info = f" • 🚀 {succ_c:,} cloud synced"
-                            elif p_data.get("status") == "RUNNING":
-                                cloud_info = " • 🔄 Uploading..."
+                                fail_c = p_data.get("failed_records_overall", 0)
+                                cloud_synced = True
+                                if fail_c > 0:
+                                    cloud_info = f"🚀 {succ_c:,} synced (⚠️ {fail_c:,} failed)"
+                                elif succ_c == 0 and str(upd_rows) not in ("0", "N/A"):
+                                    cloud_info = f"⚠️ 0/{_format_count(upd_rows)} synced"
+                                else:
+                                    cloud_info = f"🚀 {succ_c:,} cloud synced"
+                            elif p_status == "RUNNING":
+                                cloud_synced = True
+                                cloud_info = "🔄 Uploading..."
                         except Exception:
                             pass
 
                     label_parts = [f"📥 {r.name}", f"{date_dir.name} {time_fmt}"]
                     if tot_rows != "N/A":
-                        label_parts.append(f"📄 {tot_rows} rows")
-                    if upd_rows != "N/A":
-                        label_parts.append(f"✅ {upd_rows} updates")
+                        label_parts.append(f"📄 {_format_count(tot_rows)} rows")
 
-                    display_label = " • ".join(label_parts) + cloud_info
+                    if cloud_synced and cloud_info:
+                        label_parts.append(cloud_info)
+                    elif upd_rows != "N/A":
+                        label_parts.append(f"✅ {_format_count(upd_rows)} updates")
+
+                    display_label = " • ".join(label_parts)
 
                     runs.append({
                         "report": r.name,
