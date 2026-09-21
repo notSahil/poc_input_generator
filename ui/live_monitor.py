@@ -198,6 +198,9 @@ def render(go):
         with col_dl:
             st.subheader("📥 Export & Audit Files")
             files_to_check = [
+                ("salesforce_success_records.csv", "🟢 Cloud Success Records", "text/csv"),
+                ("salesforce_error_records.csv", "🔴 Cloud Error Records", "text/csv"),
+                ("bulk_upload_failures.csv", "💥 Legacy Cloud Failures", "text/csv"),
                 ("final_input_file.csv", "Final Ingest Payload", "text/csv"),
                 ("field_level_changes.csv", "Field Level Delta Report", "text/csv"),
                 ("rollback_file.csv", "Pre-Change Rollback Snapshot", "text/csv"),
