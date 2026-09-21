@@ -53,6 +53,12 @@ def test_job_manager_lifecycle(tmp_path):
         assert prog["status"] == "COMPLETED"
         assert prog["processed_records_overall"] == 2
         assert prog["successful_records_overall"] == 2
+
+        # Allow thread to finish exit
+        for _ in range(20):
+            if not is_job_active(tmp_path):
+                break
+            time.sleep(0.05)
         assert is_job_active(tmp_path) is False
 
         # Test clear
