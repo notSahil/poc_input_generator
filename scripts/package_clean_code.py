@@ -13,7 +13,7 @@ def create_clean_zip(output_zip_path: Path, root_dir: Path):
         ".git", ".venv", "venv", "__pycache__", ".pytest_cache",
         "node_modules", "htmlcov", "archive", "runs", "manual_runs",
         "mapping_history", ".cache", ".local", "backup", "backup_test_data",
-        "backup_original"
+        "backup_original", ".agents", "docs"
     }
 
     excluded_extensions = {
@@ -22,7 +22,21 @@ def create_clean_zip(output_zip_path: Path, root_dir: Path):
     }
 
     excluded_files = {
-        ".coverage", ".env"
+        ".coverage", ".env", ".cursorrules", ".DS_Store",
+        "AI_ONBOARDING_PROMPT.md",
+        "PROJECT_AUDIT.md",
+        "PROJECT_AUDIT.pdf",
+        "PROJECT_OWNERSHIP_AND_PRODUCTION_REPORT.md",
+        "PROJECT_OWNERSHIP_AND_PRODUCTION_REPORT.pdf",
+        "DOMAIN_MANAGER_PROJECT_OVERVIEW.md",
+        "IN_HOUSE_PRODUCT_FLOW_AND_ARCHITECTURE.md",
+        "FILE_STRUCTURE_MAP.md",
+        "ProtoType.html",
+        "README.md",
+        "quick_test.py",
+        "deploy_to_oracle.sh",
+        "auto_deploy.sh",
+        "setup_ssl.sh",
     }
 
     print(f"Creating clean zip archive at: {output_zip_path}")
