@@ -319,6 +319,9 @@ def _render_screen_1_upload():
     if chosen_obj != st.session_state.adhoc_selected_obj:
         st.session_state.adhoc_selected_obj = chosen_obj
         st.session_state.adhoc_fields = []
+        st.session_state.adhoc_mappings = []
+        st.session_state.adhoc_source_pk = ""
+        st.session_state.adhoc_target_pk = ""
         _invalidate_validation_cache()
 
     # Discover Fields on the Selected Object
@@ -363,6 +366,9 @@ def _render_screen_1_upload():
                     df = DataNormalizer.read_spreadsheet(uploaded_file)
                 st.session_state.adhoc_source_df = df
                 st.session_state.adhoc_source_filename = uploaded_file.name
+                st.session_state.adhoc_mappings = []
+                st.session_state.adhoc_source_pk = ""
+                st.session_state.adhoc_target_pk = ""
                 _invalidate_validation_cache()
                 st.success(f"Loaded `{uploaded_file.name}`: **{len(df):,} rows**, **{len(df.columns)} columns**.")
             except Exception as e:
@@ -576,8 +582,13 @@ def _render_screen_2_mapping():
     st.markdown("---")
     st.markdown("#### 🗺️ Field Mappings")
 
-    # Generate initial suggestions if empty
-    if not st.session_state.adhoc_mappings:
+    # Generate initial suggestions if empty or if columns/object don't match uploaded file
+    current_mapped_cols = [m.source_column for m in st.session_state.adhoc_mappings]
+    if (
+        not st.session_state.adhoc_mappings
+        or current_mapped_cols != src_columns
+        or st.session_state.get("_last_mapped_obj") != obj_name
+    ):
         st.session_state.adhoc_mappings = suggest_field_mappings(
             source_columns=src_columns,
             sf_fields=sf_fields,
@@ -585,6 +596,7 @@ def _render_screen_2_mapping():
             target_pk_field=selected_sf_pk,
             object_name=obj_name,
         )
+        st.session_state._last_mapped_obj = obj_name
 
     mappings = st.session_state.adhoc_mappings
 
