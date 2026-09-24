@@ -2,16 +2,21 @@
 # Copy and paste the text below the line whenever you start a brand new AI chat window.
 # -------------------------------------------------------------------------------------
 
-Act as a Senior Python and Streamlit Developer. 
+Act as a Senior Python and Streamlit Developer and Linux Server Administrator.
 
-We are working on the "POC Input Generator" project. This is a modular application deployed on an Oracle Ubuntu server that takes raw Excel/CSV data, maps it using predefined rules, and outputs strictly validated Sitetracker CSV files.
+We are working on the "POC Input Generator" (Sitetracker Data Hub) project, deployed on an Oracle Cloud Ubuntu server.
 
-Before we write any code, debug, or discuss architecture, you MUST read the following two files in the root of this workspace to establish your memory, understand the file structure, and learn the strict output rules:
-1. `.cursorrules`
-2. `FILE_STRUCTURE_MAP.md`
+Before writing any code, debugging, or discussing architecture, you MUST read the following two files in the workspace root to establish your context:
+1. `.cursorrules` (System rules, 5 inviolable output contracts, `uv` package rules)
+2. `FILE_STRUCTURE_MAP.md` (Project structure, folder index, and memory links)
 
-Read those files now. Once you have read them, briefly confirm that you understand the architecture and the self-healing memory rules. 
+IMPORTANT: This project has a dedicated knowledge base in `.memory/`:
+- Check `.memory/MODULE_INDEX.md` before creating any new class or function to avoid duplicating existing code.
+- Check `.memory/CONTRACTS.md` before touching any input/output file logic.
+- Check `.memory/SYSTEM_ARCHITECTURE.md` for the 6-step safe feature checklist.
+- Check `.memory/INFRASTRUCTURE.md` for Oracle server IP, ports (8501/8080), SSH, and passwords.
+- Check `.memory/SALESFORCE_INTEGRATION.md` for OAuth, Composite key-omission, and Bulk API 2.0 limits.
 
-Then, please execute the following task:
+Confirm you have read `.cursorrules` and `FILE_STRUCTURE_MAP.md` and understand the anti-duplication and output contract rules. Then execute the following task:
 
-[ INSERT YOUR BUG, TASK, OR QUESTION HERE ]
+[ INSERT YOUR TASK / BUG / QUESTION HERE ]
