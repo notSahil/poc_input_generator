@@ -87,9 +87,16 @@ OAUTH_CALLBACK_PORT = int(os.getenv("OAUTH_CALLBACK_PORT", "1717"))
 # === Token & Environment Profiles ===
 PROFILE_FILE = PROJECT_ROOT / ".sf_profile.json"
 DEFAULT_PROFILE = "sandbox"
-PROFILES = {
+PROFILES: dict[str, str] = {
     "sandbox": "🧪 Sitetracker Developer Sandbox",
     "partial": "🔬 Sitetracker Partial Copy Sandbox",
+    "fullcopy": "📦 Sitetracker Full Copy Sandbox",
     "prod": "🏢 Sitetracker Production (Live)"
+}
+DEFAULT_LOGIN_URLS: dict[str, str] = {
+    "sandbox": "https://sitetracker-bt--developer.sandbox.my.salesforce.com",
+    "partial": "https://sitetracker-bt--partial.sandbox.my.salesforce.com",
+    "fullcopy": "https://sitetracker-bt--fullcopy.sandbox.my.salesforce.com",
+    "prod": "https://login.salesforce.com"
 }
 TOKEN_FILE = PROJECT_ROOT / ".sf_auth.json"

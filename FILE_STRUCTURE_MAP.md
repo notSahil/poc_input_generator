@@ -22,6 +22,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 
 
 ### `/ui` (Streamlit Frontend)
+- `login.py`: Dedicated Enterprise Login Gateway for Sitetracker Data Hub with Salesforce Lightning Design System styling.
 - `components.py`: Shared UI components including Dataloader.io 4-stage pipeline stepper, step navigation buttons, headers, and download confirmation popovers.
 - `styles.py`: Salesforce Lightning Design System (SLDS) design tokens, CSS styling, executive KPI metric cards, and status pill badges.
 - `data_load.py`: Guided 4-step Dataloader.io pipeline for pre-configured reports (Source & Object ➔ Visual Field Mapping Canvas ➔ Delta & Validation Engine ➔ Review, Downloads & Bulk API Ingest).
@@ -83,7 +84,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 
 ## 2. Architecture Decision Records (ADRs)
 
-All 39 Architecture Decision Records have been organized by domain into the [`.memory/adrs/`](.memory/adrs/) knowledge base for fast, context-efficient AI lookup:
+All 40 Architecture Decision Records have been organized by domain into the [`.memory/adrs/`](.memory/adrs/) knowledge base for fast, context-efficient AI lookup:
 
 - 🛠️ **[Infrastructure & Operations ADRs](.memory/adrs/infra_ops_adrs.md)** (ADRs 3, 28, 39)
   - Covers Oracle Cloud VM setup, code-server on port 8080, SQLite WAL persistent job store, and ADR 39 (Nginx TLS 1.3 Reverse Proxy & AppSec Skill).
@@ -92,8 +93,8 @@ All 39 Architecture Decision Records have been organized by domain into the [`.m
   - Covers file archiving, 8 output files, 1-click rollback, null wipe `#N/A`, multi-object handling, self-healing aliasing, ISO dates, and 2-tier post-audit.
 - ☁️ **[Salesforce Integration ADRs](.memory/adrs/salesforce_adrs.md)** (ADRs 2, 4, 5, 6, 7, 8, 11, 12, 13, 14, 18, 20, 21, 22, 27, 30, 34)
   - Covers OAuth PKCE, profile caching, REST Composite key-omission, Bulk API 2.0 25-record micro-batching, governor limit protection, and token re-hydration.
-- 🖥️ **[Streamlit UI & UX ADRs](.memory/adrs/ui_ux_adrs.md)** (ADRs 16, 19, 24, 26, 29, 36, 37)
-  - Covers 4-step stepper wizard, manual dataloader screens, live telemetry reconnection, and run history audit replay.
+- 🖥️ **[Streamlit UI & UX ADRs](.memory/adrs/ui_ux_adrs.md)** (ADRs 16, 19, 24, 26, 29, 36, 37, 40)
+  - Covers 4-step stepper wizard, manual dataloader screens, live telemetry reconnection, run history audit replay, and ADR 40 (Dedicated Enterprise Authentication Gateway & Environment Scoping).
 - 🛠️ **[Infrastructure & Operations ADRs](.memory/adrs/infra_ops_adrs.md)** (ADRs 3, 28)
   - Covers Oracle Cloud VM setup, code-server on port 8080, and SQLite WAL persistent job store.
 

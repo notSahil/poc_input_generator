@@ -2,7 +2,7 @@
 
 import streamlit as st
 from config.logging_config import setup_logging
-from ui.components import render_active_job_banner, render_notification_bell
+from ui.components import render_active_job_banner, render_notification_bell, render_persistent_top_bar
 from ui.styles import apply_slds_theme, render_pill
 from salesforce.auth import check_connection_status, get_active_profile, is_token_valid
 
@@ -48,56 +48,28 @@ def go(page_name: str):
 
 
 # ======================
+# AUTHENTICATION GATEKEEPER
+# ======================
+
+active_prof = get_active_profile()
+is_auth, status_label = check_connection_status(profile=active_prof)
+
+if not is_auth:
+    from ui.login import render_login_gateway
+    render_login_gateway(go, active_profile=active_prof)
+    st.stop()
+
+
+# ======================
 # HOME PAGE
 # ======================
 
 def render_home():
-    active_prof = get_active_profile()
-    is_auth, status_label = check_connection_status(profile=active_prof)
-    if active_prof == "partial":
-        env_label = "Partial Copy Sandbox"
-        env_color = "purple"
-    elif active_prof == "sandbox":
-        env_label = "Developer Sandbox"
-        env_color = "amber"
-    else:
-        env_label = "Production Org"
-        env_color = "blue"
+    # Top bar is only shown on the home dashboard
+    render_persistent_top_bar(active_prof, go)
 
-    if is_auth:
-        label = "Connected" if status_label in ("Connected", "Connected (Cached)") else status_label
-        status_dot = f'<span style="color:#04844B; font-size:0.8rem; font-weight:600;">● {label}</span>'
-    elif status_label == "Disconnected":
-        status_dot = '<span style="color:#64748B; font-size:0.8rem; font-weight:600;">○ Disconnected</span>'
-    elif status_label == "Offline":
-        status_dot = '<span style="color:#D97706; font-size:0.8rem; font-weight:600;">● Offline</span>'
-    else:
-        status_dot = f'<span style="color:#EA001E; font-size:0.8rem; font-weight:600;">● {status_label}</span>'
-
-    col_hero, col_status = st.columns([3, 1])
-    with col_hero:
-        st.title("⚡ Sitetracker Data Hub")
-        st.caption("Centralized enterprise workspace for generating Sitetracker input files, mapping schemas, and synchronizing Salesforce records.")
-
-    with col_status:
-        c_bell, c_env = st.columns([1, 2.5])
-        with c_bell:
-            st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-            render_notification_bell(active_prof)
-        with c_env:
-            st.markdown(
-                f"""
-                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:12px 16px; text-align:right;">
-                    <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase;">Active Environment</div>
-                    <div style="font-weight:700; color:#032D60; font-size:0.95rem; display:flex; justify-content:flex-end; align-items:center; gap:6px; margin-top:4px;">
-                        {render_pill(env_label, env_color)}
-                        {status_dot}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
+    st.title("⚡ Sitetracker Data Hub")
+    st.caption("Centralized enterprise workspace for generating Sitetracker input files, mapping schemas, and synchronizing Salesforce records.")
 
     st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
     # Render in-flight active upload banner if any background jobs are running on server

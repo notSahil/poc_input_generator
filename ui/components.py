@@ -242,3 +242,120 @@ def render_active_job_banner(go) -> bool:
     return rendered_any
 
 
+def flush_workspace_cache() -> None:
+    """Clear transient workspace cache from session_state to prevent cross-environment contamination."""
+    keys_to_clear = [
+        "preview_df", "source_df", "delta_df", "baseline_records",
+        "active_job_run_dir", "cached_soql_records", "step_0_source_df",
+        "step_2_diff_df", "step_3_final_df"
+    ]
+    for k in list(st.session_state.keys()):
+        if k in keys_to_clear or k.startswith("cached_user_org_details_"):
+            st.session_state.pop(k, None)
+
+
+def get_cached_profile_details(active_profile: str, force_refresh: bool = False) -> dict:
+    """Retrieve and cache extended user & org details in session_state."""
+    cache_key = f"cached_user_org_details_{active_profile}"
+    if force_refresh or cache_key not in st.session_state:
+        from salesforce.userinfo import get_extended_user_and_org_details
+        st.session_state[cache_key] = get_extended_user_and_org_details(active_profile)
+    return st.session_state[cache_key]
+
+
+def render_persistent_top_bar(active_profile: str, go: callable) -> None:
+    """Renders a persistent top navigation & environment status bar on all authenticated pages."""
+    from config import settings
+    from salesforce.auth import clear_token, set_active_profile, load_token
+    from salesforce.userinfo import get_user_info
+    from ui.styles import render_pill
+
+    if active_profile == "partial":
+        env_label = "Partial Copy Sandbox"
+        env_color = "purple"
+    elif active_profile == "sandbox":
+        env_label = "Developer Sandbox"
+        env_color = "amber"
+    elif active_profile == "fullcopy":
+        env_label = "Full Copy Sandbox"
+        env_color = "teal"
+    else:
+        env_label = "Production Org"
+        env_color = "blue"
+
+    token = load_token(active_profile) or {}
+    uname = token.get("username", "")
+    if not uname:
+        try:
+            u_info = get_user_info(active_profile)
+            uname = u_info.get("preferred_username", "Salesforce User")
+        except Exception:
+            uname = "Salesforce User"
+
+    user_display = uname.split("@")[0] if "@" in uname else uname
+
+    col_brand, col_actions = st.columns([1.2, 3.8])
+    with col_brand:
+        if st.button("⚡ Sitetracker Data Hub", key="top_bar_home_btn", use_container_width=True, help="Return to Home Dashboard"):
+            go("home")
+            st.rerun()
+
+    with col_actions:
+        c_env, c_profile, c_bell, c_switch, c_logout = st.columns([1.5, 1.4, 0.4, 1.0, 0.9])
+        with c_env:
+            status_dot = '<span style="color:#04844B; font-size:0.75rem; font-weight:700;">● Connected</span>'
+            st.markdown(
+                f"""
+                <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px; margin-top:6px;">
+                    {render_pill(env_label, env_color)}
+                    {status_dot}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        with c_profile:
+            details = get_cached_profile_details(active_profile)
+            user_btn_label = f"👤 {details.get('name', 'User').split()[0]}" if details.get('name') and details.get('name') != "N/A" else f"👤 {user_display}"
+            with st.popover(user_btn_label, use_container_width=True, help="Click to view connected Salesforce profile details"):
+                st.markdown("##### 👤 Connected User Profile")
+                st.markdown(f"**Name:** {details.get('name', 'N/A')}")
+                st.markdown(f"**Email:** `{details.get('email', 'N/A')}`")
+                st.markdown(f"**Username:** `{details.get('username', 'N/A')}`")
+                st.markdown(f"**Profile:** `{details.get('profile_name', 'N/A')}`")
+                st.markdown(f"**Role:** `{details.get('role_name', 'N/A')}`")
+                st.markdown(f"**Timezone:** `{details.get('timezone', 'Europe/London')}`")
+                st.divider()
+                st.markdown(f"##### 🏢 {env_label} Details")
+                st.markdown(f"**Organization:** **{details.get('org_name', 'Sitetracker BT')}** ({details.get('org_type', 'Enterprise')})")
+                st.markdown(f"**Salesforce Pod:** `{details.get('pod', 'N/A')}`")
+                st.markdown(f"**Org ID:** `{details.get('org_id', 'N/A')}`")
+                st.markdown(f"**Instance URL:** `{details.get('instance_url', 'N/A')}`")
+                st.markdown(f"**Auth Method:** `{details.get('auth_method', 'OAuth 2.0')}`")
+                st.write("")
+                if st.button("🔄 Refresh Details", key="top_bar_refresh_profile_btn", use_container_width=True):
+                    get_cached_profile_details(active_profile, force_refresh=True)
+                    st.rerun()
+
+        with c_bell:
+            render_notification_bell(active_profile)
+        with c_switch:
+            with st.popover("🔄 Switch Org", use_container_width=True):
+                st.markdown("##### 🌐 Switch Salesforce Org")
+                profile_keys = list(settings.PROFILES.keys())
+                for pk in profile_keys:
+                    p_name = settings.PROFILES[pk]
+                    is_current = (pk == active_profile)
+                    btn_text = f"✓ {p_name}" if is_current else p_name
+                    if st.button(btn_text, key=f"top_bar_switch_{pk}", disabled=is_current, use_container_width=True):
+                        set_active_profile(pk)
+                        flush_workspace_cache()
+                        st.rerun()
+        with c_logout:
+            if st.button("🚪 Logout", key="top_bar_logout_btn", use_container_width=True, help=f"Disconnect from {env_label}"):
+                clear_token(profile=active_profile)
+                flush_workspace_cache()
+                st.rerun()
+
+    st.markdown("<hr style='margin-top:4px; margin-bottom:16px; border:0; border-top:1px solid #E2E8F0;' />", unsafe_allow_html=True)
+
+

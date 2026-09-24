@@ -21,7 +21,7 @@ This catalog gives any AI agent or developer an instant, searchable reference of
 ## Root Files
 | File | Lines | Description | Key Exports / Functions |
 |---|---|---|---|
-| [`app.py`](app.py) | 297 | Main Streamlit Application Router with Salesforce Lightning Design System styling. | `go()`, `render_home()` |
+| [`app.py`](app.py) | 269 | Main Streamlit Application Router with Salesforce Lightning Design System styling. | `go()`, `render_home()` |
 | [`cli.py`](cli.py) | 245 | CLI entry point for the Sitetracker Input File Generator. | `cmd_run()`, `cmd_validate()`, `cmd_list_reports()`, `cmd_scaffold()`, `cmd_scheduler()` |
 | [`quick_test.py`](quick_test.py) | 195 | End-to-end quick test runner for Sitetracker Input File Generator. | `print_header()`, `test_normalizer()`, `test_apollo_10g_run()`, `test_master_site_listing_run()`, `test_config_and_mapping()` |
 
@@ -117,13 +117,14 @@ This catalog gives any AI agent or developer an instant, searchable reference of
 | File | Lines | Summary / Role | Classes | Exported Functions / Helpers |
 |---|---|---|---|---|
 | [`__init__.py`](ui/__init__.py) | 0 | — | — | — |
-| [`components.py`](ui/components.py) | 244 | Shared UI components used across pages with Salesforce Lightning Design System styling. | — | `render_header()`, `render_pipeline_stepper()`, `render_step_navigation()`, `render_footer()`, `render_back_button()`, `render_download_with_confirmation()` |
-| [`data_export.py`](ui/data_export.py) | 383 | Streamlit UI page for Salesforce Data Export & OAuth Authentication. | — | `render()` |
+| [`components.py`](ui/components.py) | 361 | Shared UI components used across pages with Salesforce Lightning Design System styling. | — | `render_header()`, `render_pipeline_stepper()`, `render_step_navigation()`, `render_footer()`, `render_back_button()`, `render_download_with_confirmation()` |
+| [`data_export.py`](ui/data_export.py) | 36 | Streamlit UI page for Salesforce Data Export. | — | `render()` |
 | [`data_load.py`](ui/data_load.py) | 1617 | Streamlit UI page for Data Load / Input File Generation with Dataloader.io guided pipeline. | — | `render()` |
 | [`live_monitor.py`](ui/live_monitor.py) | 262 | Universal Live Ingest Telemetry Monitor. | — | `render()` |
+| [`login.py`](ui/login.py) | 311 | Dedicated Enterprise Login Gateway for Sitetracker Data Hub with Salesforce Lightning Design System styling. | — | `render_login_gateway()` |
 | [`manual_loader.py`](ui/manual_loader.py) | 1268 | Manual / Ad-Hoc Dataloader UI Module (Dataloader.io Mode). | — | `render()` |
 | [`mapping_editor.py`](ui/mapping_editor.py) | 365 | Streamlit UI page for the Interactive Mapping Editor. | — | `render()` |
-| [`run_history.py`](ui/run_history.py) | 993 | Streamlit UI page for Historical Runs and Audit Log. | — | `parse_run_summary()`, `scan_guided_runs()`, `scan_manual_runs()`, `scan_all_runs()`, `render()` |
+| [`run_history.py`](ui/run_history.py) | 1038 | Streamlit UI page for Historical Runs and Audit Log. | — | `parse_run_summary()`, `scan_guided_runs()`, `scan_manual_runs()`, `scan_all_runs()`, `render()` |
 | [`styles.py`](ui/styles.py) | 419 | Salesforce Lightning Design System (SLDS) and Dataloader.io styling tokens for Streamlit. | — | `apply_slds_theme()`, `render_kpi_card()`, `render_pill()` |
 | [`task_scheduler.py`](ui/task_scheduler.py) | 333 | Streamlit UI page for Task Scheduler and Automated Ingest Operations. | — | `render()` |
 
@@ -133,7 +134,7 @@ This catalog gives any AI agent or developer an instant, searchable reference of
 |---|---|---|---|---|
 | [`__init__.py`](salesforce/__init__.py) | 1 | Salesforce integration package. | — | — |
 | [`adhoc_fetcher.py`](salesforce/adhoc_fetcher.py) | 286 | Salesforce Ad-Hoc Metadata and Live Data Fetcher. | — | `chunk_identifiers()`, `fetch_all_objects()`, `fetch_object_fields()`, `is_valid_salesforce_id()`, `fetch_adhoc_live_data()` |
-| [`auth.py`](salesforce/auth.py) | 722 | Salesforce OAuth: token exchange, local callback server, token persistence. | **`OAuthHandler`** | `get_active_profile()`, `set_active_profile()`, `get_token_file()`, `sanitize_session_token()`, `get_profile_credentials()`, `is_oauth_configured()` |
+| [`auth.py`](salesforce/auth.py) | 745 | Salesforce OAuth: token exchange, local callback server, token persistence. | **`OAuthHandler`** | `get_active_profile()`, `set_active_profile()`, `get_token_file()`, `sanitize_session_token()`, `get_profile_credentials()`, `is_oauth_configured()` |
 | [`bulk_uploader.py`](salesforce/bulk_uploader.py) | 542 | Salesforce Bulk API 2.0 uploader for pushing delta input files directly to Sitetracker. | **`BulkUploadResult`** | `clean_payload_for_salesforce()`, `push_delta_to_sitetracker()`, `push_multi_object_deltas_to_sitetracker()` |
 | [`client.py`](salesforce/client.py) | 71 | Salesforce REST API client. | **`SalesforceClient`** | — |
 | [`composite_uploader.py`](salesforce/composite_uploader.py) | 340 | Salesforce REST Composite SObject Collections Uploader. | — | `push_delta_via_composite()` |
@@ -144,7 +145,7 @@ This catalog gives any AI agent or developer an instant, searchable reference of
 | [`metadata.py`](salesforce/metadata.py) | 12 | Salesforce metadata operations. | — | `list_objects()` |
 | [`post_fetcher.py`](salesforce/post_fetcher.py) | 85 | Live Post-Update Salesforce Data Fetcher. | — | `fetch_live_records_by_ids()` |
 | [`sf_client.py`](salesforce/sf_client.py) | 52 | Bridge: Create a simple-salesforce Salesforce instance from stored OAuth token. | — | `get_sf_connection()` |
-| [`userinfo.py`](salesforce/userinfo.py) | 11 | — | — | `get_user_info()` |
+| [`userinfo.py`](salesforce/userinfo.py) | 83 | — | — | `get_user_info()`, `get_extended_user_and_org_details()` |
 
 ### Detailed Class & Method Directory (`salesforce/`)
 
@@ -161,7 +162,7 @@ This catalog gives any AI agent or developer an instant, searchable reference of
 |---|---|---|---|---|
 | [`__init__.py`](config/__init__.py) | 1 | Configuration package. | — | — |
 | [`logging_config.py`](config/logging_config.py) | 31 | Logging configuration for the application. | — | `setup_logging()` |
-| [`settings.py`](config/settings.py) | 95 | Central application settings. Single source of truth for all config. | — | `reload_settings()` |
+| [`settings.py`](config/settings.py) | 102 | Central application settings. Single source of truth for all config. | — | `reload_settings()` |
 
 ## scripts/ — Deployment, Maintenance, and Code Generation Scripts
 

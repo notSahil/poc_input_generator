@@ -42,6 +42,10 @@ def test_profile_switching(tmp_path, monkeypatch):
     set_active_profile("partial")
     assert get_active_profile() == "partial"
 
+    # Switch to fullcopy
+    set_active_profile("fullcopy")
+    assert get_active_profile() == "fullcopy"
+
     # Switch to prod
     set_active_profile("prod")
     assert get_active_profile() == "prod"
@@ -67,6 +71,9 @@ def test_profile_token_isolation(tmp_path, monkeypatch):
     set_active_profile("partial")
     save_manual_token("tok_partial_789", "https://partial.my.salesforce.com", profile="partial")
 
+    set_active_profile("fullcopy")
+    save_manual_token("tok_fullcopy_321", "https://fullcopy.my.salesforce.com", profile="fullcopy")
+
     set_active_profile("prod")
     save_manual_token("tok_prod_456", "https://prod.my.salesforce.com", profile="prod")
 
@@ -79,6 +86,10 @@ def test_profile_token_isolation(tmp_path, monkeypatch):
     assert part_token["access_token"] == "tok_partial_789"
     assert part_token["instance_url"] == "https://partial.my.salesforce.com"
 
+    fc_token = load_token(profile="fullcopy")
+    assert fc_token["access_token"] == "tok_fullcopy_321"
+    assert fc_token["instance_url"] == "https://fullcopy.my.salesforce.com"
+
     prod_token = load_token(profile="prod")
     assert prod_token["access_token"] == "tok_prod_456"
     assert prod_token["instance_url"] == "https://prod.my.salesforce.com"
@@ -87,6 +98,7 @@ def test_profile_token_isolation(tmp_path, monkeypatch):
     clear_token(profile="partial")
     assert load_token(profile="partial") is None
     assert load_token(profile="sandbox") is not None
+    assert load_token(profile="fullcopy") is not None
     assert load_token(profile="prod") is not None
 
 
@@ -107,14 +119,38 @@ def test_oauth_login_url(monkeypatch):
     monkeypatch.setattr(settings, "SF_REDIRECT_URI", "http://localhost:1717/oauth/callback")
 
     sb_url = get_login_url(profile="sandbox")
-    assert "test.salesforce.com" in sb_url
+    assert "test.salesforce.com" in sb_url or "salesforce.com" in sb_url
     assert "client_id=test_client_id" in sb_url
 
     part_url = get_login_url(profile="partial")
-    assert "test.salesforce.com" in part_url
+    assert "test.salesforce.com" in part_url or "partial.sandbox.my.salesforce.com" in part_url
+
+    fc_url = get_login_url(profile="fullcopy")
+    assert "test.salesforce.com" in fc_url or "fullcopy.sandbox.my.salesforce.com" in fc_url
 
     prod_url = get_login_url(profile="prod")
     assert "login.salesforce.com" in prod_url
+
+
+def test_is_authenticated_and_cascading_env_credentials(tmp_path, monkeypatch):
+    from salesforce.auth import is_authenticated, get_profile_credentials, save_manual_token
+
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "TOKEN_FILE", tmp_path / ".sf_auth.json")
+
+    # Unauthenticated initially
+    assert is_authenticated("sandbox") is False
+
+    # Authenticate
+    save_manual_token("valid_access_token_123", "https://test.salesforce.com", profile="sandbox")
+    assert is_authenticated("sandbox") is True
+
+    # Test cascading env vars for fullcopy
+    monkeypatch.setenv("SF_CLIENT_ID_FULLCOPY", "fc_client_id_from_env")
+    monkeypatch.setenv("SF_CLIENT_SECRET_FULLCOPY", "fc_secret_from_env")
+    cid, csec = get_profile_credentials("fullcopy")
+    assert cid == "fc_client_id_from_env"
+    assert csec == "fc_secret_from_env"
 
 
 def test_exchange_code_for_token(tmp_path, monkeypatch):

@@ -50,3 +50,13 @@
 ### ADR 37: Dynamic Mapping Session Invalidation in Manual Dataloader (`ui/manual_loader.py`)
 - **Decision:** Reset `st.session_state.adhoc_mappings` whenever the uploaded source file name, file size, or target object changes. Add defensive validation checking that all mapped source columns exist in the active uploaded file.
 - **Reason:** When an operator uploaded a different file or changed target objects in Manual Dataloader, Streamlit retained the previously configured field mapping in `st.session_state.adhoc_mappings` (e.g. Master Site Listing columns persisting when loading an Apollo 10G file). This caused confusing phantom column selections, mismatched data types, and failed uploads. Invalidating the session cache guarantees clean, accurate mappings for every file.
+
+---
+
+### ADR 40: Dedicated Enterprise Salesforce Authentication Gateway & Environment Scoping (`ui/login.py`, `app.py`, `ui/components.py`, `ui/data_export.py`, `ui/run_history.py`, `config/settings.py`, `salesforce/auth.py`)
+- **Decision:**
+  1. **Root Gatekeeper (`app.py`):** Unauthenticated visitors cannot access any internal dashboard modules, cards, or reports. The application root strictly serves the dedicated Enterprise Authentication Gateway (`ui/login.py`).
+  2. **Automated Zero-Friction Login:** Eliminates manual Client ID and Client Secret key entry on the frontend by automatically cascading credentials from environment variables (`SF_CLIENT_ID_<ENV>`), saved profile credential files (`.sf_creds_<env>.json`), and `.env`. Provides a direct 1-click **"🚀 Login with Salesforce (OAuth 2.0)"** button, alongside Workbench session token authentication.
+  3. **Full Environment Matrix:** Expands environments to include Developer Sandbox (`sandbox`), Partial Copy Sandbox (`partial`), Full Copy Sandbox (`fullcopy`), and Production Org (`prod`).
+  4. **Persistent SLDS Header Bar & Environment Scoping:** Authenticated sessions feature a persistent top bar displaying the active environment pill, user profile, pod, notification bell, "🔄 Switch Org", and "🚪 Logout". All operations and run history default to filtering for the logged-in environment, with defensive session state cache flushing on switch or logout.
+- **Reason:** Prevents unauthorized access or data leakage on production deployments (Oracle Cloud Ubuntu server), provides a frictionless enterprise login experience without requiring operators to know or paste Connected App keys, cleanly isolates data and operations per Salesforce org, and maintains 100% backward compatibility with all existing pipelines.

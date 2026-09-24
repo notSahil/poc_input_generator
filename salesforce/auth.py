@@ -73,11 +73,24 @@ def sanitize_session_token(token_raw: str) -> str:
 # ==================================================
 
 def get_profile_credentials(profile: str | None = None) -> tuple[str, str]:
-    """Get client ID and client secret for profile, falling back to global settings."""
+    """Get client ID and client secret for profile, cascading:
+    1. Per-environment environment variables (e.g. SF_CLIENT_ID_PARTIAL, SF_CLIENT_ID_FULLCOPY)
+    2. Profile-specific credentials file (.sf_creds_<prof>.json)
+    3. Global settings / .env (SF_CLIENT_ID, SF_CLIENT_SECRET)
+    """
     prof = profile or get_active_profile()
+
+    # 1. Environment variables specific to profile
+    prof_upper = prof.upper()
+    env_cid = os.getenv(f"SF_CLIENT_ID_{prof_upper}", "")
+    env_csec = os.getenv(f"SF_CLIENT_SECRET_{prof_upper}", "")
+    if env_cid and env_csec:
+        return env_cid.strip(), env_csec.strip()
+
+    # 2. Stored profile credentials file
     creds = load_profile_credentials(prof)
-    client_id = creds.get("client_id") or settings.SF_CLIENT_ID or ""
-    client_secret = creds.get("client_secret") or settings.SF_CLIENT_SECRET or ""
+    client_id = creds.get("client_id") or env_cid or settings.SF_CLIENT_ID or ""
+    client_secret = creds.get("client_secret") or env_csec or settings.SF_CLIENT_SECRET or ""
     return client_id.strip(), client_secret.strip()
 
 
@@ -273,8 +286,9 @@ def get_login_url(
 ) -> str:
     """Generate the OAuth 2.0 authorization URL with PKCE and state tracking (RFC 7636)."""
     prof = profile or get_active_profile()
-    base_url = (login_url or settings.SF_LOGIN_URL).strip().rstrip("/")
-    if prof in ("sandbox", "partial") and "login.salesforce.com" in base_url:
+    default_url = getattr(settings, "DEFAULT_LOGIN_URLS", {}).get(prof, settings.SF_LOGIN_URL)
+    base_url = (login_url or default_url).strip().rstrip("/")
+    if prof in ("sandbox", "partial", "fullcopy") and "login.salesforce.com" in base_url:
         base_url = "https://test.salesforce.com"
     elif prof == "prod" and "test.salesforce.com" in base_url:
         base_url = "https://login.salesforce.com"
@@ -431,6 +445,15 @@ def is_token_valid(profile: str | None = None, check_live: bool = False) -> bool
             return False
 
     return True
+
+
+def is_authenticated(profile: str | None = None) -> bool:
+    """Fast, safe check if specified profile has an active, valid authentication token."""
+    prof = profile or get_active_profile()
+    token = load_token(prof)
+    if not token or "access_token" not in token:
+        return False
+    return is_token_valid(profile=prof)
 
 
 def check_connection_status(

@@ -304,6 +304,20 @@ def scan_guided_runs(report_filter: str | None = None) -> list[dict]:
                         except Exception:
                             pass
 
+                    prof_val = "unknown"
+                    if prog_f.exists():
+                        try:
+                            prof_val = json.loads(prog_f.read_text(encoding="utf-8")).get("profile", "unknown")
+                        except Exception:
+                            pass
+                    if prof_val == "unknown":
+                        meta_f = run_dir / "metadata.json"
+                        if meta_f.exists():
+                            try:
+                                prof_val = json.loads(meta_f.read_text(encoding="utf-8")).get("profile", "unknown")
+                            except Exception:
+                                pass
+
                     label_parts = [f"📥 {r.name}", f"{date_dir.name} {time_fmt}"]
                     if tot_rows != "N/A":
                         label_parts.append(f"📄 {_format_count(tot_rows)} rows")
@@ -326,6 +340,7 @@ def scan_guided_runs(report_filter: str | None = None) -> list[dict]:
                         "archive_dir": matching_archive if matching_archive.exists() else None,
                         "summary_file": summary_file,
                         "metrics": metrics,
+                        "profile": prof_val,
                     })
         except Exception as e:
             logger.warning("Error scanning runs for report %s: %s", r.name, e)
@@ -809,6 +824,13 @@ def render(go):
         "Browse past engine executions, download historical update/rollback files, and audit archived source inputs."
     )
 
+    from salesforce.auth import get_active_profile
+    active_prof = get_active_profile()
+    active_prof_label = settings.PROFILES.get(active_prof, active_prof)
+    env_filter_options = [f"Active: {active_prof_label}", "All Environments"] + [
+        p_name for p_k, p_name in settings.PROFILES.items() if p_k != active_prof
+    ]
+
     tab_auto, tab_manual = st.tabs([
         "📥 Automated / Guided Report History",
         "⚡ Manual Dataloader History",
@@ -821,14 +843,22 @@ def render(go):
         reports = YamlConfigLoader.list_reports()
         report_names = ["All Reports"] + [r.name for r in reports]
 
-        col_f1, _ = st.columns([2, 2])
+        col_f1, col_f2 = st.columns([2, 2])
         with col_f1:
             selected_filter = st.selectbox("Filter Guided Reports", report_names, index=0, key="auto_report_filter")
+        with col_f2:
+            env_filter_auto = st.selectbox("🌐 Environment Filter", env_filter_options, index=0, key="auto_env_filter")
 
         auto_runs = scan_guided_runs(selected_filter)
+        if env_filter_auto.startswith("Active:"):
+            auto_runs = [r for r in auto_runs if r.get("profile") == active_prof or r.get("profile") in ("unknown", active_prof)]
+        elif env_filter_auto != "All Environments":
+            target_p = next((k for k, v in settings.PROFILES.items() if v == env_filter_auto), None)
+            if target_p:
+                auto_runs = [r for r in auto_runs if r.get("profile") == target_p]
 
         if not auto_runs:
-            st.info("No historical automated runs found for the selected report.")
+            st.info("No historical automated runs found for the selected filter.")
         else:
             # Top Metrics Banner
             m1, m2, m3 = st.columns(3)
@@ -855,7 +885,7 @@ def render(go):
             st.info("No historical manual dataloader runs found.")
         else:
             # 1. Filters Row
-            col_t1, col_t2, col_t3 = st.columns([2, 2, 2])
+            col_t1, col_t2, col_t3, col_t4 = st.columns([1.5, 1.5, 1.5, 1.5])
 
             with col_t1:
                 time_filter = st.selectbox(
@@ -866,6 +896,14 @@ def render(go):
                 )
 
             with col_t2:
+                env_filter_manual = st.selectbox(
+                    "🌐 Environment Filter",
+                    env_filter_options,
+                    index=0,
+                    key="manual_env_filter"
+                )
+
+            with col_t3:
                 manual_objects = sorted({r["object_name"] for r in raw_manual_runs if r.get("object_name")})
                 obj_filter_options = ["All Objects"] + manual_objects
                 selected_obj = st.selectbox(
@@ -875,7 +913,7 @@ def render(go):
                     key="manual_obj_filter",
                 )
 
-            with col_t3:
+            with col_t4:
                 all_operators = sorted({r["user_name"] for r in raw_manual_runs if r.get("user_name")})
                 operator_options = ["All Operators"] + all_operators
                 selected_operator = st.selectbox(
@@ -898,6 +936,13 @@ def render(go):
             # Apply Filters
             filtered_runs = raw_manual_runs
             now = datetime.now()
+
+            if env_filter_manual.startswith("Active:"):
+                filtered_runs = [r for r in filtered_runs if r.get("profile") == active_prof or r.get("profile") in ("unknown", active_prof)]
+            elif env_filter_manual != "All Environments":
+                target_p = next((k for k, v in settings.PROFILES.items() if v == env_filter_manual), None)
+                if target_p:
+                    filtered_runs = [r for r in filtered_runs if r.get("profile") == target_p]
 
             if time_filter == "Today":
                 filtered_runs = [r for r in filtered_runs if r["date"] == now.strftime("%Y-%m-%d")]
