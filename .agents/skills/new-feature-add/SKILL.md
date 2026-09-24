@@ -55,9 +55,11 @@ Upon user approval, implement the feature applying these project standards:
 
 ## Phase 5: Self-Healing Memory (Documentation Sync)
 Keep project memory in sync immediately after code changes:
-- Update `FILE_STRUCTURE_MAP.md` with any newly added, removed, or repurposed files.
-- If a significant architectural trade-off was made, record an Architecture Decision Record (ADR) in `FILE_STRUCTURE_MAP.md`.
+- Run `uv run python scripts/sync_memory.py` to automatically update `.memory/MODULE_INDEX.md` and `FILE_STRUCTURE_MAP.md`.
+- If an output file format changed, update `.memory/CONTRACTS.md`.
+- If an architectural trade-off was made, record an ADR in the appropriate `.memory/adrs/` file.
 - If new packages were introduced, install with `uv add` and document in `README.md` / `requirements.txt`.
+
 
 ---
 

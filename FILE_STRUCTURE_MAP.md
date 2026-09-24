@@ -5,6 +5,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 ## 1. Directory Map
 
 ### `/core` (Backend Logic & Data Processing)
+- `__init__.py`: Core business logic package for the Sitetracker input generator.
 - `engine.py`: The master execution script. Orchestrates loading data, validating, normalizing, and writing the 5 standard output files.
 - `manual_engine.py`: Standalone, headless ad-hoc engine for Manual Dataloader mode. Computes deltas, validates data types, handles duplicates, and generates the standard 5 output files + rollback file for arbitrary Salesforce objects.
 - `validator.py`: Handles checking for missing or duplicate primary keys.
@@ -34,6 +35,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 
 
 ### `/salesforce` (Integrations)
+- `job_manager.py`: Background Ingest Job Manager.
 - `auth.py`: Handles OAuth, multi-environment profile token caching (`.sf_auth_sandbox.json`, `.sf_auth_prod.json`), Workbench session token sanitization, and automatic token refreshing.
 - `client.py`: API wrapper for making legacy REST requests to SFDC with profile awareness.
 - `sf_client.py`: Bridge module providing a `simple-salesforce` client (`Salesforce`) backed by active environment profile OAuth/session tokens with automatic expiration refresh.
@@ -52,6 +54,10 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `/reports`: Contains YAML files (`apollo_10g.yml`, `master_site_listing.yml`) defining the specific Primary Keys and settings for different report types.
 
 ### `/scripts` (Utilities)
+- `sync_memory.py`: sync_memory.py — Automated AI Memory & Project Structure Synchronizer
+- `prune_runs.py`: Utility script to prune historical run logs, source archives, and mapping history.
+- `package_clean_code.py`: Create a clean, lightweight zip archive of the codebase for company laptop deployment.
+- `gen_module_index.py`: gen_module_index.py — Auto-generates .memory/MODULE_INDEX.md
 - `auto_deploy.sh`: Bash script run via cron on the Oracle server to automatically pull git updates.
 - `deploy_to_oracle.sh`: Bash script setting up VM, swap, iptables, uv, code-server, and systemd services on Oracle Cloud.
 - `nginx_sitetracker.conf`: Hardened Nginx reverse proxy configuration with TLS 1.3, security headers, Streamlit WebSocket proxying, and 100M upload limit.
