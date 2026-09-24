@@ -589,7 +589,7 @@ def exchange_code_for_token(
     if verifier:
         payload["code_verifier"] = verifier
 
-    response = requests.post(token_url, data=payload)
+    response = requests.post(token_url, data=payload, timeout=30)
 
     if response.status_code != 200:
         raise RuntimeError(
@@ -625,7 +625,7 @@ def refresh_access_token(refresh_token_str: str, profile: str | None = None) -> 
         "refresh_token": refresh_token_str.strip(),
     }
 
-    response = requests.post(token_url, data=payload)
+    response = requests.post(token_url, data=payload, timeout=30)
     if response.status_code != 200:
         raise RuntimeError(f"Token refresh failed ({response.status_code}): {response.text}")
 

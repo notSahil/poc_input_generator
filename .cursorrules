@@ -22,3 +22,14 @@ The processing engine must ALWAYS produce exactly these 5 files per run in the `
 ## 4. Architectural Rules
 - **UI Independence:** The `core/` processing engine must remain completely decoupled from the `ui/` Streamlit frontend. The engine should be fully executable via CLI (`cli.py`).
 - **Configuration:** All report mappings (Source -> Target) are defined in Excel (`Mapping_file.xlsx`) and YAML configs in `config/reports/`. Do not hardcode mappings in Python files.
+
+## 5. Memory Navigation & Documentation (Read On-Demand)
+Before modifying code or adding features, refer to the targeted knowledge base in [`.memory/`](.memory/):
+- **Function/Class Directory:** Consult [`.memory/MODULE_INDEX.md`](.memory/MODULE_INDEX.md) to inspect existing functions and prevent duplication.
+- **Output File Schemas:** Consult [`.memory/CONTRACTS.md`](.memory/CONTRACTS.md) for inviolable output formats and specifications.
+- **Data Pipeline & Delta Rules:** Consult [`.memory/PIPELINE_FLOW.md`](.memory/PIPELINE_FLOW.md) for end-to-end ingestion and reconciliation logic.
+- **Server, Ports & GitHub:** Consult [`.memory/INFRASTRUCTURE.md`](.memory/INFRASTRUCTURE.md) for Oracle server IP, SSH keys, ports 8501/8080, and deployment.
+- **Salesforce APIs & Auth:** Consult [`.memory/SALESFORCE_INTEGRATION.md`](.memory/SALESFORCE_INTEGRATION.md) for OAuth PKCE, Composite key-omission, and Bulk API 2.0.
+- **Architecture Invariants & Checklist:** Consult [`.memory/SYSTEM_ARCHITECTURE.md`](.memory/SYSTEM_ARCHITECTURE.md) for coding standards and safe feature checklists.
+- **Historical ADRs:** Consult [`.memory/adrs/`](.memory/adrs/) for past architectural decisions before changing core logic.
+

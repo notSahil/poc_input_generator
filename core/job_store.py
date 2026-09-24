@@ -271,6 +271,21 @@ def get_active_jobs(db_path: Path | None = None) -> list[dict[str, Any]]:
         return [dict(row) for row in cursor.fetchall()]
 
 
+_JOB_COLUMNS = {
+    "run_dir", "report_name", "profile", "target_object", "engine", "batch_size",
+    "is_rollback", "status", "total_records", "processed", "successful", "failed",
+    "current_chunk", "total_chunks", "checkpoint_json", "error_summary", "retry_count",
+    "triggered_by", "schedule_id", "created_at", "started_at", "completed_at", "updated_at",
+}
+
+_SCHEDULE_COLUMNS = {
+    "name", "report_name", "profile", "schedule_type", "frequency", "cron_expression",
+    "run_at_time", "run_on_day", "one_off_datetime", "execution_mode", "auto_push_confirmed",
+    "batch_size", "is_active", "last_run_at", "last_run_status", "last_run_id", "next_run_at",
+    "total_runs", "consecutive_failures", "max_retries", "created_at", "updated_at",
+}
+
+
 def update_job(
     job_id: str,
     db_path: Path | None = None,
@@ -283,12 +298,15 @@ def update_job(
     cols = []
     vals = []
     for k, v in updates.items():
-        cols.append(f"{k} = ?")
-        vals.append(v)
+        if k in _JOB_COLUMNS:
+            cols.append(f"{k} = ?")
+            vals.append(v)
+    if not cols:
+        return
     vals.append(job_id)
 
     with get_db(db_path) as conn:
-        conn.execute(f"UPDATE jobs SET {', '.join(cols)} WHERE id = ?", tuple(vals))
+        conn.execute(f"UPDATE jobs SET {', '.join(cols)} WHERE id = ?", tuple(vals))  # nosec B608
 
 
 def mark_interrupted_on_startup(db_path: Path | None = None) -> int:
@@ -564,12 +582,15 @@ def update_schedule(
     cols = []
     vals = []
     for k, v in updates.items():
-        cols.append(f"{k} = ?")
-        vals.append(v)
+        if k in _SCHEDULE_COLUMNS:
+            cols.append(f"{k} = ?")
+            vals.append(v)
+    if not cols:
+        return
     vals.append(schedule_id)
 
     with get_db(db_path) as conn:
-        conn.execute(f"UPDATE schedules SET {', '.join(cols)} WHERE id = ?", tuple(vals))
+        conn.execute(f"UPDATE schedules SET {', '.join(cols)} WHERE id = ?", tuple(vals))  # nosec B608
 
 
 def delete_schedule(schedule_id: str, db_path: Path | None = None) -> bool:
