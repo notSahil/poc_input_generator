@@ -33,17 +33,22 @@ The application is hosted on an Oracle Cloud Infrastructure (OCI) Ubuntu VM.
 
 | Service | Port | Protocol | Management | Credentials / Access |
 |---|---|---|---|---|
-| **Streamlit App** | `8501` | HTTP / WebSocket | `sudo systemctl [status\|restart\|stop] streamlit.service` | Open in browser: `http://161.118.182.20:8501` |
+| **HTTPS Web Entry (Nginx)** | `443` | HTTPS (TLS 1.3/1.2) | `sudo systemctl [status\|restart\|stop] nginx` | **Primary Production URL:** `https://161-118-182-20.sslip.io`<br>*(Trusted Let's Encrypt SSL, HSTS, WebSockets)* |
+| **HTTP Web Entry (Nginx)** | `80` | HTTP | `sudo systemctl [status\|restart\|stop] nginx` | Automatically permanently redirects (`301 Moved Permanently`) to `https://161-118-182-20.sslip.io` |
+| **Streamlit Backend** | `8501` | HTTP / WebSocket *(Internal Loopback)* | `sudo systemctl [status\|restart\|stop] streamlit.service` | Bound strictly to `127.0.0.1:8501` (Internal only, shielded behind Nginx) |
 | **code-server (IDE)** | `8080` | HTTP / WebSocket | `sudo systemctl [status\|restart\|stop] code-server@ubuntu.service` | Open in browser: `http://161.118.182.20:8080`<br>Password: **`Sitetracker2026!`** |
 | **SSH Daemon** | `22` | SSH | `systemctl status ssh` | SSH Key authentication only |
 
 ### Firewall Rules (`iptables`)
-Ports `8080` and `8501` are explicitly open in Oracle Cloud OS firewall via `iptables`:
+External access is permitted on ports `443` (HTTPS), `80` (HTTP), `8080` (code-server), and `22` (SSH):
 ```bash
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 8501 -j ACCEPT
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 8080 -j ACCEPT
+# Allow HTTP (80) and HTTPS (443)
+sudo iptables -I INPUT 5 -p tcp --dport 80 -j ACCEPT
+sudo iptables -I INPUT 6 -p tcp --dport 443 -j ACCEPT
+sudo iptables -I INPUT 7 -m state --state NEW -p tcp --dport 8080 -j ACCEPT
 sudo netfilter-persistent save
 ```
+*(Streamlit on port `8501` is bound to `127.0.0.1` and does not accept direct public connections).*
 
 ---
 
