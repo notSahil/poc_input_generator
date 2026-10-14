@@ -55,6 +55,7 @@ This is a living document. **AI AGENTS:** You must update this file whenever you
 - `/reports`: Contains YAML files (`apollo_10g.yml`, `master_site_listing.yml`) defining the specific Primary Keys and settings for different report types.
 
 ### `/scripts` (Utilities)
+- `generate_user_guide_docx.py`: Sitetracker Data Hub — Enterprise User Guide Generator (.docx)
 - `sync_memory.py`: sync_memory.py — Automated AI Memory & Project Structure Synchronizer
 - `prune_runs.py`: Utility script to prune historical run logs, source archives, and mapping history.
 - `package_clean_code.py`: Create a clean, lightweight zip archive of the codebase for company laptop deployment.

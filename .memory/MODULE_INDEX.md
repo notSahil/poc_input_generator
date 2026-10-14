@@ -169,6 +169,7 @@ This catalog gives any AI agent or developer an instant, searchable reference of
 | File | Lines | Summary / Role | Classes | Exported Functions / Helpers |
 |---|---|---|---|---|
 | [`gen_module_index.py`](scripts/gen_module_index.py) | 173 | gen_module_index.py — Auto-generates .memory/MODULE_INDEX.md | — | `parse_python_file()`, `generate_index()`, `main()` |
+| [`generate_user_guide_docx.py`](scripts/generate_user_guide_docx.py) | 920 | Sitetracker Data Hub — Enterprise User Guide Generator (.docx) | **`UserGuideDocxBuilder`** | `set_cell_shading()`, `set_cell_margins()`, `set_callout_border()`, `set_box_borders()`, `set_table_borders()`, `main()` |
 | [`package_clean_code.py`](scripts/package_clean_code.py) | 104 | Create a clean, lightweight zip archive of the codebase for company laptop deployment. | — | `create_clean_zip()` |
 | [`prune_runs.py`](scripts/prune_runs.py) | 248 | Utility script to prune historical run logs, source archives, and mapping history. | — | `prune_guided_runs()`, `prune_manual_runs()`, `prune_mapping_history()`, `vacuum_job_store()`, `prune_all()` |
 | [`scaffold_report.py`](scripts/scaffold_report.py) | 95 | Scaffold a new report with YAML configuration and standard data directory structure. | — | `scaffold()`, `main()` |

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sitetracker Data Hub — End-to-End Master Workflow</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .glow-blue {
+      box-shadow: 0 0 25px -5px rgba(1, 118, 211, 0.25);
+    }
+    .connector-line {
+      background: linear-gradient(180deg, #0176D3 0%, #0B2149 100%);
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-6 md:p-10 antialiased selection:bg-blue-600 selection:text-white">
+
+  <!-- TOP HEADER -->
+  <div class="max-w-6xl mx-auto mb-10 text-center">
+    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-950/80 border border-blue-500/40 text-blue-400 text-xs font-semibold uppercase tracking-wider mb-3">
+      <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
+      Sitetracker Data Hub • Complete Functional Ecosystem
+    </div>
+    <h1 class="text-3xl md:text-5xl font-extrabold tracking-tight text-white mb-3">
+      End-to-End Master Architecture & Workflow
+    </h1>
+    <p class="text-slate-400 max-w-2xl mx-auto text-sm md:text-base">
+      How raw contractor spreadsheets transform into clean, validated, and synchronized Sitetracker records with 1-click rollback safety.
+    </p>
+  </div>
+
+  <div class="max-w-6xl mx-auto space-y-8">
+
+    <!-- STAGE 1: ENTRY & SECURITY GATEWAY -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 glow-blue relative overflow-hidden">
+      <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-cyan-400"></div>
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400 text-lg font-bold">
+            01
+          </div>
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center gap-2">
+              🔐 Enterprise Authentication Gateway & Environment Scope
+              <span class="text-xs px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">Security Layer</span>
+            </h2>
+            <p class="text-xs text-slate-400">Verifies credentials and sets safe environment boundaries before any data touches Salesforce</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 text-xs">
+          <span class="px-2.5 py-1 rounded-lg bg-emerald-950/60 border border-emerald-500/30 text-emerald-400 font-mono">Sandbox (test.salesforce.com)</span>
+          <span class="text-slate-600">⇄</span>
+          <span class="px-2.5 py-1 rounded-lg bg-blue-950/60 border border-blue-500/30 text-blue-400 font-mono">Production (login.salesforce.com)</span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+        <div class="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5">
+          <div class="font-semibold text-slate-200 mb-1 flex items-center gap-1.5">
+            <span class="text-blue-400 font-bold">Option A</span> • Salesforce OAuth 2.0 PKCE
+          </div>
+          <p class="text-slate-400 text-[11px] leading-relaxed">Browser SSO redirect with secure session token caching and auto-refresh.</p>
+        </div>
+        <div class="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5">
+          <div class="font-semibold text-slate-200 mb-1 flex items-center gap-1.5">
+            <span class="text-indigo-400 font-bold">Option B</span> • Workbench Session Token
+          </div>
+          <p class="text-slate-400 text-[11px] leading-relaxed">Direct session injection with automated prefix sanitation and live API ping test.</p>
+        </div>
+        <div class="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5">
+          <div class="font-semibold text-slate-200 mb-1 flex items-center gap-1.5">
+            <span class="text-cyan-400 font-bold">Safeguard</span> • Ambient Profile Scoping
+          </div>
+          <p class="text-slate-400 text-[11px] leading-relaxed">Persistent top navigation badge clearly locks actions to Sandbox or Live Production.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONNECTOR -->
+    <div class="flex justify-center -my-4 relative z-10">
+      <div class="w-8 h-8 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center text-blue-400 shadow-lg text-sm font-bold">
+        ↓
+      </div>
+    </div>
+
+    <!-- STAGE 2: CENTRAL OPERATIONS (3 PRIMARY PATHS) -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 relative">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 text-lg font-bold">
+          02
+        </div>
+        <div>
+          <h2 class="text-lg font-bold text-white">Central Operations Hub — Choose Execution Path</h2>
+          <p class="text-xs text-slate-400">Three distinct pathways tailored for routine reports, ad-hoc files, or automated background schedules</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+        <!-- PATH 1: GUIDED PIPELINE -->
+        <div class="bg-slate-950/70 border border-blue-500/30 rounded-xl p-4 flex flex-col justify-between hover:border-blue-500/60 transition group">
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <span class="px-2.5 py-1 rounded bg-blue-500/20 text-blue-300 font-bold text-xs">PATH 1 • Guided Pipeline</span>
+              <span class="text-[11px] text-slate-500">Weekly Standard</span>
+            </div>
+            <h3 class="font-bold text-white text-sm mb-1">Pre-Configured Reports</h3>
+            <p class="text-slate-400 text-xs mb-4">For recurring weekly contractor reports like Apollo 10G and Master Site Listing.</p>
+            
+            <ol class="space-y-2.5 text-xs text-slate-300">
+              <li class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded bg-blue-900/60 text-blue-300 font-mono text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">1</span>
+                <div><b>Select Template & Upload:</b> Choose report type and drag-and-drop contractor .xlsx / .csv file.</div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded bg-blue-900/60 text-blue-300 font-mono text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">2</span>
+                <div><b>Visual Mapping Canvas:</b> Pre-loaded mapping from Mapping_file.xlsx with auto-matched checkmarks.</div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded bg-blue-900/60 text-blue-300 font-mono text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">3</span>
+                <div><b>Delta & Validation Engine:</b> SOQL baseline pull, UK date conversion, and #N/A wipe detection.</div>
+              </li>
+            </ol>
+          </div>
+          <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] text-blue-400 font-medium">
+            ➔ Generates Inviolable 5 Core Output Files
+          </div>
+        </div>
+
+        <!-- PATH 2: MANUAL DATALOADER -->
+        <div class="bg-slate-950/70 border border-amber-500/30 rounded-xl p-4 flex flex-col justify-between hover:border-amber-500/60 transition group">
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <span class="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 font-bold text-xs">PATH 2 • Ad-Hoc Loader</span>
+              <span class="text-[11px] text-slate-500">Any SF Object</span>
+            </div>
+            <h3 class="font-bold text-white text-sm mb-1">Dynamic Schema Ingestion</h3>
+            <p class="text-slate-400 text-xs mb-4">Upload arbitrary spreadsheets to any Sitetracker object without pre-built configs.</p>
+            
+            <ol class="space-y-2.5 text-xs text-slate-300">
+              <li class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded bg-amber-900/60 text-amber-300 font-mono text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">1</span>
+                <div><b>Upload Custom File:</b> Upload any Excel/CSV spreadsheet.</div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded bg-amber-900/60 text-amber-300 font-mono text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">2</span>
+                <div><b>Object Discovery:</b> Live describeGlobal() picks target SObject & designates Primary Key.</div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded bg-amber-900/60 text-amber-300 font-mono text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">3</span>
+                <div><b>Interactive Field Mapping:</b> Match source columns to writeable Salesforce fields with fuzzy match.</div>
+              </li>
+            </ol>
+          </div>
+          <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] text-amber-400 font-medium">
+            ➔ Creates 1-Click Rollback File (rollback_file.csv)
+          </div>
+        </div>
+
+        <!-- PATH 3: TASK SCHEDULER -->
+        <div class="bg-slate-950/70 border border-emerald-500/30 rounded-xl p-4 flex flex-col justify-between hover:border-emerald-500/60 transition group">
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <span class="px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-300 font-bold text-xs">PATH 3 • Task Scheduler</span>
+              <span class="text-[11px] text-slate-500">Unattended</span>
+            </div>
+            <h3 class="font-bold text-white text-sm mb-1">Automated Job Runner</h3>
+            <p class="text-slate-400 text-xs mb-4">Run unattended delta synchronizations with timezone precision and multi-channel alerts.</p>
+            
+            <ol class="space-y-2.5 text-xs text-slate-300">
+              <li class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded bg-emerald-900/60 text-emerald-300 font-mono text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">1</span>
+                <div><b>Recurrence Rules:</b> Hourly, Daily, Weekly, Monthly or one-off runs in Europe/London time.</div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded bg-emerald-900/60 text-emerald-300 font-mono text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">2</span>
+                <div><b>Persistent Queue:</b> SQLite WAL mode survives reboots with automatic crash recovery.</div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded bg-emerald-900/60 text-emerald-300 font-mono text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">3</span>
+                <div><b>Multi-Channel Alerts:</b> Dispatches notifications to Slack Block Kit, Teams, Email & In-App.</div>
+              </li>
+            </ol>
+          </div>
+          <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] text-emerald-400 font-medium">
+            ➔ Automated Headless Execution via CLI Engine
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- CONNECTOR -->
+    <div class="flex justify-center -my-4 relative z-10">
+      <div class="w-8 h-8 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center text-blue-400 shadow-lg text-sm font-bold">
+        ↓
+      </div>
+    </div>
+
+    <!-- STAGE 3: THE CORE ENGINE & 5 OUTPUT CONTRACTS -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 relative">
+      <div class="flex items-center gap-3 mb-5">
+        <div class="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/40 flex items-center justify-center text-purple-400 text-lg font-bold">
+          03
+        </div>
+        <div>
+          <h2 class="text-lg font-bold text-white flex items-center gap-2">
+            ⚙️ The Reconciliation Engine & 5 Standard Output Files
+            <span class="text-xs px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">Audit Boundary</span>
+          </h2>
+          <p class="text-xs text-slate-400">Strict mathematical separation guarantees that bad rows never touch production</p>
+        </div>
+      </div>
+
+      <!-- 5 FILES TILES -->
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs mb-4">
+        <div class="bg-emerald-950/40 border border-emerald-500/40 rounded-xl p-3">
+          <div class="font-bold text-emerald-400 mb-1 flex items-center gap-1 font-mono text-[11px]">
+            1. final_input_file.csv
+          </div>
+          <p class="text-slate-300 text-[11px]">Valid rows with Target Columns + Primary Key. Ready for instant upload.</p>
+        </div>
+        <div class="bg-blue-950/40 border border-blue-500/40 rounded-xl p-3">
+          <div class="font-bold text-blue-400 mb-1 flex items-center gap-1 font-mono text-[11px]">
+            2. field_level_changes.csv
+          </div>
+          <p class="text-slate-300 text-[11px]">Granular audit log of every detected change: Old_Value vs New_Value.</p>
+        </div>
+        <div class="bg-rose-950/40 border border-rose-500/40 rounded-xl p-3">
+          <div class="font-bold text-rose-400 mb-1 flex items-center gap-1 font-mono text-[11px]">
+            3. invalid_primary_key.csv
+          </div>
+          <p class="text-slate-300 text-[11px]">Quarantined exact copy of rows where Primary Key was null or blank.</p>
+        </div>
+        <div class="bg-amber-950/40 border border-amber-500/40 rounded-xl p-3">
+          <div class="font-bold text-amber-400 mb-1 flex items-center gap-1 font-mono text-[11px]">
+            4. duplicate_primary_keys.csv
+          </div>
+          <p class="text-slate-300 text-[11px]">Quarantined exact copy of rows where Primary Key appeared multiple times.</p>
+        </div>
+        <div class="bg-slate-950/60 border border-slate-700 rounded-xl p-3">
+          <div class="font-bold text-slate-300 mb-1 flex items-center gap-1 font-mono text-[11px]">
+            5. run_summary.txt
+          </div>
+          <p class="text-slate-300 text-[11px]">Executive mathematical metrics: processed, modified, errors & time.</p>
+        </div>
+      </div>
+
+      <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span class="text-slate-400"><b>Supplementary Files:</b> <span class="font-mono text-slate-300">audit.log</span> (system traces) • <span class="font-mono text-emerald-400">rollback_file.csv</span> (1-click undo) • <span class="font-mono text-blue-400">run_summary.json</span> (telemetry)</span>
+        <span class="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[11px]">Saved in runs/&lt;timestamp&gt;/</span>
+      </div>
+    </div>
+
+    <!-- CONNECTOR -->
+    <div class="flex justify-center -my-4 relative z-10">
+      <div class="w-8 h-8 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center text-blue-400 shadow-lg text-sm font-bold">
+        ↓
+      </div>
+    </div>
+
+    <!-- STAGE 4: HIGH-SPEED UPLOAD & SAFETY NET -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 relative">
+      <div class="flex items-center gap-3 mb-5">
+        <div class="w-10 h-10 rounded-xl bg-cyan-600/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400 text-lg font-bold">
+          04
+        </div>
+        <div>
+          <h2 class="text-lg font-bold text-white flex items-center gap-2">
+            🚀 High-Speed Salesforce Synchronization & Verification
+            <span class="text-xs px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Production DML</span>
+          </h2>
+          <p class="text-xs text-slate-400">Two high-performance upload engines paired with live post-update DML validation</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs mb-4">
+        <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+          <div class="font-bold text-cyan-400 mb-1">⚡ REST Composite Collections</div>
+          <p class="text-slate-400 text-[11px] mb-2">Micro-batches of 25 records. Completes in <b>15–40 seconds</b> for up to 5,000 rows.</p>
+          <div class="text-[10px] text-emerald-400 font-mono">Immediate 1-Click Rollback Available</div>
+        </div>
+        <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+          <div class="font-bold text-blue-400 mb-1">📦 Salesforce Bulk API 2.0</div>
+          <p class="text-slate-400 text-[11px] mb-2">Asynchronous server-side processing for <b>10,000 to 100,000+</b> record batches.</p>
+          <div class="text-[10px] text-blue-400 font-mono">Minimal Salesforce API Call Consumption</div>
+        </div>
+        <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+          <div class="font-bold text-indigo-400 mb-1">🔍 2-Tier Post-Update Validation</div>
+          <p class="text-slate-400 text-[11px] mb-2">Re-queries live Salesforce state to verify DML persistence and catch trigger overwrites.</p>
+          <div class="text-[10px] text-indigo-400 font-mono">Detects Stale Fields & Trigger Mutations</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STAGE 5: SUPPORTING MANAGEMENT & MONITORING SUITE -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4">
+        <div class="text-white font-bold text-sm mb-1 flex items-center gap-2">
+          📜 Run History & Audit
+        </div>
+        <p class="text-slate-400 text-xs mb-3">Browse all historical runs, inspect KPI metric scorecards, and re-download any past output file.</p>
+        <span class="text-[11px] text-blue-400 font-mono">ui/run_history.py</span>
+      </div>
+
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4">
+        <div class="text-white font-bold text-sm mb-1 flex items-center gap-2">
+          📝 Schema & Mapping Editor
+        </div>
+        <p class="text-slate-400 text-xs mb-3">View and edit Excel column mappings and YAML configs in the browser with revision backups.</p>
+        <span class="text-[11px] text-blue-400 font-mono">ui/mapping_editor.py</span>
+      </div>
+
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4">
+        <div class="text-white font-bold text-sm mb-1 flex items-center gap-2">
+          📡 Live Telemetry Monitor
+        </div>
+        <p class="text-slate-400 text-xs mb-3">Real-time background worker reconnection, micro-batch velocity, and governor limit tracking.</p>
+        <span class="text-[11px] text-blue-400 font-mono">ui/live_monitor.py</span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="max-w-6xl mx-auto mt-12 text-center text-xs text-slate-500 pb-8">
+    Sitetracker Data Hub • Enterprise Architecture & Operational Manual • October 2026
+  </div>
+
+</body>
+</html>
